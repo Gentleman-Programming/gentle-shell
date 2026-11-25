@@ -2,7 +2,6 @@ import { execFile, spawn } from "node:child_process";
 import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, win32 } from "node:path";
-import { promisify } from "node:util";
 import { binaryDigest, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
 import { decodeAgentRiskEscalation, decodeReviewAssessmentV1, type AgentRiskEscalation, type ReviewAssessmentV1 } from "./review-risk-assessment.ts";
@@ -33,8 +32,6 @@ import {
 } from "./review-integration-v2.ts";
 
 import { observeNativeStatus, measureStatusSync, measureStatusAsync } from "./status-timing-diagnostics.ts";
-
-const execFileAsync = promisify(execFile);
 
 // Negotiated review/status responses can carry a complete authority inventory.
 // Keep the production default large enough for that payload while retaining a
@@ -1223,14 +1220,25 @@ export function createNodeExecFileAdapter(options: { readonly platform?: NodeJS.
 		const killProcessTree = options.killProcessTree ?? windowsProcessTreeKiller;
 		return (request) => windowsExecFile(request, killProcessTree);
 	}
-	return async (request) => {
-		try {
-			const output = await execFileAsync(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, timeout: request.timeoutMs, maxBuffer: request.maxBufferBytes, signal: request.signal, env: gentleAiProcessEnvironment(process.env, request.boundSelection) });
-			return { stdout: output.stdout, stderr: output.stderr, exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
-		} catch (error) {
-			return execFileResultFromError(error, false);
+	return (request) => new Promise((resolve, reject) => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const { timeoutMs } = request;
+		const boundedStatus = timeoutMs !== undefined && timeoutMs > 0 && request.arguments[0] === "review" && request.arguments[1] === "status";
+		const child = execFile(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, timeout: boundedStatus ? undefined : timeoutMs, maxBuffer: request.maxBufferBytes, signal: request.signal, env: gentleAiProcessEnvironment(process.env, request.boundSelection) }, (error, stdout, stderr) => {
+			if (timer !== undefined) clearTimeout(timer);
+			if (error === null) { resolve({ stdout, stderr, exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false }); return; }
+			try { resolve(execFileResultFromError(Object.assign(error, { stdout, stderr }), false)); } catch (failure) { reject(failure); }
+		});
+		if (boundedStatus) {
+			timer = setTimeout(() => {
+				// Neither a SIGTERM-resistant child nor inherited pipes may hold the deadline open.
+				resolve({ stdout: "", stderr: "", exitCode: 1, signal: child.signalCode, timedOut: true, outputLimitExceeded: false });
+				if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+				child.stdout?.destroy();
+				child.stderr?.destroy();
+			}, timeoutMs);
 		}
-	};
+	});
 }
 
 function object(value: unknown): Record<string, unknown> {

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 export const DESKTOP_RPC_SCHEMA = "gentle-shell.desktop-rpc/v1";
 export const DESKTOP_RPC_COMMAND = "gentle:desktop";
 export const DESKTOP_RPC_WIDGET = "gentle-desktop-rpc";
@@ -103,6 +105,13 @@ function isThenable(value: unknown): value is Promise<DesktopRpcOutcome | undefi
 /** Session-scoped protocol state. Domain operations are supplied by each slice. */
 export class DesktopRpcRouter {
 	private sequence = 0;
+	/**
+	 * Names one event numbering. `start` mints a new one as it restarts `seq`
+	 * (nothing is published between `stop` and `start`), so a client that sees
+	 * another epoch knows the numbering restarted (a reload, a switch, a
+	 * restart) instead of reading the new events as replays.
+	 */
+	private epoch = randomUUID();
 	private publisher: DesktopRpcPublish | undefined;
 	private readonly methods: readonly string[];
 	/** A list, or a reader for events whose wiring is only known at request time. */
@@ -130,6 +139,7 @@ export class DesktopRpcRouter {
 
 	start(publish: DesktopRpcPublish): void {
 		this.sequence = 0;
+		this.epoch = randomUUID();
 		this.publisher = publish;
 	}
 
@@ -172,7 +182,7 @@ export class DesktopRpcRouter {
 	}
 
 	snapshot() {
-		return { schema: DESKTOP_RPC_SCHEMA, sequence: this.sequence, state: this.state() };
+		return { schema: DESKTOP_RPC_SCHEMA, sequence: this.sequence, epoch: this.epoch, state: this.state() };
 	}
 
 	emit(event: string, data: Record<string, unknown>): void {
@@ -182,6 +192,7 @@ export class DesktopRpcRouter {
 			schema: DESKTOP_RPC_SCHEMA,
 			kind: "event",
 			seq: sequence,
+			epoch: this.epoch,
 			event,
 			data,
 		}));

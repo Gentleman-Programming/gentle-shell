@@ -73,12 +73,13 @@ The permission methods, the bounded config read and write, the subscription-usag
 
 ### `get_snapshot`
 
-Returns the current event sequence and a bounded state projection:
+Returns the current event sequence, its epoch, and a bounded state projection:
 
 ```json
 {
   "schema": "gentle-shell.desktop-rpc/v1",
   "sequence": 0,
+  "epoch": "3b0e9a52-8c1d-4f7e-9a6b-2d5c7e1f4a90",
   "state": {
     "config": {
       "stores": [
@@ -99,7 +100,7 @@ Returns the current event sequence and a bounded state projection:
 
 The projection carries only store identity, scope, mutability, status, and revision — never store content, never a path. It is the cheap way for a client to notice that one of the nine revisions moved and then call `get_config` for that store. `state` is `{}` when no Desktop command has bound a session context yet, or when that context has no working directory: without one, the project and pin layers cannot be read truthfully, so nothing is projected instead of a guess.
 
-This snapshot does not project permission state: use `get_permission_mode` for that. `sequence` is the number of delivered events, so a client that saw `seq: 4` expects `sequence: 4` from a fresh snapshot unless it missed an event.
+This snapshot does not project permission state: use `get_permission_mode` for that. `sequence` is the number of delivered events, so a client that saw `seq: 4` expects `sequence: 4` from a fresh snapshot unless it missed an event. `epoch` names the numbering `sequence` counts in, as every event's `epoch` does (see [Events](#events)): a snapshot of another epoch than the events a client followed comes from a channel that numbers its events anew, so its `sequence` replaces the client's baseline even when it is smaller.
 
 #### Session sections
 
@@ -120,6 +121,7 @@ Without a `sections` key the request is the legacy read above, byte-for-byte (ot
 {
   "schema": "gentle-shell.desktop-rpc/v1",
   "sequence": 4,
+  "epoch": "3b0e9a52-8c1d-4f7e-9a6b-2d5c7e1f4a90",
   "state": {
     "config": { "stores": ["…as above…"] },
     "session": {
@@ -1171,7 +1173,7 @@ Any other key (including a Pi-style `sessionPath`), a missing or empty `id`, or 
 - **Switching to the current session** is a no-op: `{ "id": …, "changed": false }`, no switch, no event.
 - **A cancelled switch** (an extension's `session_before_switch` handler cancelled it) answers `{ "id": …, "changed": false, "cancelled": true }`; the session is unchanged.
 - **A refused switch** (for example the session's working directory no longer exists) answers `sessions_unavailable` with a fixed message; Pi's error, which names paths, never crosses.
-- **The sequence resets.** A switch starts a new session, exactly like Pi's own `switch_session`: the old session receives `session_shutdown`, the new one starts with a fresh channel, and event `seq` starts again at 1. The response is published by the new session, after it started, still correlated by `requestId`; an event of the new session may precede it. Fetch `get_snapshot` after a switch.
+- **The sequence resets.** A switch starts a new session, exactly like Pi's own `switch_session`: the old session receives `session_shutdown`, the new one starts with a fresh channel, a new `epoch`, and event `seq` starts again at 1. The response is published by the new session, after it started, still correlated by `requestId`; an event of the new session may precede it. Fetch `get_snapshot` after a switch.
 - **One switch at a time; nothing is lost.** From the moment a `switch_session` is dispatched until it answers, every other Desktop request (any method, including another `switch_session` and `capabilities`) is answered at once with the retryable `session_switching` error and does nothing. A request that was already waiting on an owner when the switch tears the session down is answered `session_switching` right before the teardown, and a request Pi delivers to the replaced session during the replacement is answered `session_switching` too. Every request gets exactly one response; only the switch itself answers from the new session. This includes `capabilities` and `get_snapshot`: they are refused too, because their answer would describe the session being replaced. Retry every refused request, including those two, after the switch's response arrives. A switch that ends without replacing the session (cancelled, refused, or `not_found`) releases the gate at once. Use a fresh `requestId` per request: the exemption for the in-flight switch is by `requestId`.
 - **A streaming turn is aborted.** Pi settles any active response before it replaces the session, so a switch during a streaming turn aborts that turn and persists it to the old session first, as Pi's own `switch_session` does.
 - This slice emits no event of its own.
@@ -1831,12 +1833,15 @@ Domain events use the same widget channel:
   "schema": "gentle-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 1,
+  "epoch": "3b0e9a52-8c1d-4f7e-9a6b-2d5c7e1f4a90",
   "event": "example_event",
   "data": {}
 }
 ```
 
 The event name above is illustrative; `capabilities` is authoritative for implemented events. `seq` starts at 1 after successful delivery in each newly started session and resets on session shutdown, reload, or a session switch (Pi's own `switch_session` or this channel's). After shutdown the channel does not answer further commands. Clients should fetch `get_snapshot` after connecting and whenever they detect a sequence gap. Responses do not increment the event sequence.
+
+`epoch` tells a client when the numbering restarted. It is an opaque string, compared only for equality, minted each time the channel starts (session start, reload, switch, a restarted process) — exactly when `seq` restarts — and carried by every event and every `get_snapshot` answer of that channel, `session_snapshot` events included. Within one epoch `seq` only advances, so a `seq` at or below the last one seen is a replay; an event or snapshot of another epoch is a new numbering that starts at 1, never a replay. A first event of a new epoch with `seq` above 1 means the events before it were missed: resync from `get_snapshot`. Releases before the epoch send no `epoch`; a client then has only `seq` to go by.
 
 ### `permission_mode_changed`
 
@@ -2273,7 +2278,7 @@ The job is over: `ok` is the CLI's exit status 0. On failure `error` is the CLI'
 - **Ids in, ids out.** The wire carries session ids, never a session file path, working directory, or parent-session path. The path Pi resolves stays inside the process and goes straight to the command context's `switchSession`.
 - **Bounded projection.** Each entry carries exactly `id`, `name?`, `modified`, `messageCount?`, `firstMessage` (at most 200 characters), `project` (a display name), and `current`. The full conversation text Pi reads for search is never returned. A page holds at most 50 entries.
 - **The listing reads files.** Pi reads every session file in scope to build its list, so `scope: "all"` over a large history costs as much as Pi's own `/resume` across all projects. Prefer `project` and page with `limit`.
-- **A switch replaces the session.** Every per-session bridge and the router restart with the new session; event `seq` restarts at 1, and Desktop should re-read `get_snapshot` and any state it shows. A switch during a streaming turn aborts that turn first (Pi's behavior). A failure after Pi already tore the old session down cannot be answered by either session.
+- **A switch replaces the session.** Every per-session bridge and the router restart with the new session; event `seq` restarts at 1 under a new `epoch`, and Desktop should re-read `get_snapshot` and any state it shows. A switch during a streaming turn aborts that turn first (Pi's behavior). A failure after Pi already tore the old session down cannot be answered by either session.
 - **Exactly once across a switch.** Pi dispatches prompts concurrently, so requests sent right after a `switch_session` can reach the session being replaced. The router refuses them with `session_switching` while the switch is in flight, answers any request still waiting on an owner right before the teardown, and the replaced instance answers late deliveries through the UI object it extracted before Pi invalidated its context. The switch's own response comes from the new session.
 - **No agent tool.** Sessions are reachable only through `/gentle:desktop` over the interactive RPC channel.
 

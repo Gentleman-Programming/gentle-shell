@@ -275,15 +275,17 @@ test("S2: get_snapshot without sections is byte-identical with and without the f
 	const legacyWith = await withFeed.invoke("get_snapshot");
 	assert.equal(legacyWith.length, 1);
 	// `sequence` counts delivered events: with the feed, its start-up flushes may
-	// already have published session_snapshot events. Everything else is identical.
+	// already have published session_snapshot events; each channel names its own
+	// `epoch`. Everything else is identical.
 	const events = withFeed.lines().filter((line) => JSON.parse(line).kind === "event").length;
 	assert.equal(legacyWith[0].data.sequence, events);
-	assert.deepEqual(legacyWith, [{ ...legacyWithout[0], data: { ...legacyWithout[0].data, sequence: events } }]);
+	const epoch = legacyWith[0].data.epoch;
+	assert.deepEqual(legacyWith, [{ ...legacyWithout[0], data: { ...legacyWithout[0].data, sequence: events, epoch } }]);
 	assert.equal("session" in legacyWith[0].data.state, false);
 	// Unrelated params keep today's behavior too.
 	const otherWith = await withFeed.invoke("get_snapshot", { other: true });
 	const otherWithout = await without.invoke("get_snapshot", { other: true });
-	assert.deepEqual(otherWith, [{ ...otherWithout[0], data: { ...otherWithout[0].data, sequence: events } }]);
+	assert.deepEqual(otherWith, [{ ...otherWithout[0], data: { ...otherWithout[0].data, sequence: events, epoch } }]);
 });
 
 test("S1/S2/S4/S5: get_snapshot with sections reads the live feed projection; reads emit no event", async (t) => {
@@ -418,7 +420,9 @@ test("S2: the router keeps get_snapshot byte-identical when no session reader is
 	const router = new DesktopRpcRouter(undefined, undefined, () => ({ config: { stores: [] } }));
 	router.start((line) => lines.push(line));
 	router.handle(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "a", method: "get_snapshot", params: { sections: ["todo"] } }));
-	assert.deepEqual(JSON.parse(lines[0]!).data, { schema: DESKTOP_RPC_SCHEMA, sequence: 0, state: { config: { stores: [] } } });
+	const data = JSON.parse(lines[0]!).data;
+	assert.deepEqual(data, { schema: DESKTOP_RPC_SCHEMA, sequence: 0, epoch: data.epoch, state: { config: { stores: [] } } });
+	assert.equal(typeof data.epoch, "string");
 });
 
 // ---- Path edge cases (verifier correction batch) ----

@@ -138,7 +138,7 @@ import {
 	type ProfilesFileReadResult,
 	type ProfilesParseDrops,
 } from "../lib/agent-profiles.ts";
-import { CONTROLLED_ENGINEERING_ENV, resolveOrchestratorMode } from "../lib/orchestrator-mode-policy.ts";
+import { CONTROLLED_ENGINEERING_ENV, CONTROLLED_ENGINEERING_ROLES, resolveOrchestratorMode, type ControlledEngineeringRole } from "../lib/orchestrator-mode-policy.ts";
 import {
 	clearProfilePinSync,
 	evaluateProfilePin,
@@ -1870,7 +1870,6 @@ Verify in proportion:
 - Where this section and broader verification guidance differ, this section
   decides how you verify, at every risk level. How much you verify, what a
   high-risk change requires, and review consent stay as that guidance says.`;
-type ControlledEngineeringRole = "writer" | "verify";
 const CONTROLLED_ENGINEERING_PROMPTS: Record<ControlledEngineeringRole, string> = {
 	writer: CONTROLLED_ENGINEERING_WRITER_PROMPT,
 	verify: CONTROLLED_ENGINEERING_VERIFIER_PROMPT,
@@ -13381,9 +13380,10 @@ function createGentleAiExtensionForTesting(
 		// option gets the writer section; a child gets the section its launcher
 		// marked ("writer" or "verify"); any other value and nobody else get none.
 		const childMark = permissionEnvironment[CONTROLLED_ENGINEERING_ENV];
-		updateControlledEngineeringPrompt(event.systemPromptOptions, sessionWorkflow !== undefined
-			? (sessionWorkflow.orchestratorMode === "organic" && sessionWorkflow.controlledEngineering === true ? "writer" : undefined)
-			: isChildSession && (childMark === "writer" || childMark === "verify") ? childMark : undefined);
+		const primaryRole: ControlledEngineeringRole | undefined =
+			sessionWorkflow?.orchestratorMode === "organic" && sessionWorkflow.controlledEngineering === true ? "writer" : undefined;
+		const childRole = CONTROLLED_ENGINEERING_ROLES.find((role) => role === childMark);
+		updateControlledEngineeringPrompt(event.systemPromptOptions, isPrimarySession ? primaryRole : isChildSession ? childRole : undefined);
 		const promptMode = isPrimarySession ? await yolo.mode(ctx) : "normal";
 		updateYoloPrompt(event.systemPromptOptions, promptMode === "yolo", promptMode === "super-yolo");
 		updateAutoPrompt(event.systemPromptOptions, promptMode === "auto");

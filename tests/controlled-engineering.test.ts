@@ -156,7 +156,7 @@ async function build(options: { appendSystemPrompt: string }, sessionId: string,
 	return options.appendSystemPrompt;
 }
 
-function occurrences(text: string, section: string = WRITER): number {
+function occurrences(text: string, section: string): number {
 	return text.split(section).length - 1;
 }
 
@@ -164,10 +164,10 @@ test("S2/S6: an organic primary with the option on gets the writer section verba
 	writeProfiles({ orchestratorMode: "organic", controlledEngineering: true });
 	const options = { appendSystemPrompt: "" };
 	const prompt = await build(options, "ce-primary-on");
-	assert.equal(occurrences(prompt), 1);
+	assert.equal(occurrences(prompt, WRITER), 1);
 	assert.equal(occurrences(prompt, VERIFIER), 0);
 	// A bridge may hand the same options back on the next turn: still once.
-	assert.equal(occurrences(await build(options, "ce-primary-on")), 1);
+	assert.equal(occurrences(await build(options, "ce-primary-on"), WRITER), 1);
 	const section = prompt.slice(prompt.indexOf("## Controlled Engineering"));
 	assert.ok(section.startsWith(WRITER));
 	assert.doesNotMatch(WRITER, /codegraph/i);
@@ -177,14 +177,16 @@ test("S2/S6: an organic primary with the option on gets the writer section verba
 test("S1/S2: turning the option off removes either section and leaves the prompt of a profile that never had it", async () => {
 	writeProfiles();
 	const today = await build({ appendSystemPrompt: "" }, "ce-primary-toggle");
-	assert.equal(occurrences(today), 0);
+	assert.equal(occurrences(today, WRITER), 0);
+	assert.equal(occurrences(today, VERIFIER), 0);
 	writeProfiles({ orchestratorMode: "organic", controlledEngineering: true });
 	const options = { appendSystemPrompt: "" };
-	assert.equal(occurrences(await build(options, "ce-primary-toggle")), 1);
+	assert.equal(occurrences(await build(options, "ce-primary-toggle"), WRITER), 1);
 	// Read live on the next build: no restart between the two.
 	writeProfiles({ orchestratorMode: "organic", controlledEngineering: false });
 	const off = await build(options, "ce-primary-toggle");
-	assert.equal(occurrences(off), 0);
+	assert.equal(occurrences(off, WRITER), 0);
+	assert.equal(occurrences(off, VERIFIER), 0);
 	assert.equal(off, today);
 	// The same on reused options for a verify child: on, then off.
 	const childEnv = { GENTLE_PI_AGENTS_CHILD: "1" };
@@ -198,7 +200,7 @@ test("S3: a full-delegation primary never gets a section, even with the option o
 	writeProfiles({ orchestratorMode: "full-delegation", controlledEngineering: true });
 	const prompt = await build({ appendSystemPrompt: "" }, "ce-primary-full");
 	assert.match(prompt, /COORDINATOR in full delegation mode/);
-	assert.equal(occurrences(prompt), 0);
+	assert.equal(occurrences(prompt, WRITER), 0);
 	assert.equal(occurrences(prompt, VERIFIER), 0);
 });
 
@@ -207,11 +209,13 @@ test("S3: the primary gate follows the effective mode, so the GENTLE_PI_ORCHESTR
 	writeProfiles({ orchestratorMode: "organic", controlledEngineering: true });
 	const overriddenFull = await build({ appendSystemPrompt: "" }, "ce-primary-env-full", { GENTLE_PI_ORCHESTRATOR_MODE: "full-delegation" });
 	assert.match(overriddenFull, /COORDINATOR in full delegation mode/);
-	assert.equal(occurrences(overriddenFull), 0);
+	assert.equal(occurrences(overriddenFull, WRITER), 0);
+	assert.equal(occurrences(overriddenFull, VERIFIER), 0);
 	writeProfiles({ orchestratorMode: "full-delegation", controlledEngineering: true });
 	const overriddenOrganic = await build({ appendSystemPrompt: "" }, "ce-primary-env-organic", { GENTLE_PI_ORCHESTRATOR_MODE: "organic" });
 	assert.doesNotMatch(overriddenOrganic, /COORDINATOR in full delegation mode/);
-	assert.equal(occurrences(overriddenOrganic), 1);
+	assert.equal(occurrences(overriddenOrganic, WRITER), 1);
+	assert.equal(occurrences(overriddenOrganic, VERIFIER), 0);
 });
 
 test("S2/S3: a writer child gets the writer section; a verify child gets the verifier section without the writer-only parts", async () => {
@@ -219,11 +223,11 @@ test("S2/S3: a writer child gets the writer section; a verify child gets the ver
 	writeProfiles();
 	const child = { GENTLE_PI_AGENTS_CHILD: "1" };
 	const writer = await build({ appendSystemPrompt: "" }, "ce-child-writer", { ...child, [CHILD_FLAG]: "writer" });
-	assert.equal(occurrences(writer), 1);
+	assert.equal(occurrences(writer, WRITER), 1);
 	assert.equal(occurrences(writer, VERIFIER), 0);
 	const verify = await build({ appendSystemPrompt: "" }, "ce-child-verify", { ...child, [CHILD_FLAG]: "verify" });
 	assert.equal(occurrences(verify, VERIFIER), 1);
-	assert.equal(occurrences(verify), 0);
+	assert.equal(occurrences(verify, WRITER), 0);
 	assert.doesNotMatch(verify, /Before writing:/);
 	assert.doesNotMatch(verify, /Additions:/);
 	assert.match(verify, /Verify in proportion:/);
@@ -233,7 +237,7 @@ test("S3: a child with any other mark value, the old 1 included, or no mark gets
 	writeProfiles({ orchestratorMode: "organic", controlledEngineering: true });
 	for (const value of [undefined, "1", "true", "both", ""]) {
 		const prompt = await build({ appendSystemPrompt: "" }, "ce-child-other", { GENTLE_PI_AGENTS_CHILD: "1", ...(value === undefined ? {} : { [CHILD_FLAG]: value }) });
-		assert.equal(occurrences(prompt), 0, `value=${String(value)}`);
+		assert.equal(occurrences(prompt, WRITER), 0, `value=${String(value)}`);
 		assert.equal(occurrences(prompt, VERIFIER), 0, `value=${String(value)}`);
 		assert.doesNotMatch(prompt, /## Controlled Engineering/, `value=${String(value)}`);
 	}

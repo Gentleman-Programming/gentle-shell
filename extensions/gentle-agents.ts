@@ -5,7 +5,7 @@ import type { ThinkingLevel } from "../lib/model-routing-authority.ts";
 import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
 import { loadKeymaps } from "../lib/keymaps.ts";
 import { CHILD_TIER_ENV } from "../lib/openai-fast-tier.ts";
-import { CONTROLLED_ENGINEERING_ENV, workflowFromProfile } from "../lib/orchestrator-mode-policy.ts";
+import { CONTROLLED_ENGINEERING_ENV, workflowFromProfile, type ControlledEngineeringRole } from "../lib/orchestrator-mode-policy.ts";
 import { spawn } from "node:child_process";
 import { Type } from "typebox";
 import { recordReviewMutation } from "../lib/review-reminder-receipt.ts";
@@ -197,6 +197,13 @@ export interface SessionTransportFactory {
 	createListener(registry: SessionTransportRegistry, sessionId: string, onNotification: (notification: ReceivedNotification) => Promise<void>): SessionTransportListener;
 	createClient(registry: SessionTransportRegistry, sessionId: string): SessionTransportClient;
 }
+
+/** Which Controlled Engineering section each child agent gets (controlled-engineering S3). */
+const CONTROLLED_ENGINEERING_AGENT_ROLES: Partial<Record<string, ControlledEngineeringRole>> = {
+	"gentle-ai-worker": "writer",
+	"jd-fix-agent": "writer",
+	"gentle-ai-verify": "verify",
+};
 
 export interface AgentsDeps extends RunnerDeps {
 	home: string;
@@ -2806,7 +2813,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// the launching session's profile enables the option; read live per launch.
 		const sessionProfileName = sessionProfile.kind === "explicit" ? sessionProfile.name : sessionProfile.profile?.name;
 		delete childEnv[CONTROLLED_ENGINEERING_ENV];
-		const controlledRole = agent.name === "gentle-ai-verify" ? "verify" : agent.name === "gentle-ai-worker" || agent.name === "jd-fix-agent" ? "writer" : undefined;
+		const controlledRole = CONTROLLED_ENGINEERING_AGENT_ROLES[agent.name];
 		if (controlledRole !== undefined && sessionProfileName !== undefined
 			&& workflowFromProfile(profileConfigHome, sessionProfileName).controlledEngineering === true) {
 			childEnv[CONTROLLED_ENGINEERING_ENV] = controlledRole;

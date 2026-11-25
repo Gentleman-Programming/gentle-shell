@@ -101,7 +101,7 @@ Non-goals, decided with the user: intensity levels, runtime notices at the first
 
 - [x] T1 (S1-S4, S6) Persist the option, toggle it in the editor, deliver the section by role; tests and docs. Route: one gentle-ai-worker. Commits: dc17c3728 (persistence), 68a91a231 (editor toggle and delivery by role).
 - [x] T2 (S1-S4, S6) Independent verification (Risk item 3: the workflow map and the child launch path are shared with the orchestrator mode and the Fast tier) and native review assess. Route: gentle-ai-verify, then gentle_review assess. Commit: n/a.
-- [ ] T4 (S2, S3) Split the section by role (L12): writer and verifier texts, role-valued mark; tests and docs. Route: one gentle-ai-worker. Commit: pending.
+- [x] T4 (S2, S3) Split the section by role (L12): writer and verifier texts, role-valued mark; tests and docs. Route: one gentle-ai-worker. Commits: 79737fae0 (split; native review approved, lineage review-2943bccc92758619) and the review follow-up commit after it.
 - [ ] T3 (S5) A/B on an OpenAI profile before merge. Route: parent, bench harness. Commit: pending.
 
 ## Log

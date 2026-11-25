@@ -31,6 +31,9 @@ export const ORCHESTRATOR_MODE_ENV = "GENTLE_PI_ORCHESTRATOR_MODE";
  * the child gets; any other value gives none (controlled-engineering S3).
  */
 export const CONTROLLED_ENGINEERING_ENV = "GENTLE_PI_CONTROLLED_ENGINEERING";
+/** The sections a child can be marked for; the launcher writes one, the receiver accepts only these. */
+export const CONTROLLED_ENGINEERING_ROLES = ["writer", "verify"] as const;
+export type ControlledEngineeringRole = (typeof CONTROLLED_ENGINEERING_ROLES)[number];
 
 /** Which layer decided the effective mode. */
 export type OrchestratorModeSource = "environment" | "session_profile" | "default";

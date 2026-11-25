@@ -17,10 +17,10 @@
 //   loads; a file that is not JSON or not an object with an `mcpServers`
 //   object loads nothing.
 //
-// Per-entry validation mirrors Pi's transport decision and simple field types
-// (name pattern, `enabled`, `timeout`, `description`, `type`, `url` scheme,
-// `args`/`env`/`cwd`/`headers` shapes, exposures, namespace clashes, and the
-// global-only `auth`). Pi's OAuth sub-field checks are not repeated.
+// Per-entry validation ports Pi's `validateMcpServerConfig` (pi-mcp's field
+// checks, OAuth included, plus pi's exposure and `auth` checks), the namespace
+// clash rule, and the global-only `auth`. A test compares this reader with
+// Pi's real `loadMcpConfig` so a Pi update that changes the rules fails loudly.
 //
 // Only `name`, `transport`, and `enabled` are ever returned: env values,
 // headers, args, command, url, cwd, OAuth settings, and paths stay here.
@@ -81,6 +81,59 @@ function validExposures(config: Record<string, unknown>): boolean {
 	return isRecord(config.toolExposure) && Object.values(config.toolExposure).every((value) => EXPOSURES.includes(value as string));
 }
 
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
+
+/** pi-mcp `isLoopbackRedirectUri`. */
+function loopbackRedirectUri(value: string): boolean {
+	if (!URL.canParse(value)) return false;
+	const url = new URL(value);
+	return url.protocol === "http:" && LOOPBACK_HOSTS.includes(url.hostname) && url.search === "" && url.hash === "";
+}
+
+/** pi `isClientMetadataDocumentCallback`: the redirect URIs pi's Client ID Metadata Documents list. */
+function metadataDocumentCallback(callbackUrl: unknown): boolean {
+	if (callbackUrl === undefined) return true;
+	const url = new URL(callbackUrl as string);
+	return url.hostname !== "[::1]" && url.pathname === "/callback";
+}
+
+/** pi-mcp `validateOAuth` with pi's metadata-document callback check. */
+function validOAuth(value: unknown): boolean {
+	if (value === undefined) return true;
+	if (!isRecord(value)) return false;
+	if (value.clientId !== undefined && typeof value.clientId !== "string") return false;
+	if (value.clientSecret !== undefined && typeof value.clientSecret !== "string") return false;
+	const port = value.callbackPort;
+	if (port !== undefined && (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)) return false;
+	if (value.callbackUrl !== undefined) {
+		if (typeof value.callbackUrl !== "string" || !loopbackRedirectUri(value.callbackUrl)) return false;
+		const urlPort = new URL(value.callbackUrl).port;
+		if (urlPort && port !== undefined && Number(urlPort) !== port) return false;
+	}
+	if (value.scope !== undefined && typeof value.scope !== "string") return false;
+	if (value.clientName !== undefined && (typeof value.clientName !== "string" || !value.clientName.trim())) return false;
+	const registration = value.clientRegistration;
+	if (registration !== undefined && registration !== "auto" && registration !== "dcr") {
+		if (registration !== "cimd") return false;
+		if (value.clientId !== undefined || value.clientName !== undefined) return false;
+		if (!metadataDocumentCallback(value.callbackUrl)) return false;
+	}
+	const metadataUrl = value.authServerMetadataUrl;
+	if (metadataUrl !== undefined) {
+		const url = typeof metadataUrl === "string" && URL.canParse(metadataUrl) ? new URL(metadataUrl) : undefined;
+		if (!url || !(url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK_HOSTS.includes(url.hostname)))) return false;
+	}
+	return true;
+}
+
+/** pi `checkAuth`: a provider credential goes only to https, or http on a loopback host. */
+function validAuth(auth: unknown, url: string): boolean {
+	if (auth === undefined) return true;
+	if (!isRecord(auth) || typeof auth.provider !== "string" || !auth.provider) return false;
+	const parsed = new URL(url);
+	return parsed.protocol === "https:" || LOOPBACK_HOSTS.includes(parsed.hostname);
+}
+
 /** Pi's transport decision for one entry, or undefined when Pi would reject it. */
 function validEntry(name: string, config: unknown): Entry | undefined {
 	if (!SERVER_NAME.test(name) || !isRecord(config)) return undefined;
@@ -88,18 +141,20 @@ function validEntry(name: string, config: unknown): Entry | undefined {
 	if (enabled !== undefined && typeof enabled !== "boolean") return undefined;
 	if (description !== undefined && typeof description !== "string") return undefined;
 	if (timeout !== undefined && (typeof timeout !== "number" || !(timeout > 0))) return undefined;
-	if (!validExposures(config)) return undefined;
+	if (type === "sse") return undefined;
 	if (typeof url === "string" && (type === undefined || type === "http" || type === "streamable-http")) {
 		if (!httpUrl(url)) return undefined;
 		if (config.headers !== undefined && !isStringRecord(config.headers)) return undefined;
-		if (config.oauth !== undefined && !isRecord(config.oauth)) return undefined;
-		if (config.auth !== undefined && (!isRecord(config.auth) || typeof config.auth.provider !== "string" || config.auth.provider.length === 0)) return undefined;
+		if (!validOAuth(config.oauth)) return undefined;
+		if (!validExposures(config)) return undefined;
+		if (!validAuth(config.auth, url)) return undefined;
 		return { transport: "http", config };
 	}
 	if (typeof command === "string" && (type === undefined || type === "stdio")) {
 		if (config.args !== undefined && !(Array.isArray(config.args) && config.args.every((arg) => typeof arg === "string"))) return undefined;
 		if (config.env !== undefined && !isStringRecord(config.env)) return undefined;
 		if (config.cwd !== undefined && typeof config.cwd !== "string") return undefined;
+		if (!validExposures(config)) return undefined;
 		return { transport: "stdio", config };
 	}
 	return undefined;

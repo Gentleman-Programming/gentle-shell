@@ -504,8 +504,14 @@ function readPiSettingsStore(root: DesktopConfigRoots): StoreRead {
 		const { layers, status } = trustedLayers(read.global, read.project);
 		return { status, ...(status === "ok" && read.view ? { value: read.view } : {}), layers };
 	} catch {
-		// A value Pi's own getters cannot read is a broken store, never a raw error.
-		return { status: "invalid", layers: [layer("global", "invalid"), ...(projectTrusted ? [layer("project", "invalid")] : [])] };
+		// An unexpected failure is a broken store, never a raw error; a layer whose
+		// file is absent still reads `missing`.
+		const fileStatus = (path: string): LayerReadStatus => (fileExists(path) ? "invalid" : "missing");
+		const { layers, status } = trustedLayers(
+			fileStatus(globalPiSettingsPath(root.agentHome)),
+			projectTrusted ? fileStatus(projectPiSettingsPath(root.cwd)) : undefined,
+		);
+		return { status, layers };
 	}
 }
 

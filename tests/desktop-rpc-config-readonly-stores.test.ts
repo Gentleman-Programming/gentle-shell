@@ -181,7 +181,7 @@ test("mcp caps the server list and reports the cut", async (t) => {
 
 // ---- pi_settings ----
 
-test("pi_settings projects only display settings, never sessionDir, paths, or unknown keys", async (t) => {
+test("pi_settings projects only the default model and thinking, enabled models, and extensions", async (t) => {
 	const e = env(t);
 	writeJson(join(e.agentHome, "settings.json"), {
 		defaultProvider: "anthropic",
@@ -207,18 +207,10 @@ test("pi_settings projects only display settings, never sessionDir, paths, or un
 		defaultModel: "claude-sonnet-4",
 		defaultThinkingLevel: "high",
 		enabledModels: ["anthropic/claude-*", "openai/gpt-5"],
-		packages: [
-			{ name: "gentle-pi", kind: "npm" },
-			{ name: "@scope/tool", kind: "npm" },
-			{ name: "tool.js", kind: "local" },
-			{ name: "github.com/acme/pkg", kind: "git" },
-		],
 		extensions: ["tool.js", "my-ext.ts"],
-		theme: "dark",
-		customSessionDir: true,
 		truncated: false,
-	});
-	assertNoLeak(data, e.root, ["apiKey", "npmCommand", "shellPath", "local/"]);
+	}, "packages (get_update_status), theme, and sessionDir are not part of this store");
+	assertNoLeak(data, e.root, ["apiKey", "npmCommand", "shellPath", "local/", "gentle-pi", "@scope/tool", "github.com/acme", "dark", "sessionDir", "packages", "theme"]);
 });
 
 test("pi_settings merges a trusted project file over the global one, as Pi does", async (t) => {
@@ -231,7 +223,6 @@ test("pi_settings merges a trusted project file over the global one, as Pi does"
 	assert.equal(data.value.defaultModel, "claude-opus-4");
 	assert.equal(data.value.defaultThinkingLevel, "low");
 	assert.equal(data.value.enabledModels, null, "no enabledModels setting means no restriction");
-	assert.equal(data.value.customSessionDir, false);
 });
 
 test("pi_settings ignores an untrusted project file", async (t) => {
@@ -260,16 +251,44 @@ test("pi_settings bounds its lists and drops values that look like paths", async
 	writeJson(join(e.agentHome, "settings.json"), {
 		defaultModel: ABSOLUTE_PATH,
 		defaultThinkingLevel: "ultra-secret",
-		theme: ABSOLUTE_PATH,
 		enabledModels: Array.from({ length: 100 }, (_, index) => `provider/model-${index}`),
 	});
 	const data = await e.read("pi_settings");
 	assert.equal(data.value.defaultModel, null);
 	assert.equal(data.value.defaultThinkingLevel, null, "only Pi's thinking levels pass");
-	assert.equal(data.value.theme, null);
 	assert.equal(data.value.enabledModels.length, 64);
 	assert.equal(data.value.truncated, true);
 	assertNoLeak(data, e.root);
+});
+
+test("pi_settings never displays credential-shaped or path-shaped model values, but keeps Pi model ids", async (t) => {
+	const e = env(t);
+	for (const [setting, expected] of [
+		[{ defaultProvider: "user:secret@host", defaultModel: "user:secret@host" }, { defaultProvider: null, defaultModel: null }],
+		[{ defaultProvider: "a/b", defaultModel: "a/b/c" }, { defaultProvider: null, defaultModel: null }],
+		[{ defaultProvider: "openai", defaultModel: "..\\x\\y" }, { defaultProvider: "openai", defaultModel: null }],
+		[{ defaultProvider: "openrouter", defaultModel: "anthropic/claude-3.5-sonnet" }, { defaultProvider: "openrouter", defaultModel: "anthropic/claude-3.5-sonnet" }],
+		[{ defaultProvider: "openai", defaultModel: "gpt-5.1-codex" }, { defaultProvider: "openai", defaultModel: "gpt-5.1-codex" }],
+	] as const) {
+		writeJson(join(e.agentHome, "settings.json"), setting);
+		const data = await e.read("pi_settings");
+		assert.deepEqual({ defaultProvider: data.value.defaultProvider, defaultModel: data.value.defaultModel }, expected, JSON.stringify(setting));
+	}
+	writeJson(join(e.agentHome, "settings.json"), { enabledModels: ["openai/gpt-5", "anthropic/*:high", "claude-sonnet-4", "user:secret@host", "a/b/c", "./rel/path", "x\\y"] });
+	const data = await e.read("pi_settings");
+	assert.deepEqual(data.value.enabledModels, ["openai/gpt-5", "anthropic/*:high", "claude-sonnet-4"]);
+	assertNoLeak(data, e.root, ["secret@host", "a/b/c", "rel/path"]);
+});
+
+test("a settings value Pi cannot read keeps an absent project layer missing", async (t) => {
+	for (const settings of [{ sessionDir: 7 }, { extensions: { a: "x" } }]) {
+		const e = env(t);
+		writeJson(join(e.agentHome, "settings.json"), settings);
+		const data = await e.read("pi_settings");
+		assert.equal(data.layers[1]?.source, "project");
+		assert.deepEqual(data.layers[1], { source: "project", status: "missing" }, JSON.stringify(settings));
+		assertNoLeak(data, e.root);
+	}
 });
 
 // ---- claude_bridge ----

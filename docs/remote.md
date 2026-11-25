@@ -1,0 +1,378 @@
+# Remote use
+
+Gentle Shell can run its agents on one machine — a Linux PC on your home network, a workstation under the desk — and let you drive them from another: a laptop with Gentle Shell GPUI today, a phone later. The machine that runs the agents runs `gentle-shell serve`; every other device is a paired client of it.
+
+This page is the overview: what runs where and why, how a device connects, what happens when things disconnect or restart, how tools that need the client's own device work, how pages and terminals on the server reach you, and the security model. The exact endpoints, fields, limits and error codes are in the references:
+
+- [`gentle-shell serve`](serve.md) — commands, files, every HTTP endpoint, pairing and tokens, limits, troubleshooting.
+- [Desktop RPC](desktop-rpc.md) — the in-session channel, including the [host tool methods and events](desktop-rpc.md#set_host_tools).
+
+## Contents
+
+- [What runs where](#what-runs-where)
+- [Connecting with the short code](#connecting-with-the-short-code)
+- [Session lifecycle](#session-lifecycle)
+- [Host tools across several devices](#host-tools-across-several-devices)
+- [Pages on the server: port forwarding](#pages-on-the-server-port-forwarding)
+- [Terminals](#terminals)
+- [Security model](#security-model)
+- [Reference](#reference)
+- [Known limits and next steps](#known-limits-and-next-steps)
+
+## What runs where
+
+The rule is simple: **the work happens on the server; the client shows it and drives it.** The agent, its tools, the project files, git, shells and dev servers all live on the server machine, because that is where the project and the compute are. The client keeps only what is personal to the device in front of you — its screen, its windows, its own tools — and a cache of what it last saw.
+
+```mermaid
+flowchart LR
+    subgraph Clients["Paired devices"]
+        A["Gentle Shell GPUI on a laptop"]
+        B["Another device (desktop, phone later)"]
+    end
+
+    subgraph Server["Server machine: one agent home"]
+        S["gentle-shell serve<br/>HTTP + SSE API, auth, routing"]
+        P1["Session child<br/>gentle-shell --mode rpc (Pi)"]
+        P2["Session child<br/>gentle-shell --mode rpc (Pi)"]
+        H["gentle-term-host<br/>PTYs, Unix socket, outlives serve"]
+        F["Forward listeners<br/>one port per forward"]
+        L["Pages on loopback<br/>dev server, design canvas, Tower, Engram"]
+        FS[("Project files and git")]
+    end
+
+    A -- "Bearer token: JSON requests, SSE streams" --> S
+    B -- "Bearer token" --> S
+    A -- "Cookie per forward" --> F
+    S -- "stdin / stdout JSON lines" --> P1
+    S -- "stdin / stdout JSON lines" --> P2
+    S -- "JSON lines over term.sock" --> H
+    S -- "files, git, uploads" --> FS
+    P1 -- "agent tools" --> FS
+    F -- "proxy to 127.0.0.1" --> L
+```
+
+| Piece | Runs on | Does | Why there |
+| --- | --- | --- | --- |
+| `gentle-shell serve` | Server | One long-lived process per agent home. Pairs devices, checks every request's token and scope, starts and stops sessions, keeps each session's replay ring, routes host tool calls, serves files, git and uploads, opens forwards, talks to the terminal host. | One owner per home: sessions must survive the client that started them, and every device must see the same state. |
+| Session child | Server | One `gentle-shell --mode rpc` process per session: the same launcher, Pi and extensions as a local launch, with Desktop RPC on. | The agent needs the project, the tools and the provider sign-ins that live on the server. Each session isolated in its own process: a crash or a hang takes down one session, not the server. |
+| `gentle-term-host` | Server | A small native process that owns the PTYs; `serve` is its client over an owner-only Unix socket. | Shells must survive a `serve` restart or upgrade, and a reattaching client needs the screen as it is, which a headless terminal emulator in the host can draw. |
+| Forward listeners | Server (inside `serve`) | One listener per forward, proxying to a page on the server's loopback. | Pages bound to `127.0.0.1` (dev servers, the design canvas, Tower) are unreachable from another machine by design; a forward opens one of them to one device without opening the port to anyone. |
+| Client app | Each device | Shows sessions, files, diffs, branches, terminals and forwarded pages; sends prompts, edits and keystrokes; runs its own [host tools](#host-tools-across-several-devices) (a screenshot of this Mac). Remembers the server, its device token, and the last `seq` / terminal offset it saw. | It is the person's device: the screen, the keyboard, and tools that only make sense on that device. |
+
+What the client does **not** do against a server: run the agent, read or write project files locally, run git locally, or start a shell locally for a server folder. Everything that touches the project goes through the server's API, so two devices never disagree about the state of the project.
+
+## Connecting with the short code
+
+On the server, `gentle-shell serve share` starts (or reuses) a network server and prints an 8-character pairing code, with a long `gsc1.…` connection code under it as the fallback. The person types the short code in the app; the app finds the server by itself and pairs. Details: [Share on your network](serve.md#share-on-your-network), [LAN discovery](serve.md#lan-discovery), [Connection code](serve.md#connection-code).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Person
+    participant Srv as Server machine
+    participant S as gentle-shell serve
+    participant App as Client app
+    U->>Srv: gentle-shell serve share
+    Srv->>S: start on 0.0.0.0:8787 (or reuse), UDP discovery on the same port
+    S-->>U: Code: 7PH3-DM9V (5 minutes, single use) + gsc1.… fallback
+    U->>App: types 7PH3-DM9V
+    App->>App: UDP broadcast {"t":"gentle-shell/discover","v":1}<br/>to 255.255.255.255 and each subnet, ports 8787-8796
+    S-->>App: unicast {"t":"gentle-shell/here","v":1,"id":"srv_…","n":"linux-box","p":8787}
+    Note over App: collect replies for about 1.5 s
+    App->>S: GET http://REPLY_SOURCE_IP:8787/.well-known/gentle-shell
+    S-->>App: { serverId: "srv_…", name, protocol, version }
+    Note over App: keep only replies whose serverId matches,<br/>several servers: the person picks one
+    App->>S: POST /api/pair { code, name }
+    S-->>App: 201 { id: "dev_…", scopes, token: "gss_…" } (shown once)
+    Note over App: stores the server URL and the token,<br/>every later request carries Authorization: Bearer gss_…
+```
+
+- **Identity before secrets.** The pairing code is sent only to an address whose `/.well-known/gentle-shell` names the `serverId` the discovery reply (or the connection code) announced. A device on the network that answers discovery with a forged reply still has to serve the matching identity at that address.
+- **When discovery does not reach** (another subnet, a tailnet, a Wi-Fi with client isolation, UDP blocked), the long `gsc1.…` code carries the `serverId`, the port, up to 8 addresses to try and the pairing code. The app probes every address in parallel and pairs at the first whose identity matches.
+- **Manual pairing.** `gentle-shell serve pair` mints a code for a server on loopback, reached through an SSH tunnel ([Reach it from the Mac](serve.md#4-reach-it-from-the-mac)).
+
+## Session lifecycle
+
+A session belongs to the server, not to the client that started it. Clients come and go; the session keeps running until someone deletes it, the server stops, or its child exits.
+
+Every record a session child prints gets the session's next sequence number (`seq`). The server keeps the newest records in a replay ring (2000 records or 8 MiB). A client follows a session with one SSE stream and remembers the last `seq` it saw; when it comes back it asks for everything after it. Details: [Event stream](serve.md#event-stream-get-apisessionsidevents), [Replay and resume](serve.md#replay-and-resume).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Client app
+    participant S as serve
+    participant P as Session child (Pi)
+    App->>S: POST /api/sessions { cwd }
+    S->>P: spawn gentle-shell --mode rpc in cwd
+    S-->>App: 201 { session: { id: "ses_…", seq: 0 } }
+    App->>S: GET /api/sessions/ses_…/events
+    S-->>App: event: hello { seq, oldest }
+    App->>S: POST /api/sessions/ses_…/rpc { type: "prompt", … }
+    P-->>S: records (stdout)
+    S-->>App: id: 41 / data: { … }  (each record gets the next seq)
+    Note over App,S: Network drops, laptop sleeps, app quits
+    P-->>S: records keep coming, kept in the replay ring
+    App->>S: GET …/events?after=41 (or Last-Event-ID: 41)
+    alt 41 is still in the ring
+        S-->>App: hello, then records 42…N, then live
+    else the ring moved past it, or the cursor is from another server run
+        S-->>App: event: snapshot-required { after, oldest, seq }
+        App->>S: POST …/rpc get_state and get_messages, POST …/desktop get_snapshot
+        S-->>App: current state, then the live stream continues on the same connection
+    end
+    S-->>App: event: dialog (any dialog still waiting for an answer)
+```
+
+| Situation | What happens |
+| --- | --- |
+| **Start** | `POST /api/sessions { cwd }` spawns a child in that folder. `{ cwd, sessionId }` opens the Pi session with that exact id (an existing conversation in that folder, or a new one under that id). The starting device becomes the session's `lastActiveDevice`. |
+| **Client disconnects** | Nothing stops. The child keeps running and its records keep entering the ring. A turn waiting on a dialog keeps waiting (until the dialog's own timeout). |
+| **Resume by `seq`** | The client reconnects with `after=<last seq>`. Inside the ring it gets exactly what it missed, then live records. Dialogs still pending are re-sent as `dialog` events; a host tool call still waiting for this device is re-sent as `host_tool_call`. |
+| **Snapshot required** | The cursor is older than the ring (the client was away for a long run) or newer than the stream (a cursor from an earlier server run). The client rebuilds its view from Pi `get_state` / `get_messages` and Desktop RPC `get_snapshot`, then follows the live stream on the same connection. |
+| **Slow client** | A subscriber with more than 4 MiB unsent is dropped with a `resync` event and reconnects with its last `id`. The session is never slowed down by a client. |
+| **Client restarts** | The app keeps the server URL, the token, the session ids it had open and their last `seq`. On relaunch it lists `GET /api/sessions` and reattaches each one as above; terminals reattach by id and offset (see [Terminals](#terminals)). |
+| **Several clients** | Every subscriber sees the same records. The first answer to a dialog wins; the others get `serve_dialog_resolved` and close it. Each request is authorized on its own, by scope. |
+| **Session ends** | `DELETE /api/sessions/:id`, or the child exits on its own: the stream carries `serve_session_exited` and ends. Up to 16 exited sessions stay listed with their ring until deleted. The session's forwards close with it. |
+| **Server restarts** | `serve stop` (or a reboot) stops every session child in order (SIGTERM, then SIGKILL after 5 s). Paired devices stay paired (`devices.json`). A new server run has new session ids, so old ids answer `404`; a client starts the session again with `{ cwd, sessionId }` (Pi's own session id, from `get_state`) and Pi reopens the same conversation from disk. Terminals are not affected: they live in the terminal host, which outlives `serve`. |
+
+## Host tools across several devices
+
+Some tools only make sense on the device in front of you: a screenshot of this Mac, a photo from the phone, a simulator running on the laptop. A client registers such tools with the session as **host tools**; the agent calls them like any other tool, but they run on the client, with the client's authority, and only the result goes back into the conversation. Nothing is installed on the server for them. Details: [Host tools](serve.md#host-tools) in serve, and [`set_host_tools`](desktop-rpc.md#set_host_tools), [`host_tool_result`](desktop-rpc.md#host_tool_result), [`host_tool_call`](desktop-rpc.md#host_tool_call), [`host_tool_cancel`](desktop-rpc.md#host_tool_cancel), [`set_host_activity`](desktop-rpc.md#set_host_activity) in Desktop RPC.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Mac as Laptop (device A)
+    participant Phone as Phone (device B)
+    participant S as serve
+    participant P as Session child (Pi)
+    Mac->>S: POST …/desktop set_host_tools { tools: [device_screenshot] }
+    S->>P: set_host_tools with provider = dev_A (whatever the body said)
+    Phone->>S: POST …/desktop set_host_tools { tools: [device_screenshot] }
+    S->>P: set_host_tools with provider = dev_B
+    Note over S: providers with an open stream,<br/>most recently active first
+    S->>P: set_host_activity { providers: [dev_B, dev_A] }
+    Mac->>S: POST …/rpc prompt "what is on my screen?"
+    Note over S: dev_A drove the session last
+    S->>P: set_host_activity { providers: [dev_A, dev_B] }
+    P-->>S: host_tool_call { callId, provider: dev_A, tool, args }
+    S-->>Mac: event in the stream (provider is dev_A)
+    S-->>Phone: same event (not its provider: ignored)
+    Mac->>Mac: runs the tool on this device
+    Mac->>S: POST …/desktop host_tool_result { callId, content }
+    Note over S: only dev_A may answer this call (403 otherwise)
+    S->>P: host_tool_result
+    P-->>S: the model reads the result, the turn continues
+```
+
+- **Registration.** `set_host_tools` and `set_host_context` go through `POST /api/sessions/:id/desktop` only, with `sessions:operate`. The server always replaces `provider` with the calling device's id, so no device can register tools (or hidden context) as another one. Through `/rpc` these requests are refused (`400 use_desktop_endpoint`).
+- **Last-active routing.** Several devices may offer the same tool name. The server tells the session, with `set_host_activity`, which providers have an open stream, most recently active first ("active" = sent a prompt, a steer, a dialog answer, a Desktop write, or started the session). The session sends each call to the first of them that offers the tool. Clients cannot send `set_host_activity` themselves.
+- **Offline fallback.** If the chosen device has no open stream when the call appears, the server answers it at once with an error result the model reads — `<tool> runs in <device name>, which isn't connected right now.` — instead of letting the turn hang. If a device's last stream closes while it owes results, the server waits 10 s for it to come back, then answers its calls the same way. Revoking a device answers its calls at once.
+- **Cancel.** When the person aborts the turn, the call ends at once as cancelled; when no result arrives within 10 minutes, it ends with an error result. Either way the session emits `host_tool_cancel { callId }` and the client stops running it; a late `host_tool_result` is answered `already_answered`.
+- **Only the provider answers.** The server remembers which device each call went to until it settles (at most 11 minutes); a `host_tool_result` from any other device is refused with `403 forbidden`.
+
+## Pages on the server: port forwarding
+
+A page the agent started on the server (`127.0.0.1:5173`), the design canvas, Gentle Tower or Engram listen on the server's loopback, which no other machine can reach. A **forward** opens one of them to one paired device. Details: [Port forwarding](serve.md#port-forwarding), [Forward security](serve.md#forward-security), [Server-level forwards and services](serve.md#server-level-forwards-and-services), [Gentle Tower](serve.md#gentle-tower).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Client app (webview or browser)
+    participant S as serve API
+    participant F as Forward listener :8800
+    participant Pg as Page on 127.0.0.1:5173
+    App->>S: POST /api/sessions/:id/forwards { port: 5173, path: "/" } (Bearer)
+    S-->>App: 201 { id, listenPort: 8800, url: "http://host:8800/?gs_ticket=…", expiresAt }
+    App->>F: GET /?gs_ticket=… (ticket: single use, 60 s, this forward and device)
+    F-->>App: 303 Location: / + Set-Cookie: gs_fwd_ID=SECRET, HttpOnly, SameSite=Strict
+    App->>F: GET / (Cookie: gs_fwd_ID)
+    Note over F: checks Host and Origin, strips the ticket and every gs_fwd_* cookie
+    F->>Pg: GET / (Host: 127.0.0.1:5173)
+    Pg-->>F: 200, streamed
+    F-->>App: 200, streamed (Location to loopback rewritten to the forward)
+    App->>F: GET /events (SSE): piped as it arrives, never buffered
+    App->>F: WebSocket upgrade (Cookie): handed to the page, both sockets piped
+```
+
+- **One port per forward,** not a path prefix on the API port: pages use absolute paths (`/assets/app.js`, `/@vite/client`) and their own WebSocket URLs, which keep working unchanged on their own origin. `serve share` uses ports 8800-8899 (`--forward-ports`) so one firewall rule covers them.
+- **A ticket, then a cookie.** Tokens never go in URLs. The link carries a 60-second single-use ticket, exchanged on first use for an `HttpOnly; SameSite=Strict` cookie named after the forward, so forwards on different ports of the same host never share a cookie.
+- **Only loopback targets.** A forward targets `127.0.0.1:<port>` (or `[::1]`) on the server machine, never another host and never the API's or another forward's port.
+- **Scoped and short-lived.** A forward belongs to one device and (for session forwards) to one session. It closes on `DELETE`, when the session stops, when the device is revoked, when the server stops, or after 12 idle hours.
+
+## Terminals
+
+Terminals on the server are real shells in a project folder that keep running when the client disconnects, when another device takes over, and when `serve` itself restarts. Details: [Persistent terminals](serve.md#persistent-terminals), [The host](serve.md#the-host), [Terminal endpoints](serve.md#terminal-endpoints).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Client app
+    participant S as serve
+    participant H as gentle-term-host
+    participant Sh as Shell (PTY)
+    App->>S: POST /api/terminals { cwd, cols, rows }
+    S->>H: connect term.sock (start the host if nothing answers)
+    S->>H: open
+    H->>Sh: fork a PTY, login shell
+    S-->>App: 201 { terminal: { id: "t_…", offset: 0 } }
+    App->>S: GET /api/terminals/t_…/stream
+    S->>H: attach
+    H-->>S: { offset }
+    S-->>App: event: attached, then output { offset, data } with id: offset
+    App->>S: POST …/input { data }, POST …/resize { cols, rows }
+    Note over App: app quits, the shell keeps running in the host
+    Note over S,H: serve may restart too, the host and its shells stay
+    App->>S: GET /api/terminals/t_…/stream?from=LAST_OFFSET
+    S->>H: attach { from }
+    alt from is still in the host's replay buffer
+        H-->>S: { offset: from } then the missed bytes
+    else too far behind
+        H-->>S: { offset, snapshot } drawn by the host's headless emulator
+    end
+    S-->>App: event: attached { offset, snapshot? }, then live output
+```
+
+- **The host owns the PTYs.** `serve` is only a client: it opens one control connection and one connection per stream. A `serve` restart closes connections, never terminals. The host exits by itself after 10 minutes with no terminals and no connections; a reboot or a host crash loses its terminals.
+- **Attach, snapshot, resume.** Each terminal keeps at least the last 1 MiB of output. A client that comes back with an offset still in that buffer gets exactly the missed bytes. Otherwise it gets a snapshot: an ANSI sequence that, written into a fresh emulator of the terminal's size, reproduces the screen — contents, cursor, colours, alternate screen and modes — plus up to 2000 lines of scrollback. Full-screen programs such as `top` or an editor come back exactly as they are.
+- **Ownership.** A terminal belongs to the device that opened it; other devices get `404` for it. An `admin` token sees all of them. Revoking a device closes its terminals.
+- **Several viewers.** Every stream is its own attachment; two windows or two devices (with `admin`) can follow the same terminal.
+- **Where the host comes from.** `$GENTLE_TERM_HOST`, else `<home>/serve/bin/gentle-term-host`, else `gentle-term-host` on `PATH`. Without one the server has no `terminals` capability and the terminal endpoints answer `501 term_host_missing`; an `admin` client can install a build with `PUT /api/term-host` (sha256-checked). The host is a small Rust program (PTYs and a headless emulator); it is not shipped with the npm package yet (see [Known limits](#known-limits-and-next-steps)).
+
+## Security model
+
+### Threat model
+
+| Actor | Can | Cannot |
+| --- | --- | --- |
+| Someone on the same network, not paired | See that a server exists (discovery reply and `/.well-known/gentle-shell`: server id, hostname, port, version). Try pairing codes, rate-limited. On plain HTTP, read and alter traffic they can intercept (see [LAN plain HTTP](#lan-plain-http)). | Call any endpoint other than the identity and pairing. Guess a pairing code: 40 random bits, 5 minutes, single use, 10 failures per minute pause pairing for everyone. |
+| A web page in a browser on any device | Nothing against the API. | Send requests with an `Origin` other than the server's own (refused before auth); ride a token (tokens are never cookies); use DNS rebinding (the `Host` header must name this server). Use a forward's cookie from another origin (`Origin` checked per forward; `SameSite=Strict`). |
+| A paired device | What its scopes allow ([table below](#scopes)), as the server user. | Act as another device: register tools or context under another id, answer another device's host tool calls, see or drive another device's terminals or forwards (without `admin`). |
+| A revoked device | Nothing: its token, tickets, streams, forwards, terminals and pending host tool calls end at once. | — |
+| The model / agent | What its tools and the permission mode allow, as with a local session. Call host tools a client registered (the client decides how to run them and whether to ask). | Reach the client's device except through a registered host tool. |
+| A local user other than the server user | Nothing: `<home>/serve/` is `0700`, its files `0600`, the terminal socket `0600`. | Read `server.json` (the local admin token) or connect to the terminal host. |
+
+### Scopes
+
+Every request is authorized on its own, by the device token's scopes; `/rpc` and `/desktop` are authorized per command or method. `serve share` and `serve pair` grant `sessions:read`, `sessions:operate` and `terminal` by default; `serve pair --scope …` narrows them.
+
+| Scope | Allows exactly | Notably does not allow |
+| --- | --- | --- |
+| `sessions:read` | List sessions and read their state; follow event streams; mint stream tickets; read-only Pi RPC (`get_state`, `get_messages`, `get_available_models`, `get_available_thinking_levels`, `get_session_stats`, `get_fork_messages`, `get_entries`, `get_tree`, `get_last_assistant_text`, `get_commands`); read-only Desktop RPC (`capabilities`, `get_*`, `list_*`); `GET /api/server`, `/api/services`, `/api/tower`, list its own forwards; **read every file the server user can read** (`/api/fs/list`, `stat`, `read`, `search`, `watch`); read-only git commands (`status`, `diff`, `log`, …). | Prompt, steer, answer dialogs, start or stop sessions, write files, change git state, open forwards or terminals. Sees session names, not absolute `cwd`. |
+| `sessions:operate` | Everything a person typing in the session's terminal could do: start and delete sessions in any folder; every other Pi RPC command (prompts, steering, abort, bash, model changes, dialog answers); every other Desktop RPC method, **including `set_permission_mode`** and host tool registration; write, rename and remove files; any git command (except the refused program-running options); uploads; forwards; start and stop Tower. | Open shells (`terminal`), pair or revoke devices, stop the server, install the terminal host (`admin`). Remove or rename the file system root, the home folder or a folder above it. |
+| `terminal` | Open, list, drive, resize and close its own terminals: an interactive shell as the server user. `GET /api/term-host`. | Other devices' terminals; installing the host. |
+| `admin` | Pairing codes, list and revoke devices, stop the server, install the terminal host binary; see and close every device's forwards and terminals. Held by the local admin token (in owner-only `server.json`, used by the `serve` CLI); not granted by default to devices. | — |
+
+### Pairing, tokens and tickets
+
+| Credential | Form | Lifetime | Stored as |
+| --- | --- | --- | --- |
+| Pairing code | `ABCD-EFGH`, 40 random bits, Crockford base32 | 5 minutes, single use (the first attempt that names it consumes it); at most 16 live; 10 failures per minute pause pairing | In memory |
+| Connection code | `gsc1.` + base64url JSON (server id, name, port, addresses, pairing code) | A secret while its pairing code is valid; afterwards only names the server | Not stored |
+| Device token | `gss_` + 32 random bytes | Until revoked (`serve devices --revoke`, `DELETE /api/devices/:id`); at most 64 devices | sha256 only, in `devices.json` (`0600`); compared in constant time |
+| Local admin token | Random, per server run | The server run | `server.json` (`0600`), owner only |
+| Stream ticket | Random | 60 s, single use, one session's events stream, the minting device's scopes | In memory |
+| Forward ticket | Random, in the link | 60 s, single use, one forward and device | In memory |
+| Forward cookie | `gs_fwd_<forwardId>`, random secret, `HttpOnly; SameSite=Strict` | The forward's life (closed, revoked, 12 idle hours, server stop); 32 browser sessions per forward | In memory |
+
+### Host and Origin rules
+
+- **`Host`** must name this server and its port (`421 bad_host`): loopback names for a loopback bind; the bound address otherwise; for `0.0.0.0`/`::`, any IP literal or the machine's own hostname (also `<hostname>.local`). Any other DNS name only when the operator adds it exactly with `--allow-host <name>` (for example a tailnet MagicDNS name). This blocks DNS rebinding.
+- **`Origin`**, when present, must be `http://<Host>` (`403 forbidden_origin`), checked before authentication, pairing included. Native clients and curl send none.
+- **Forwards** apply the same `Host` rule to their own port and accept only their own origin, so one forwarded page cannot drive another forward's page with its cookie.
+- **Headers** on every API answer: `Cache-Control: no-store`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`. No CORS headers.
+
+### LAN plain HTTP
+
+Without `--listen` the server binds `127.0.0.1` only, and remote use goes through `ssh -L`, which encrypts everything. `serve share` (or any non-loopback `--listen`) serves **plain HTTP** on the network: the pairing code, the device token, prompts, file contents and terminal keystrokes cross the network unencrypted. Anyone who can capture that traffic can take the token and act as the device until it is revoked.
+
+**Recommendation:** use `serve share` only on a network you trust — your home network, or a tailnet (which encrypts at its own layer). On shared, office or public networks, keep the default loopback bind and use the SSH tunnel. Revoke a device you no longer use. TLS on the LAN is the first item in [next steps](#known-limits-and-next-steps).
+
+### What the server never does
+
+- **Run client code.** A host tool runs on the device that registered it; the server and the agent only see its arguments and its result. No script, binary or command from a client is executed on the server, except the terminal host binary an `admin` explicitly installs (hash-checked) and the commands a scope already allows (prompts, git, a shell).
+- **Expose paths beyond scope.** A forward reaches only the server's loopback, never another host. Session lists show only the folder name to a `sessions:read` token. A device sees only its own forwards and terminals. Uploads go to an owner-only folder per device. The terminal host never listens on the network.
+- **Exceed the terminal's authority.** `sessions:operate` is exactly what typing in the session's terminal can do — including changing the permission mode, see the [Desktop RPC trust boundary](desktop-rpc.md#trust-boundary). Remote prompts are not interactive consent, provider consent stays terminal-only, and every existing check in the session still applies.
+- **Store a token in clear.** Device tokens are kept as sha256 hashes; long-lived tokens never go in URLs.
+- **Open a browser or listen beyond what was asked.** Sessions run with `GENTLE_DESIGN_OPEN_BROWSER=0`; forwards listen only while open; discovery listens only on a network bind.
+
+Note what `sessions:read` means: **the file endpoints run as the server user with no folder jail**, so a read-only device can read every file that user can read (SSH keys, provider credentials in the agent home). Pair `sessions:read` only with devices you would let read your home folder; pair `sessions:operate` and `terminal` only with devices you would hand your terminal.
+
+## Reference
+
+### Endpoints
+
+| Area | Endpoints | Reference |
+| --- | --- | --- |
+| Identity and pairing | `GET /.well-known/gentle-shell`, `POST /api/pair` | [Endpoints](serve.md#endpoints), [Authentication](serve.md#authentication) |
+| Server and devices | `GET /api/server`, `POST /api/server/stop`, `POST /api/pairing-codes`, `GET /api/devices`, `DELETE /api/devices/:id` | [Endpoints](serve.md#endpoints) |
+| Sessions | `GET`/`POST /api/sessions`, `GET`/`DELETE /api/sessions/:id`, `POST …/rpc`, `POST …/desktop`, `GET …/events`, `POST /api/tickets` | [Pi RPC](serve.md#pi-rpc-post-apisessionsidrpc), [Desktop RPC](serve.md#desktop-rpc-post-apisessionsiddesktop), [Event stream](serve.md#event-stream-get-apisessionsidevents), [Stream tickets](serve.md#stream-tickets) |
+| Forwards and services | `POST`/`GET /api/sessions/:id/forwards`, `DELETE …/forwards/:fid`, `POST`/`GET /api/forwards`, `DELETE /api/forwards/:fid`, `GET /api/services`, `POST`/`GET`/`DELETE /api/tower` | [Port forwarding](serve.md#port-forwarding), [Server-level forwards and services](serve.md#server-level-forwards-and-services), [Gentle Tower](serve.md#gentle-tower) |
+| Files | `GET /api/fs/list`, `stat`, `read`, `search`, `watch`; `PUT /api/fs/write`; `POST /api/fs/mkdir`, `rename`, `remove` | [Files on the server](serve.md#files-on-the-server), [File safety](serve.md#file-safety) |
+| git | `POST /api/git` | [git on the server](serve.md#git-on-the-server), [git scopes and refusals](serve.md#git-scopes-and-refusals) |
+| Uploads | `POST /api/uploads` | [Uploads](serve.md#uploads) |
+| Terminals | `GET`/`POST /api/terminals`, `POST …/input`, `POST …/resize`, `DELETE /api/terminals/:t`, `GET …/stream`, `GET`/`PUT /api/term-host` | [Terminal endpoints](serve.md#terminal-endpoints), [The host](serve.md#the-host) |
+
+### Desktop RPC host tools
+
+| Name | Kind | Sent by | Reference |
+| --- | --- | --- | --- |
+| `set_host_tools` | Method | Client (through `/desktop`; provider forced to the device) | [desktop-rpc.md](desktop-rpc.md#set_host_tools) |
+| `host_tool_result` | Method | The provider device only | [desktop-rpc.md](desktop-rpc.md#host_tool_result) |
+| `host_message` | Method | Client (through `/desktop`) | [desktop-rpc.md](desktop-rpc.md#host_message) |
+| `set_host_context` | Method | Client (through `/desktop`; provider forced to the device) | [desktop-rpc.md](desktop-rpc.md#set_host_context) |
+| `set_host_activity` | Method | `serve` only (`403` from a client) | [desktop-rpc.md](desktop-rpc.md#set_host_activity) |
+| `host_tool_call` | Event | Session → every subscriber; the named `provider` runs it | [desktop-rpc.md](desktop-rpc.md#host_tool_call) |
+| `host_tool_cancel` | Event | Session, on abort or after 10 minutes | [desktop-rpc.md](desktop-rpc.md#host_tool_cancel) |
+
+Their limits: [Host tools limits](desktop-rpc.md#host-tools-limits).
+
+### Limits and timeouts
+
+The most relevant ones; the complete table is [Limits](serve.md#limits).
+
+| What | Value |
+| --- | --- |
+| Running sessions | 16 |
+| Replay ring per session | 2000 records or 8 MiB |
+| Unsent bytes per event subscriber | 4 MiB, then `resync` |
+| `/rpc` and `/desktop` wait | 30 s (then `202 pending` / `504 desktop_timeout`) |
+| Host tool call | Answered at once when its device is offline; 10 s grace after its last stream closes; 10 minutes without a result |
+| Pairing code / stream ticket / forward ticket | 5 minutes / 60 s / 60 s, all single use |
+| Devices | 64 |
+| Forwards | 32 open, 64 connections each, 12 hours idle |
+| File read / write / upload | 8 MiB per read, 64 MiB per write or upload |
+| git command | 120 s (600 s for network commands), 16 at once |
+| Terminal replay | At least 1 MiB per terminal, then snapshot; 8 MiB unsent per stream, then `overflow` |
+| SSE heartbeat | 20 s |
+
+### Error codes
+
+Every error is `{ "error": { "code", "message" } }`. The codes a client meets most:
+
+| Status and code | Meaning | Reference |
+| --- | --- | --- |
+| `401 unauthorized`, `401 invalid_ticket` | No valid token (or revoked); a stream ticket unknown, used or expired | [Authentication](serve.md#authentication) |
+| `403 forbidden` | The token lacks the scope; or a `host_tool_result` for another device's call; or `set_host_activity` from a client | [Authentication](serve.md#authentication), [Host tools](serve.md#host-tools) |
+| `403 forbidden_origin`, `421 bad_host` | `Origin` or `Host` rules | [Security model](serve.md#security-model) |
+| `403 invalid_code`, `429 rate_limited`, `409 too_many_devices` | Pairing | [Endpoints](serve.md#endpoints) |
+| `404 not_found` | Unknown session (also after a server restart), forward, terminal (or another device's) | [Replay and resume](serve.md#replay-and-resume) |
+| `400 use_desktop_endpoint` | A host tool request sent through `/rpc` | [Pi RPC](serve.md#pi-rpc-post-apisessionsidrpc) |
+| `409 dialog_answered`, `404 unknown_dialog` | Another client answered first; no such dialog | [Dialogs](serve.md#dialogs) |
+| `409 session_exited`, `503 session_busy`, `429 too_many_sessions` | Session state and limits | [Backpressure](serve.md#backpressure), [Limits](serve.md#limits) |
+| `504 desktop_timeout`, `502 desktop_refused` | Desktop RPC through `/desktop` | [Desktop RPC](serve.md#desktop-rpc-post-apisessionsiddesktop) |
+| `412 changed`, `409 exists`, `409 not_empty`, `403 protected_path`, `413 too_large` | Files | [Files on the server](serve.md#files-on-the-server) |
+| `400 git_refused`, `429 too_many_git`, `501 git_missing` | git | [git scopes and refusals](serve.md#git-scopes-and-refusals) |
+| `400 invalid_port`, `429 too_many_forwards`, `503 no_forward_port`, `503 tower_unavailable` | Forwards and Tower | [Port forwarding](serve.md#port-forwarding) |
+| `501 term_host_missing`, `502 term_spawn_failed`, `409 terminal_exited`, `502 term_host_gone` | Terminals | [Terminal endpoints](serve.md#terminal-endpoints) |
+| Desktop RPC `unknown_call`, `already_answered`, `too_large`, `host_tools_unavailable` | Inside a `/desktop` answer (`ok: false`) | [desktop-rpc.md](desktop-rpc.md#responses) |
+
+## Known limits and next steps
+
+- **TLS / encrypted LAN.** The network server is plain HTTP. Next: TLS with a certificate pinned at pairing (the connection code can carry its fingerprint), so `serve share` is safe on any network. Until then, the SSH tunnel or a tailnet.
+- **Outside the LAN, and mobile.** Discovery and the connection code reach the same network or a tailnet only. Next: an optional relay for devices outside the network, with push notifications for a phone when a turn ends or a dialog waits.
+- **Terminals on Windows.** The terminal host speaks over a Unix socket and uses Unix PTYs; a Windows build (named pipe, ConPTY) is not there, so terminals do not work on a Windows server. `serve share --always` (start at login) is Linux and macOS only too.
+- **Prebuilt terminal host binaries.** `gentle-term-host` is not shipped with the npm package; today it comes from `$GENTLE_TERM_HOST`, `PATH`, or a client that installs a build with `PUT /api/term-host`. Next: signed prebuilt binaries per platform, published with each release.
+- **Commit messages through the server.** A client writes a commit message with its own local Gentle Shell, so for a server folder it cannot today (the staged diff and the commit itself work). Next: a server endpoint that generates it in a server session.
+- **Narrower scopes.** No folder jail and no separate `fs:read`/`fs:write` scopes yet; see [Not done yet](serve.md#not-done-yet) for the rest (WebSocket transport, native Desktop RPC frames, idle unload and crash resume).

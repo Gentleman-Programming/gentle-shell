@@ -718,7 +718,8 @@ Start with the product-facing destination, then move into the operational refere
 | [ODD workflow](docs/readme-reference.md#organic-driven-development) · [Technical reference](docs/readme-reference.md) | Everyday work and recovery, installation, configuration, commands, and contributor detail. |
 | [Installation wizard (preview)](docs/install-wizard.md) | How the browser installer checks your computer, what it installs on the release and main channels, its security model, and what is still being verified. |
 | [Removing Gentle Shell](docs/gentle-shell-uninstall.md) | What `gentle-shell self-uninstall` removes, keeps and never touches. |
-| [`gentle-shell serve`](docs/serve.md) | Run sessions in a per-user server that outlives its clients: pairing, device tokens, the HTTP + SSE protocol and its security model. |
+| [Remote use](docs/remote.md) | Agents on one machine, driven from others: what runs on the server and on each client, pairing with a short code, sessions, host tools, forwarded pages and terminals, with diagrams and the security model. |
+| [`gentle-shell serve`](docs/serve.md) | The server's reference: commands, files, every endpoint, pairing, device tokens, the HTTP + SSE protocol, limits and troubleshooting. |
 | [Review integration](docs/review-integration.md) | The provider/consumer boundary for native review. |
 | [Native authority architecture](docs/native-authority-architecture.md) | Ownership boundaries and review architecture. |
 | [Delegated verification](docs/delegated-verification.md) | Practical verification guidance. |

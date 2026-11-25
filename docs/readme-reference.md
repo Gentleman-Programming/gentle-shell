@@ -648,9 +648,11 @@ installed. Guide: [Gentle Shell Desktop](gentle-shell-desktop.md).
 ### `serve` subcommand
 
 To connect Gentle Shell GPUI from another computer on the same network, run
-`gentle-shell serve share` on the machine where agents should run and paste the
-one connection code it prints in the app (Configuration → Where agents run →
-Gentle Shell server; valid 5 minutes, once). It opens the server to the network
+`gentle-shell serve share` on the machine where agents should run and type the
+short code it prints (`ABCD-EFGH`) in the app (Configuration → Where agents run →
+Gentle Shell server; valid 5 minutes, once): the app finds the server on the
+network by itself. Where discovery does not reach, paste the long `gsc1.…`
+connection code printed under it instead. It opens the server to the network
 over plain HTTP (port 8787, or the next free one), reusing a running server
 when it can; `--always` also starts it at login (systemd user unit or macOS
 LaunchAgent) and `serve share --off` removes that.
@@ -662,10 +664,11 @@ over HTTP + Server-Sent Events. It binds `127.0.0.1` on a random port unless
 `--listen` says otherwise (`--allow-host <name>` admits one more `Host` name,
 such as a tailnet MagicDNS name), and every request needs a device token: `serve pair`
 prints a one-time code (5 minutes, single use) that a device redeems for a
-revocable token with scopes (`sessions:read`, `sessions:operate`, `admin`).
+revocable token with scopes (`sessions:read`, `sessions:operate`, `terminal`, `admin`).
 `serve status`, `serve stop` and `serve devices [--revoke <id>]` manage it;
 its files live in `<home>/serve/` (owner-only). Home selectors go before
-`serve`, as for `setup`. Protocol, endpoints and security model:
+`serve`, as for `setup`. What runs where, diagrams and the security model:
+[Remote use](remote.md). Protocol and endpoints:
 [`gentle-shell serve`](serve.md).
 
 ### First run in an isolated or custom home

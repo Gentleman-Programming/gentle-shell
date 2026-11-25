@@ -4,6 +4,8 @@
 
 This is Phase 1 of [RFC #3527](https://github.com/Gentleman-Programming/gentle-shell/issues/3527), plus the `/.well-known/gentle-shell` identity, LAN discovery and `serve share` codes, and the pieces a remote client needs around sessions: [files](#files-on-the-server), [git](#git-on-the-server), [uploads](#uploads), [server-level forwards](#server-level-forwards-and-services) and [persistent terminals](#persistent-terminals) over a native terminal host. SSH bootstrap and TLS (Phase 3) and a mobile web client (Phase 4) are not part of it; see [Not done yet](#not-done-yet). To run it from a source checkout on a Linux machine and reach it from another one, see [Try it](#try-it-from-source-on-linux).
 
+This page is the reference: commands, files, every endpoint, limits and troubleshooting. For the overview — what runs on the server and on each client, diagrams of pairing, sessions, host tools, forwards and terminals, and the security model in one place — read [Remote use](remote.md) first.
+
 ## Quick start: connect from Gentle Shell GPUI
 
 On the computer where the agents should run (for example a Linux PC on your home network), run one command:
@@ -153,7 +155,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | `GET /.well-known/gentle-shell` | none | `{ schema: "gentle-shell.serve.identity/v1", serverId, name, protocol, version }`: who answers at this address (`name` is the machine's hostname). No secrets; `Host` and `Origin` rules still apply. A client holding a [connection code](#connection-code) probes it before pairing. |
 | `POST /api/pair` | none (the code) | `{ code, name? }` → `201 { id, name, scopes, createdAt, token }`. `403 invalid_code`, `429 rate_limited`, `409 too_many_devices`. |
 | `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `server-forwards`, `services`, `tower`, `files`, `git`, `uploads`, and `terminals` when a [terminal host](#persistent-terminals) binary is there. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
-| `POST /api/server/stop` | `admin` | `202`; the server stops its sessions and exits. |
+| `POST /api/server/stop` | `admin` | `202 { stopping: true }`; the server stops its sessions and exits. |
 | `POST /api/pairing-codes` | `admin` | `{ scopes? }` → `201 { code, scopes, expiresAt }` |
 | `GET /api/devices` | `admin` | `{ devices: [{ id, name, scopes, createdAt, lastUsedAt? }] }` |
 | `DELETE /api/devices/:id` | `admin` | `{ revoked }`. Immediate: the token stops working, its tickets die, its open streams close. |
@@ -180,7 +182,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | `GET /api/terminals/:t/stream?from=<offset>` | `terminal` | SSE: `attached`, then `output`, `title`, `resized`, `exit`. |
 | `GET /api/term-host` | `terminal` | `{ available, running, path?, version?, pid?, protocol?, platform, arch }` |
 | `PUT /api/term-host` | `admin` | Raw binary, header `x-sha256` → `201 { path, sha256, size, active }` |
-| `POST /api/tower` | `sessions:operate` | → `201 Forward & { url, expiresAt, started }`. Starts [Gentle Tower](#gentle-tower) when it is not running and forwards it. |
+| `POST /api/tower` | `sessions:operate` | → `201 Forward & { url, expiresAt, started }` (`200` when the device already had a forward to Tower). Starts [Gentle Tower](#gentle-tower) when it is not running and forwards it. `501 not_supported` when this server cannot start Tower, `503 tower_unavailable` when it failed to. |
 | `GET /api/tower` | `sessions:read` | `{ running: false }` or `{ running: true, startedAt }`. |
 | `DELETE /api/tower` | `sessions:operate` | `{ stopped }`. Stops Tower and closes its forwards. |
 | `GET /api/fs/list?path=` | `sessions:read` | `{ path, entries: [Entry], truncated }`. See [Files on the server](#files-on-the-server). |
@@ -317,10 +319,10 @@ sequenceDiagram
     participant F as Forward listener (:8801)
     participant P as Page (127.0.0.1:5173)
     App->>S: POST /api/sessions/:id/forwards {port: 5173, path: "/"}<br/>Authorization: Bearer gss_…
-    S-->>App: 201 {id, listenPort: 8801, url: "http://<host>:8801/?gs_ticket=…", expiresAt}
+    S-->>App: 201 {id, listenPort: 8801, url: "http://HOST:8801/?gs_ticket=…", expiresAt}
     App->>F: GET /?gs_ticket=… (webview or browser)
-    F-->>App: 303 Location: / + Set-Cookie: gs_fwd_<id>=<secret>; HttpOnly; SameSite=Strict; Path=/
-    App->>F: GET / (Cookie: gs_fwd_<id>)
+    F-->>App: 303 Location: / + Set-Cookie: gs_fwd_ID=SECRET, HttpOnly, SameSite=Strict, Path=/
+    App->>F: GET / (Cookie: gs_fwd_ID)
     F->>P: GET / (Host: 127.0.0.1:5173, no gs_fwd_* cookie)
     P-->>F: 200 (streamed)
     F-->>App: 200 (streamed)
@@ -441,18 +443,18 @@ sequenceDiagram
     H->>P: fork a PTY: login shell -l, TERM=xterm-256color
     H-->>S: {"ok":true,"term":"t_…","pid":…}
     S-->>App: 201 {terminal}
-    App->>S: GET /api/terminals/t_…/stream?from=<last offset>
+    App->>S: GET /api/terminals/t_…/stream?from=LAST_OFFSET
     S->>H: new connection: {"op":"attach","term":"t_…","from":…}
     H-->>S: {"offset", "snapshot"?}
     S-->>App: event: attached {offset, snapshot?}
     P-->>H: output bytes
     H-->>S: {"ev":"output","offset","data"}
-    S-->>App: id: <offset> / event: output {offset, data}
+    S-->>App: id: OFFSET / event: output {offset, data}
     App->>S: POST /api/terminals/t_…/input {data}
     S->>H: {"op":"write",…}
     H->>P: keystrokes
     Note over App,S: The app disconnects: the shell keeps running in the host
-    Note over S,H: serve restarts: the host and its terminals stay; serve reconnects to term.sock
+    Note over S,H: serve restarts: the host and its terminals stay, serve reconnects to term.sock
 ```
 
 ### The host
@@ -527,7 +529,7 @@ sequenceDiagram
 | Change streams | 32 per device; batches after 150 ms quiet, at most 1 s late, 1000 paths |
 | git command | 120 s (600 s for network commands); 32 MiB stdout, 1 MiB stderr, 8 MiB stdin; 16 at once |
 | Upload | 64 MiB; kept 7 days |
-| Terminals | `cols` 1-1000, `rows` 1-500; replay buffer at least 1 MiB per terminal; 8 MiB unsent per stream, then `overflow`; host start 5 s; host request 10 s |
+| Terminals | `cols` 1-1000, `rows` 1-500; input 4 MiB per request; replay buffer at least 1 MiB per terminal; 8 MiB unsent per stream, then `overflow`; host start 5 s; host request 10 s |
 | Terminal host binary | 64 MiB |
 
 ## Try it from source on Linux
@@ -643,7 +645,7 @@ On the Linux machine, mint a code (`gsdev serve pair`). On the Mac, with `URL` t
 ```sh
 URL=http://127.0.0.1:8787
 curl -sX POST $URL/api/pair -H 'Content-Type: application/json' -d '{"code":"ABCD-EFGH","name":"mac"}'
-# → {"id":"dev_…","name":"mac","scopes":["sessions:read","sessions:operate"],"createdAt":"…","token":"gss_…"}
+# → {"id":"dev_…","name":"mac","scopes":["sessions:read","sessions:operate","terminal"],"createdAt":"…","token":"gss_…"}
 TOKEN=gss_…                                           # shown once: keep it
 curl -s $URL/api/server -H "Authorization: Bearer $TOKEN"
 curl -sX POST $URL/api/sessions -H "Authorization: Bearer $TOKEN" \

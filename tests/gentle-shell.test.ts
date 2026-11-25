@@ -7150,6 +7150,30 @@ test("an open session keeps its frozen profile in the status and Usage scope whe
 	}
 });
 
+// gentle-shell#1064 A4: the display half of S5. A later process resumes the
+// recorded session with no in-memory freeze; the only thing carried over is the
+// startup record (origin global, as openAt leaves it). The header must show the
+// recorded profile, not the live default that changed after the start.
+test("a resumed session shows its startup record's profile in the status header", (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-resumed-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: {}, later: {} }, "team");
+	resetSessionProfileBindingsForTesting();
+	t.after(() => {
+		resetSessionProfileBindingsForTesting();
+	});
+	// What a resume leaves in the later process: the record's binding with its
+	// startup origin, and nothing frozen in memory.
+	bindSessionProfile("shell-resumed", "team", {}, { origin: "global" });
+	const reader = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: home });
+	reader.bind(home, () => ({ root: home, commonDir: home }), "shell-resumed");
+	assert.equal(reader(), "team", "the header shows the recorded profile under its global spelling");
+	// The shared default moves after the session started; the label does not.
+	writeProfilesStore(home, { team: {}, later: {} }, "later");
+	assert.equal(reader.refresh(), false, "the resumed label does not move with the live default");
+	assert.equal(reader(), "team");
+});
+
 test("active profile reader: a bound session shows its frozen profile, and follow shows the live default", (t) => {
 	const root = mkdtempSync(join(tmpdir(), "shell-profile-frozen-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));

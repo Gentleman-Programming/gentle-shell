@@ -88,8 +88,9 @@ test("parallel nested results emit one independent context message and keep thei
 	const f = fixture(t);
 	await f.start();
 	await f.call("p", "codemode");
-	for (let i = 0; i < 4; i++) await f.call(`p/${i}`, "codegraph_query", { parentToolCallId: "p" });
-	const results = await Promise.all(Array.from({ length: 4 }, (_, i) => f.result(`p/${i}`, "codegraph_query", { parentToolCallId: "p" })));
+	const tool = "mcp__codegraph__codegraph_query";
+	for (let i = 0; i < 4; i++) await f.call(`p/${i}`, tool, { parentToolCallId: "p" });
+	const results = await Promise.all(Array.from({ length: 4 }, (_, i) => f.result(`p/${i}`, tool, { parentToolCallId: "p" })));
 	assert.deepEqual(results, [undefined, undefined, undefined, undefined]);
 	assert.equal(f.messages.length, 1);
 	assert.match(f.messages[0].message.content, /Exploration budget:/);

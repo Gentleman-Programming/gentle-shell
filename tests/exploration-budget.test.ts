@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createExplorationBudget } from "../lib/exploration-budget.ts";
 
-const event = (id: string, toolName = "read", text = "x", isError = false, input: Record<string, unknown> = {}, details?: unknown) => ({
-	toolCallId: id, toolName, isError, input, details, content: [{ type: "text" as const, text }],
+const event = (id: string, toolName = "read", text = "x", isError = false, input: Record<string, unknown> = {}) => ({
+	toolCallId: id, toolName, isError, input, content: [{ type: "text" as const, text }],
 });
 
 test("cumulative successful lookups cross at four and notify only once", () => {
@@ -100,29 +100,5 @@ test("nested reads inside review, mutation or verification are not discovery", (
 		budget.call("s", parent, name);
 		budget.call("s", `${parent}/1`, "read", parent);
 		assert.equal(budget.result("s", { ...event(`${parent}/1`, "read", "x".repeat(50000)), parentToolCallId: parent }), undefined);
-	}
-});
-
-test("codegraph query and explore count but init and failed fallbacks do not", () => {
-	const budget = createExplorationBudget();
-	budget.start("s");
-	for (const [id, input, details] of [
-		["init", { operation: "init" }, undefined],
-		["failed", { operation: "query" }, { status: "failed" }],
-		["unavailable", { operation: "explore" }, { status: "unavailable" }],
-	] as const) {
-		budget.call("s", id);
-		assert.equal(budget.result("s", event(id, "codegraph", "x".repeat(50000), false, input, details)), undefined);
-	}
-	const calls = [
-		event("1", "codegraph", "x", false, { operation: "query" }),
-		event("2", "codegraph", "x", false, { operation: "explore" }),
-		event("3", "codegraph_query"), event("4", "codegraph_explore"),
-	];
-	for (const [i, item] of calls.entries()) {
-		budget.call("s", item.toolCallId);
-		const result = budget.result("s", item);
-		if (i === 3) assert.match(result ?? "", /Exploration budget:/);
-		else assert.equal(result, undefined);
 	}
 });

@@ -15,7 +15,6 @@ const TOOL_PHASES: Readonly<Record<string, OddPhase>> = {
 	grep: "exploring",
 	find: "exploring",
 	ls: "exploring",
-	codegraph: "exploring",
 	ask_user_choice: "deciding",
 	ask_user_question: "deciding",
 	todo: "planning",
@@ -89,6 +88,7 @@ const LEADING_KEYWORDS = /^(do|then|else|elif|if|while|until|time|!|\{|\()\s+/;
  * carries no reliable phase signal and the label must stay as it is.
  */
 export function inferOddPhase(toolName: string, args: unknown): OddPhase | undefined {
+	if (toolName === "mcp__codegraph__codegraph_query" || toolName === "mcp__codegraph__codegraph_explore") return "exploring";
 	const name = normalizeToolName(toolName);
 	if (name === "subagent_run") {
 		const agent = stringArg(args, "agent");

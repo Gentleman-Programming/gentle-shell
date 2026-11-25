@@ -10,7 +10,6 @@ tools:
   - bash
   - codemode
   - mem_save
-  - mcp__codegraph__codegraph_explore
 ---
 
 You are the package-owned implementation writer for Gentle AI.
@@ -78,7 +77,7 @@ Stop correcting and return `status: partial` only if the same cause fails again 
 
 Test scratch lives outside the worktree: tests and commands keep temporary state in a fresh system temp directory (`mktemp -d`, `mkdtemp`) and never point `TMPDIR` or a cache directory into the repository. When state must live inside the worktree, use an excluded path that the test removes before it ends. Tests delete the temp directories they create in teardown; name any scratch directory you created outside the worktree in `risks` so the parent removes it. Never leave tool caches or scratch paths in the change.
 
-Before returning, `git status --short` shows no tool cache or scratch path (for example `.codegraph/` or a test temp directory); name any that remains in `risks` instead of deleting it.
+Before returning, `git status --short` shows no tool cache or scratch path (for example a test temp directory); name any that remains in `risks` instead of deleting it.
 
 ## Verification
 

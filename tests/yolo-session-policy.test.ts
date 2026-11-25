@@ -66,6 +66,8 @@ test("active-only structured directive qualifies defaults and is removed from re
 	// standing-permitted: no permission questions for those reads.
 	assert.match(YOLO_DIRECTIVE, /non-sensitive.*outside the workspace/is);
 	assert.match(YOLO_DIRECTIVE, /skills/);
+	// A program may load a secret file the agent never reads (odd/tasks/sensitive-path-program-arguments.md S4).
+	assert.ok(YOLO_DIRECTIVE.includes("Running a project command that makes another program load sensitive files is allowed; opening, printing, copying or transmitting their contents is not."));
 	updateYoloPrompt(options, false);
 	assert.equal(options.appendSystemPrompt, "existing harness");
 });

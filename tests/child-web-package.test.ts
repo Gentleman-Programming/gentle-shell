@@ -19,7 +19,7 @@ function fixture() {
 	const request: TaskRequest = {
 		agent: {
 			name: "gentle-ai-explore", description: "Public fixture", filePath: join(root, "explorer.md"), scope: "global",
-			tools: ["read", "grep", "find", "codegraph", ...webTools], instructions: "Explore without modifying source.",
+			tools: ["read", "grep", "find", ...webTools], instructions: "Explore without modifying source.",
 			model: undefined, thinking: undefined, mode: undefined,
 		},
 		prompt: "Explore the public fixture", label: undefined, context: undefined, mode: "task",

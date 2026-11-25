@@ -83,7 +83,7 @@ test("S3-S5 parsed worker and verifier contracts retain confinement and proof li
   assert.match(worker.instructions, /After a repeated-cause stop, do not start a fresh correction cycle or treat a new session as a reset/);
   assert.match(worker.instructions, /missing proof still blocks completion and delivery/);
   const verify = agent("verify");
-  assert.deepEqual(verify.tools, ["read", "grep", "find", "bash", "codemode", "mcp__codegraph__codegraph_explore"]);
+  assert.deepEqual(verify.tools, ["read", "grep", "find", "bash", "codemode"]);
   assert.match(verify.instructions, /Before isolated setup[^\n]*space and inodes/);
   assert.match(verify.instructions, /smaller copy[^\n]*all source, test\/build files, baseline material, and dependencies/);
   assert.match(verify.instructions, /deterministic error in a command or environment you constructed[^\n]*exactly one corrected attempt/);

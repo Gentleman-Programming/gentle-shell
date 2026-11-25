@@ -2179,11 +2179,11 @@ function missingToolsChild(env: NodeJS.ProcessEnv, toolNames: string[] | (() => 
 }
 
 test("a child warns once about requested tools it does not have", async () => {
-	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,gentle_review_scope,grep,codegraph,subagent_parent_message" }, ["read", "grep", "subagent_parent_message"]);
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,gentle_review_scope,grep,subagent_parent_message" }, ["read", "grep", "subagent_parent_message"]);
 	await child.start();
 	assert.deepEqual(child.notes, [], "session_start runs before later extensions register their tools");
 	assert.deepEqual(await child.prompt(), [undefined], "the check never alters the prompt");
-	assert.deepEqual(child.notes, [{ message: `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope, codegraph`, type: "warning" }]);
+	assert.deepEqual(child.notes, [{ message: `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope`, type: "warning" }]);
 	await child.start();
 	assert.deepEqual(await child.prompt(), [undefined]);
 	assert.equal(child.notes.length, 1, "later prompts and session replacements do not repeat the warning");
@@ -2218,7 +2218,7 @@ test("a child stays quiet when every checkable requested tool exists or nothing 
 });
 
 test("the missing-tools check never throws into before_agent_start", async () => {
-	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,codegraph" }, () => { throw new Error("tool registry unavailable"); });
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read" }, () => { throw new Error("tool registry unavailable"); });
 	await child.start();
 	assert.deepEqual(await child.prompt(), [undefined]);
 	assert.deepEqual(child.notes, []);
@@ -3866,8 +3866,99 @@ test("a queued launch keeps the session routing frozen across a rebind", async t
 	}
 });
 
-// gentle-shell#1064 slice 3b-ii: a parent session without an explicit Enter
-// binding freezes p → P → G at session_start; later default changes only show
+	// gentle-shell#1064 A4: two concurrent parent sessions in the same clone select
+	// different profiles; neither launch observes the other's binding, and the
+	// shared routing files are byte-identical afterwards.
+	test("two concurrent parent sessions keep separate bindings without shared writes", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("two-parents");
+	base.writeStore({
+		first: { explore: { model: "openai/alpha", thinking: "minimal" } },
+		second: { explore: { model: "openai/beta" } },
+	});
+	base.writePin("first");
+	const sharedFiles = [join(base.configHome, "profiles.json"), base.localPinPath];
+	const before = sharedFiles.map((path) => readFileSync(path, "utf8"));
+	const model = (args: string[]) => args[args.indexOf("--model") + 1];
+	const launchAs = async (sessionId: string, profile: string, routing: Record<string, unknown>, label: string) => {
+		const harness = deps();
+		harness.deps.resolveWorktree = () => ({ root: base.root, commonDir: base.commonDir });
+		harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome };
+		const { pi, tools, fire } = fakePi();
+		gentleAgents(pi, {}, harness.deps);
+		const { ctx } = fakeContext();
+		ctx.sessionManager.getSessionId = () => sessionId;
+		bindSessionProfile(sessionId, profile, routing as never);
+		await fire("session_start", ctx);
+		try {
+			await tools.get("subagent_run")!.execute(`two-parents-${label}`, { agent: "explore", task: `Map ${label}`, mode: "background" }, undefined, undefined, ctx);
+			await tick();
+			return { model: model(harness.spawned[0]), shutdown: async () => { await fire("session_shutdown", ctx); await tick(); } };
+		} catch (error) {
+			await fire("session_shutdown", ctx);
+			await tick();
+			throw error;
+		}
+	};
+	const parentA = await launchAs("s1", "first", { explore: { model: "openai/alpha", thinking: "minimal" } }, "a");
+	const parentB = await launchAs("s2", "second", { explore: { model: "openai/beta" } }, "b");
+	try {
+		assert.equal(parentA.model, "openai/alpha:minimal", "parent A's child launches on its own binding");
+		assert.equal(parentB.model, "openai/beta:high", "parent B's child launches on its own binding, not A's");
+		assert.deepEqual(sharedFiles.map((path) => readFileSync(path, "utf8")), before, "no session wrote to the shared profiles store or pin layers");
+	} finally {
+		await parentA.shutdown();
+		await parentB.shutdown();
+	}
+	});
+
+	// gentle-shell#1064 A4: the running half of child stability. The queued half is
+	// pinned above; here the child is already spawned and running when the parent
+	// rebinds, and its frozen routing must survive both the rebind and its own
+	// settlement.
+	test("a running child keeps the routing resolved at its launch across a mid-flight rebind", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("running-freeze");
+	base.writeStore({
+		first: { explore: { model: "openai/alpha", thinking: "minimal" } },
+		second: { explore: { model: "openai/beta" } },
+	});
+	bindSessionProfile("s1", "first", { explore: { model: "openai/alpha", thinking: "minimal" } });
+	const harness = deps();
+	harness.deps.resolveWorktree = () => ({ root: base.root, commonDir: base.commonDir });
+	harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome };
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	try {
+		const model = (args: string[]) => args[args.indexOf("--model") + 1];
+		await tools.get("subagent_run")!.execute("running-1", { agent: "explore", task: "Map first", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		// The child is spawned and still running here; only after confirming it is
+		// live does the parent rebind.
+		assert.equal(harness.spawned.length, 1, "the first child is already spawned before the rebind");
+		const runningModel = model(harness.spawned[0]);
+		bindSessionProfile("s1", "second", { explore: { model: "openai/beta" } });
+		assert.equal(model(harness.spawned[0]), runningModel, "the running child's spawn routing is untouched by the rebind");
+		// The running child settles normally under the new binding.
+		const child = harness.children[0]!;
+		child.emit({ type: "agent_end", messages: [] });
+		child.emit({ type: "agent_settled" });
+		child.exit(0);
+		await tick();
+		await tools.get("subagent_run")!.execute("running-2", { agent: "explore", task: "Map second", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runningModel, "openai/alpha:minimal", "the child ran on the routing frozen at its launch");
+		assert.equal(model(harness.spawned[1]), "openai/beta:high", "only a child launched after the rebind resolves the new binding");
+	} finally {
+		await fire("session_shutdown", ctx);
+		await tick();
+	}
+	});
+
+	// gentle-shell#1064 slice 3b-ii: a parent session without an explicit Enter
+	// binding freezes p → P → G at session_start; later default changes only show
 // a drift notice once per change. GENTLE_PI_PROFILE_FOLLOW=1 keeps the live
 // resolution.
 async function launchSession(base: ReturnType<typeof pinFixture>, env: Record<string, string> = {}) {
@@ -4192,7 +4283,7 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 	const fixture = mkdtempSync(join(tmpdir(), "capability-catalog-"));
 	const agentHome = join(fixture, "agent-home");
 	mkdirSync(join(agentHome, ".pi", "agent", "agents"), { recursive: true });
-	writeFileSync(join(agentHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep, find, codegraph]\n---\nYou map things.");
+	writeFileSync(join(agentHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep, find]\n---\nYou map things.");
 	writeFileSync(join(agentHome, ".pi", "agent", "agents", "open.md"), "---\ndescription: no allowlist\n---\nYou are open.");
 	writeFileSync(join(agentHome, ".pi", "agent", "agents", "unknown.md"), "---\ndescription: unverified name\ntools: [glob]\n---\nYou explore.");
 	writeFileSync(join(agentHome, ".pi", "agent", "agents", "lens.md"), "---\ndescription: review lane\ntools:\n  - \"*\": false\n  - read\n  - grep\n  - gentle_review_scope\n---\nYou review.");
@@ -4204,7 +4295,7 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 		const { ctx } = fakeContext();
 		await h.fire("session_start", ctx);
 		const listed = await h.tools.get("subagent_list_agents")!.execute("c0", {}, undefined, undefined, ctx);
-		assert.match(listed.content[0].text, /- explore \(global\): maps things \[declared tools \(not verified\): read, grep, find, codegraph\]/);
+		assert.match(listed.content[0].text, /- explore \(global\): maps things \[declared tools \(not verified\): read, grep, find\]/);
 		// gentle-shell#1269: a definition without an allowlist keeps Pi's default
 		// tool set, so the catalog must never render it as having no tools at all.
 		assert.match(listed.content[0].text, /- open \(global\): no allowlist \[declared tools: Pi defaults \(no allowlist\)\]/);

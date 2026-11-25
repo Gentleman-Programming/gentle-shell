@@ -61,7 +61,7 @@ const V014_MANAGED_ASSETS = join(
 // gentle-ai-explore.md as their exemplar (packaged, absent from the v0.13
 // manifest) after review-refuter.md was retired together with every
 // Pi-authored adversarial review verdict.
-const MANAGED_EXEMPLAR_TOOLS = ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "codemode", "mcp__codegraph__codegraph_explore"];
+const MANAGED_EXEMPLAR_TOOLS = ["read", "grep", "find", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "codemode"];
 const RETIRED_ADVERSARIAL_AGENTS = ["review-refuter.md", "review-validator.md"];
 
 interface ManagedAssetsManifest {
@@ -1585,7 +1585,6 @@ test("gentle-ai-worker packages the exact scoped writer contract", () => {
 		"bash",
 		"codemode",
 		"mem_save",
-		"mcp__codegraph__codegraph_explore",
 	]);
 	assert.ok(
 		tools.every((tool) => !tool.startsWith("subagent_")),
@@ -1706,7 +1705,6 @@ test("package installation gives gentle-ai-worker a loader-compatible scoped ide
 			"bash",
 			"codemode",
 			"mem_save",
-			"mcp__codegraph__codegraph_explore",
 		]);
 		assert.doesNotMatch(
 			readAgentFrontmatter(installedAgentPath),
@@ -1830,8 +1828,8 @@ test("global model routing uses PI_CODING_AGENT_DIR for package-installed agents
 test("normal and forced installation copy generic agents with complete role contracts", () => {
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
 	const expectedTools = {
-		"gentle-ai-explore": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "codemode", "mcp__codegraph__codegraph_explore"],
-		"gentle-ai-verify": ["read", "grep", "find", "bash", "codemode", "mcp__codegraph__codegraph_explore"],
+		"gentle-ai-explore": ["read", "grep", "find", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "codemode"],
+		"gentle-ai-verify": ["read", "grep", "find", "bash", "codemode"],
 	} as const;
 
 	try {
@@ -1851,12 +1849,7 @@ test("normal and forced installation copy generic agents with complete role cont
 					assert.match(source, /generic ODD work/);
 					assert.match(source, /Do not (?:fix findings, delegate to child agents|delegate to child agents, commit)/);
 					if (name === "gentle-ai-explore") {
-						assert.match(source, /cwd-scoped `codegraph` tool/);
-						assert.match(source, /never ask it to target another path/);
-						assert.match(source, /sole permitted mutation/);
-						assert.match(source, /all tracked files, source files, and other project content remain read-only/);
-						assert.match(source, /CodeGraph reports that it is unavailable or fails/);
-						assert.match(source, /Do not use that fallback before CodeGraph is unavailable or fails/);
+						assert.match(source, /Read and search only\. Do not edit, write, run commands, or mutate project state\./);
 					}
 					assert.match(source, /Do not (?:edit, write|edit, write, or fix findings)/);
 					// Cost/speed S4: reports are compact and never restate the task.

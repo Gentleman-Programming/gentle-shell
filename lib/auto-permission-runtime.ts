@@ -2,6 +2,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext, InputEvent, ToolCallEvent, ToolCallEventResult, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { gentlePiConfigHome } from "./agent-home.ts";
+import { canonicalizeTarget } from "./path-consent-fence.ts";
 import { AutoPermissionMemory } from "./auto-permission-memory.ts";
 import { projectToolContext } from "./auto-permission-tool-context.ts";
 import { subscribeHumanAnswers, type HumanAnswerReceipt } from "./auto-permission-answers.ts";
@@ -372,7 +373,7 @@ export class AutoPermissionRuntime {
   const projectHome=resolve(ctx.cwd,".pi","gentle-ai");
   if ((event.toolName==="write" || event.toolName==="edit") && typeof args.path==="string") {
    try {
-    const target=canonical(resolve(ctx.cwd,args.path)),home=canonical(this.configHome);
+    const target=canonicalizeTarget(args.path,ctx.cwd,event.toolName),home=canonical(this.configHome);
     // Keep policy aliases and containing directories protected, including project restrictions.
     if([resolve(this.configHome,"permission-mode.json"),resolve(this.configHome,"runtime-guardrails.json"),
      resolve(projectHome,"runtime-guardrails.json")].some(path=>within(canonical(path),target)))return true;

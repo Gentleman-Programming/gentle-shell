@@ -10,8 +10,8 @@ import { localProfilePinPath, repoProfileDeclarationPath, writeProfilePinSync } 
 import { createProfile, emptyProfilesFile, profilesFilePath, writeProfilesFileSync } from "../lib/agent-profiles.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import { GENTLE_AI_DEV_BINARY_ENV, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
-import { NativeReviewIntegrationError, type NativeReviewCli, type NativeReviewUnachievableLensCaptureArtifact, type NativeReviewUnachievableLensCaptureRequest } from "../lib/native-review-cli.ts";
-import { REVIEW_HOST_RELAY_FAILURE, REVIEW_HOST_RELAY_PI_TIMEOUT_ENV, REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS, REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE, REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE, ReviewHostRelayError, type ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
+import { NativeReviewCliV216, NativeReviewIntegrationError, type ExecFileAdapter, type NativeReviewCli } from "../lib/native-review-cli.ts";
+import { REVIEW_HOST_RELAY_FAILURE, REVIEW_HOST_RELAY_PI_TIMEOUT_ENV, REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS, REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE, REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE, ReviewHostRelayError, reviewHostRelayPiTimeoutMessage, type ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
 import { decodeReviewFailureV2, decodeReviewNextTransitionV3, decodeReviewStatusV3, type ReviewArtifactSubjectV2, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { InProcessReviewerRegistry } from "../lib/inprocess-reviewer.ts";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -202,18 +202,13 @@ function hostMediatedRefuterCollectInput(lineageId: string, revision = SHA): Rev
 interface RoutingHarness {
 	statusQueue: ReviewStatusV3[];
 	statusCalls: Array<{ cwd: string; lineageId?: string; agent?: "pi" }>;
-	unachievableCalls: NativeReviewUnachievableLensCaptureRequest[];
 	native: NativeReviewCli;
 }
 
-type UnachievableResponder = (request: NativeReviewUnachievableLensCaptureRequest) => Promise<NativeReviewUnachievableLensCaptureArtifact>;
-
-// The declaration verb stays OPT-IN: an absent captureUnachievableLens is the invocation-adjacent capability gate, so every pre-existing failure test keeps its exact envelope through the unchanged fall-back.
-function nativeHarness(statuses: readonly ReviewStatusV3[], unachievableResponder?: UnachievableResponder): RoutingHarness {
+function nativeHarness(statuses: readonly ReviewStatusV3[]): RoutingHarness {
 	const harness: RoutingHarness = {
 		statusQueue: [...statuses],
 		statusCalls: [],
-		unachievableCalls: [],
 		native: undefined as unknown as NativeReviewCli,
 	};
 	harness.native = {
@@ -225,7 +220,6 @@ function nativeHarness(statuses: readonly ReviewStatusV3[], unachievableResponde
 			if (next === undefined) throw new Error("status queue exhausted");
 			return next;
 		},
-		...(unachievableResponder === undefined ? {} : { captureUnachievableLens: async (request: NativeReviewUnachievableLensCaptureRequest) => { harness.unachievableCalls.push(request); return await unachievableResponder(request); } }),
 	};
 	return harness;
 }
@@ -755,27 +749,59 @@ test("a submission whose outcome is genuinely indeterminate still reconciles thr
 	assert.equal(harness.statusCalls.at(-1)?.agent, "pi", "ordinary host-relay reconciliation preserves the Pi host runtime");
 });
 
-test("a relay timeout reports its one-slot measurements and no auto-follow", async (t) => {
+test("a near-deadline relay timeout leaves the exact public reviewer binding reofferable", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 	const cwd = repository(t);
-	const lineageId = "relay-lineage";
-	const harness = nativeHarness([finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-risk", 0)])]);
+	const collect = statusV9(JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8")));
+	collect.action = "collect";
+	const lineageId: string = collect.authority.lineage_id;
+	const { lens, selected_order, target_identity } = collect.next_transition.collect.inputs[0].artifact_subject;
+	const binary = join(cwd, ".git", "gentle-ai-fixture");
+	writeFileSync(binary, "fake native provider (argv captured by the ExecFileAdapter)");
+	const argv: (readonly string[])[] = [];
+	let declared = false, runs = 0;
+	const adapter: ExecFileAdapter = async ({ arguments: args }) => {
+		argv.push(args);
+		const reply = (body: unknown) => ({ stdout: JSON.stringify(body), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false });
+		if (args[1] === "mode") return reply({ schema: "gentle-ai.review-mode/v1", operation: "status", scope: "both", status: { schema: "gentle-ai.rdd-mode-status/v1", global: "on", clone_local: "", effective: "on", source: "global", revision: SHA } });
+		if (args[1] === "capture-unachievable") {
+			declared = true;
+			return reply({ schema: "gentle-ai.review-capture-unachievable/v1", lineage_id: lineageId, target_identity, lens, selected_order, reason: "relay_transport_bound_exceeded", recorded: true });
+		}
+		assert.deepEqual(args.slice(0, 2), ["review", "status"]);
+		return reply(declared ? { ...collect, action: "stop", next_transition: undefined } : collect);
+	};
+	const timeoutMs = 952_857, elapsedMs = 952_873, promptBytes = 61_582;
 	__testing.setReviewHostRelayRunnerForTesting(async () => {
-		throw new ReviewHostRelayError(
-			REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT,
-			"pi",
-			"pi reviewer subprocess exceeded the relay bound",
-			{ exitCode: null, timedOut: true, elapsedMs: 2_256_004, timeoutMs: 2_256_000 },
-		);
+		runs += 1;
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", reviewHostRelayPiTimeoutMessage(elapsedMs, timeoutMs, promptBytes), { timedOut: true, elapsedMs, timeoutMs });
 	});
-
-	const result = await runCapture(cwd, harness, lineageId);
+	const tools = new Map<string, { execute: (id: string, params: unknown, signal: undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<{ details: Record<string, unknown> }> }>();
+	createGentleAiExtension({ nativeReviewCli: new NativeReviewCliV216(adapter, binary), candidateViews: null, processEnv: { GENTLE_AI_TELEMETRY: "0" } })({ on() {}, registerTool(definition: { name: string }) { tools.set(definition.name, definition as never); }, registerCommand() {} } as unknown as ExtensionAPI);
+	const ctx = { cwd, hasUI: false, sessionManager: profileSession(t, SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileClear()) } as unknown as ExtensionContext;
+	const call = async (name: string, params: Record<string, unknown>) => (await tools.get(name)!.execute(name, params, undefined, undefined, ctx)).details;
+	const status = () => call("gentle_review", { operation: "status", lineageId });
+	const before = await status();
+	const collectBinding = (before.collectBindings as { collectBinding: string }[] | undefined)?.[0]?.collectBinding;
+	assert.ok(collectBinding, JSON.stringify(before));
+	const forecast = await call("gentle_review_capture", { lineageId, collectBinding });
+	assert.deepEqual(forecast.cost_forecast, { transport: "pi_host_relay", model_runs: 1, lenses: [lens] });
+	assert.equal(runs, 0, "the forecast does not launch a reviewer");
+	const from = argv.length;
+	const result = await call("gentle_review_capture", { lineageId, collectBinding, reviewerRunAcknowledged: true });
+	const captureArgv = argv.slice(from).filter((args) => args[1] !== "mode");
+	const after = await status();
+	assert.deepEqual({ outcome: result.outcome, commands: captureArgv.map((args) => args[1]), reoffered: (after.collectBindings as { collectBinding: string }[] | undefined)?.[0]?.collectBinding === collectBinding }, {
+		outcome: "pi-host-relay-timeout", commands: ["status"], reoffered: true,
+	});
 	assert.equal(result.status, "blocked");
-	assert.equal(result.outcome, "pi-host-relay-timeout");
-	assert.deepEqual(result.failure, { kind: "pi-timed-out", stage: "pi", exit_code: null, timed_out: true, elapsed_ms: 2_256_004, timeout_ms: 2_256_000 });
-	assert.match(String(result.next_action), new RegExp(`${REVIEW_HOST_RELAY_PI_TIMEOUT_ENV}=<milliseconds>`));
-	assert.match(String(result.next_action), new RegExp(String(REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS)));
-	assert.equal(harness.statusCalls.length, 1);
+	assert.deepEqual(result.failure, { kind: "pi-timed-out", stage: "pi", exit_code: null, timed_out: true, elapsed_ms: elapsedMs, timeout_ms: timeoutMs });
+	assert.equal(result.reason, `the reviewer completion exceeded the relay bound: aborted after ${elapsedMs}ms against a ${timeoutMs}ms limit for a ${promptBytes}-byte materialized prompt. Raise ${REVIEW_HOST_RELAY_PI_TIMEOUT_ENV} above the reviewer's real wall time (ceiling ${REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS}ms) or reduce the candidate scope so the materialized prompt is smaller.`);
+	assert.equal(result.next_action, "Call fresh STATUS and submit only an exact reoffered one-slot binding; never replay this capture from transcript inference.");
+	assert.equal(result.mutation_performed, false);
+	assert.equal(result.mutation_outcome, "none");
+	assert.equal(declared, false);
+	assert.equal(runs, 1, "there is no automatic retry");
 });
 
 // gentle-pi#638: the typed stop a provider renders after a host declared a
@@ -816,45 +842,6 @@ function unachievableStopStatus(lineageId: string, lens: ReviewArtifactSubjectV2
 	} as unknown as ReviewStatusV3;
 }
 
-function unachievableArtifact(lineageId: string, lens: ReviewArtifactSubjectV2["lens"], order: number, reason = "relay_transport_bound_exceeded"): NativeReviewUnachievableLensCaptureArtifact {
-	return { schema: "gentle-ai.review-capture-unachievable/v1", lineageId, targetIdentity: SHA, lens, selectedOrder: order, reason, recorded: true };
-}
-
-// gentle-pi#638: a deterministic pi timeout is declared unachievable through
-// the native verb, and one bound STATUS re-query renders the typed stop with
-// its withdraw binding instead of reoffering the same slot.
-test("a deterministic pi timeout declares the slot unachievable and renders the typed stop", async (t) => {
-	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	const cwd = repository(t);
-	const lineageId = "relay-lineage";
-	const input = relayCollectInput(lineageId, "review-risk", 0);
-	const stop = unachievableStopStatus(lineageId, "review-risk", 0);
-	const harness = nativeHarness([finalizeStatus(lineageId, [input]), stop], () => Promise.resolve(unachievableArtifact(lineageId, "review-risk", 0)));
-	__testing.setReviewHostRelayRunnerForTesting(async () => {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "pi reviewer subprocess exceeded the relay bound", { exitCode: null, timedOut: true, elapsedMs: 2_256_004, timeoutMs: 2_256_000 });
-	});
-
-	const result = await runCapture(cwd, harness, lineageId);
-
-	assert.equal(result.status, "blocked");
-	assert.equal(result.outcome, "unachievable-lens-slot-declared");
-	assert.deepEqual(result.failure, { kind: "pi-timed-out", stage: "pi", exit_code: null, timed_out: true, elapsed_ms: 2_256_004, timeout_ms: 2_256_000 });
-	assert.deepEqual(harness.unachievableCalls, [{ cwd: realpathSync(cwd), lineageId, targetIdentity: SHA, expectedRevision: SHA, requestHash: `sha256:${"0".repeat(64)}`, reason: "relay_transport_bound_exceeded", detail: "killed after 2256004ms against a 2256000ms relay bound", repositoryContext: `rctx1_${"e".repeat(64)}` }]);
-	assert.deepEqual(result.declaration, { lens: "review-risk", selected_order: 0, subject_hash: `sha256:${"0".repeat(64)}`, reason: "relay_transport_bound_exceeded" });
-	assert.deepEqual(result.result, stop.raw);
-	const slots = result.unachievable_lens_slots as Array<{ lens: string; subject_hash: string; withdraw: string }>;
-	assert.equal(slots.length, 1);
-	assert.equal(slots[0]!.lens, "review-risk");
-	assert.equal(slots[0]!.subject_hash, `sha256:${"0".repeat(64)}`);
-	assert.match(slots[0]!.withdraw, /capture-unachievable.*--withdraw=true/);
-	assert.match(String(result.next_action), /withdraw/);
-	assert.equal(result.mutation_performed, true);
-	// gentle-pi#822: the native declaration was recorded, so the flow reports the mutation as committed, not none.
-	assert.equal(result.mutation_outcome, "committed");
-	assert.equal(harness.statusCalls.length, 2, "one selection STATUS plus exactly one bound re-query");
-	assert.equal(harness.statusCalls.at(-1)?.agent, "pi", "the bound re-query preserves the Pi host runtime");
-});
-
 // gentle-pi#638: generic admission rejections describe the submitted reviewer
 // bytes, not a deterministic failure of the provider-bound slot. A fresh
 // reviewer can repair malformed JSON or a binding mismatch, so both retain the
@@ -868,9 +855,12 @@ test("repairable submission refusals retain the exact-slot retry path", async (t
 		"Error: reviewer artifact admission binding_mismatch [invalid_request]\n",
 	]) {
 		const input = relayCollectInput(lineageId, "review-reliability", 0);
-		const harness = nativeHarness([finalizeStatus(lineageId, [input])], async () => {
+		const harness = nativeHarness([finalizeStatus(lineageId, [input])]);
+		let declarations = 0;
+		harness.native.captureUnachievableLens = async () => {
+			declarations += 1;
 			throw new Error("a repairable refusal must not call capture-unachievable");
-		});
+		};
 		__testing.setReviewHostRelayRunnerForTesting(async () => {
 			throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", refusal.trim(), { exitCode: 1, stderr: refusal, mutationOutcome: "none" });
 		});
@@ -881,124 +871,9 @@ test("repairable submission refusals retain the exact-slot retry path", async (t
 		assert.equal(result.mutation_performed, false);
 		assert.equal(result.mutation_outcome, "none");
 		assert.match(String(result.next_action), /fresh STATUS/);
-		assert.deepEqual(harness.unachievableCalls, []);
+		assert.equal(declarations, 0);
 		assert.equal(harness.statusCalls.length, 1, "a repairable non-mutation needs no reconciliation before the provider reoffers it");
 	}
-});
-
-// gentle-pi#822: a stop carrying slots that do not match the identity this
-// session declared is a reconciliation failure — never a success rendering
-// someone else's withdraw command.
-test("a stop whose slots do not match the declared identity reports a reconciliation failure", async (t) => {
-	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	const cwd = repository(t);
-	const lineageId = "relay-lineage";
-	const input = relayCollectInput(lineageId, "review-risk", 0);
-	const foreignStop = unachievableStopStatus(lineageId, "review-risk", 1);
-	const harness = nativeHarness([finalizeStatus(lineageId, [input]), foreignStop], () => Promise.resolve(unachievableArtifact(lineageId, "review-risk", 0)));
-	__testing.setReviewHostRelayRunnerForTesting(async () => {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "pi reviewer subprocess exceeded the relay bound", { exitCode: null, timedOut: true, elapsedMs: 2_256_004, timeoutMs: 2_256_000 });
-	});
-
-	const result = await runCapture(cwd, harness, lineageId);
-
-	assert.equal(result.status, "blocked");
-	assert.equal(result.outcome, "unachievable-lens-declaration-reconciliation-failed");
-	assert.deepEqual(result.declaration, { lens: "review-risk", selected_order: 0, subject_hash: `sha256:${"0".repeat(64)}`, reason: "relay_transport_bound_exceeded" });
-	assert.equal(result.unachievable_lens_slots, undefined, "a foreign slot is never exposed as this session's withdraw command");
-	const reconciliationFailure = result.reconciliation_failure as { outcome?: string; reason?: string } | undefined;
-	assert.equal(reconciliationFailure?.outcome, "unachievable-lens-slot-declaration-unmatched");
-	assert.match(String(reconciliationFailure?.reason), /no unachievable_lens_slots entry matches the declared slot identity/);
-	assert.equal(result.mutation_performed, true);
-	assert.equal(result.mutation_outcome, "committed");
-	assert.match(String(result.next_action), /refused the unachievable declaration/);
-	assert.equal(harness.statusCalls.length, 2, "the bound re-query still runs exactly once");
-});
-
-// gentle-pi#822: with several declared entries on the stop, only the matching
-// identity is exposed — never the withdraw commands of other runs.
-test("a stop carrying several declared slots exposes only the one this session declared", async (t) => {
-	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	const cwd = repository(t);
-	const lineageId = "relay-lineage";
-	const input = relayCollectInput(lineageId, "review-risk", 0);
-	const stop = unachievableStopStatus(lineageId, "review-risk", 0);
-	const foreign = unachievableStopStatus(lineageId, "review-reliability", 2).nextTransition?.unachievableLensSlots?.[0];
-	assert.ok(foreign !== undefined);
-	stop.nextTransition = { ...stop.nextTransition!, unachievableLensSlots: [...stop.nextTransition!.unachievableLensSlots!, foreign] };
-	const harness = nativeHarness([finalizeStatus(lineageId, [input]), stop], () => Promise.resolve(unachievableArtifact(lineageId, "review-risk", 0)));
-	__testing.setReviewHostRelayRunnerForTesting(async () => {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "pi reviewer subprocess exceeded the relay bound", { exitCode: null, timedOut: true, elapsedMs: 2_256_004, timeoutMs: 2_256_000 });
-	});
-
-	const result = await runCapture(cwd, harness, lineageId);
-
-	assert.equal(result.outcome, "unachievable-lens-slot-declared");
-	const slots = result.unachievable_lens_slots as Array<{ lens: string; selected_order: number; subject_hash: string }>;
-	assert.equal(slots.length, 1, "only the declared entry is exposed");
-	assert.equal(slots[0]!.lens, "review-risk");
-	assert.equal(slots[0]!.selected_order, 0);
-	assert.equal(slots[0]!.subject_hash, `sha256:${"0".repeat(64)}`);
-	assert.equal(result.mutation_outcome, "committed");
-});
-
-// gentle-pi#822 (CodeRabbit finding): success must be proven by the unachievable_lens_slot stop itself — a bound STATUS that comes back with a collect reoffer instead of the stop is a reconciliation failure, never a silent success with no withdraw command.
-test("a bound STATUS that reoffers the collect transition instead of the stop reports a reconciliation failure", async (t) => {
-	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	const cwd = repository(t);
-	const lineageId = "relay-lineage";
-	const input = relayCollectInput(lineageId, "review-risk", 0);
-	const harness = nativeHarness([finalizeStatus(lineageId, [input]), finalizeStatus(lineageId, [input])], () => Promise.resolve(unachievableArtifact(lineageId, "review-risk", 0)));
-	__testing.setReviewHostRelayRunnerForTesting(async () => {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "pi reviewer subprocess exceeded the relay bound", { exitCode: null, timedOut: true, elapsedMs: 2_256_004, timeoutMs: 2_256_000 });
-	});
-
-	const result = await runCapture(cwd, harness, lineageId);
-
-	assert.equal(result.status, "blocked");
-	assert.equal(result.outcome, "unachievable-lens-declaration-reconciliation-failed");
-	assert.equal(result.unachievable_lens_slots, undefined, "no stop means no withdraw command to expose");
-	const reconciliationFailure = result.reconciliation_failure as { outcome?: string; reason?: string };
-	assert.equal(reconciliationFailure?.outcome, "unachievable-lens-slot-declaration-unmatched");
-	assert.match(String(reconciliationFailure?.reason), /did not return the unachievable_lens_slot stop/);
-	assert.equal(result.mutation_performed, true, "the declaration was recorded");
-	assert.equal(result.mutation_outcome, "committed");
-	assert.equal(harness.statusCalls.length, 2, "the bound re-query still runs exactly once");
-});
-
-// gentle-pi#822 (CodeRabbit finding): the same proof requirement covers every STATUS shape that is not the stop — a foreign stop reason code or no transition at all.
-test("a bound STATUS stop with a foreign reason code or no transition reports a reconciliation failure", async (t) => {
-	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	const cwd = repository(t);
-	const lineageId = "relay-lineage";
-	const input = relayCollectInput(lineageId, "review-risk", 0);
-	const responder = () => Promise.resolve(unachievableArtifact(lineageId, "review-risk", 0));
-	const relayFailure = async () => {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "pi reviewer subprocess exceeded the relay bound", { exitCode: null, timedOut: true, elapsedMs: 2_256_004, timeoutMs: 2_256_000 });
-	};
-
-	const foreignStop = { ...finalizeStatus(lineageId), nextTransition: { kind: "stop", reasonCode: "rdd_disabled" } } as unknown as ReviewStatusV3;
-	const foreignHarness = nativeHarness([finalizeStatus(lineageId, [input]), foreignStop], responder);
-	__testing.setReviewHostRelayRunnerForTesting(relayFailure);
-	const foreign = await runCapture(cwd, foreignHarness, lineageId);
-
-	assert.equal(foreign.outcome, "unachievable-lens-declaration-reconciliation-failed");
-	assert.equal(foreign.unachievable_lens_slots, undefined);
-	const foreignFailure = foreign.reconciliation_failure as { outcome?: string; reason?: string };
-	assert.match(String(foreignFailure?.reason), /did not return the unachievable_lens_slot stop/);
-	assert.equal(foreign.mutation_performed, true);
-	assert.equal(foreign.mutation_outcome, "committed");
-
-	const bareHarness = nativeHarness([finalizeStatus(lineageId, [input]), finalizeStatus(lineageId)], responder);
-	__testing.setReviewHostRelayRunnerForTesting(relayFailure);
-	const bare = await runCapture(cwd, bareHarness, lineageId);
-
-	assert.equal(bare.outcome, "unachievable-lens-declaration-reconciliation-failed");
-	assert.equal(bare.unachievable_lens_slots, undefined);
-	const bareFailure = bare.reconciliation_failure as { outcome?: string; reason?: string };
-	assert.match(String(bareFailure?.reason), /did not return the unachievable_lens_slot stop/);
-	assert.equal(bare.mutation_outcome, "committed");
-	assert.equal(bareHarness.statusCalls.length, 2);
 });
 
 // gentle-pi#822: STATUS for one lineage renders only that lineage's withdraw
@@ -1015,121 +890,6 @@ test("an unachievable stop renders the withdraw hint only for the requested line
 	const unmatched = (await __testing.executeReviewControllerOperation({ operation: "status", lineageId: "relay-lineage" }, cwd, unmatchedHarness.native)) as Record<string, unknown>;
 	assert.equal(unmatched.hint, undefined, "no hint when no slot matches the requested lineage");
 	assert.equal(unmatched.requested_lineage_id, "relay-lineage");
-});
-
-// The fail-open capability gate: an older binary that refuses the whole verb
-// keeps today's transport-failure envelope untouched.
-test("an unknown-verb refusal falls back to today's transport-failure behavior", async (t) => {
-	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	const cwd = repository(t);
-	const lineageId = "relay-lineage";
-	const harness = nativeHarness([finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-risk", 0)])], async () => {
-		throw Object.assign(new Error("native command returned empty output"), { diagnostics: { stderr: 'Error: unknown review command "capture-unachievable"\n' } });
-	});
-	__testing.setReviewHostRelayRunnerForTesting(async () => {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "pi reviewer subprocess exceeded the relay bound", { exitCode: null, timedOut: true, elapsedMs: 2_256_004, timeoutMs: 2_256_000 });
-	});
-
-	const result = await runCapture(cwd, harness, lineageId);
-
-	assert.equal(result.status, "blocked");
-	assert.equal(result.outcome, "pi-host-relay-timeout");
-	assert.equal(harness.unachievableCalls.length, 1, "the verb was attempted exactly once");
-	assert.equal(harness.statusCalls.length, 1, "the fall-back performs no bound STATUS re-query");
-	assert.match(String(result.next_action), new RegExp(`${REVIEW_HOST_RELAY_PI_TIMEOUT_ENV}=<milliseconds>`));
-});
-
-// Every non-capability declaration failure — here a typed binding-mismatch
-// refusal — is surfaced with both failures, never hidden behind the relay
-// failure it followed.
-test("a refused declaration surfaces both failures instead of the transport fall-back", async (t) => {
-	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	const cwd = repository(t);
-	const lineageId = "relay-lineage";
-	const harness = nativeHarness([finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-risk", 0)])], async () => {
-		throw Object.assign(new Error("review capture-unachievable binding does not match the current reviewing authority"), { diagnostics: { stderr: "Error: review capture-unachievable binding does not match [invalid_request]" } });
-	});
-	__testing.setReviewHostRelayRunnerForTesting(async () => {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "pi reviewer subprocess exceeded the relay bound", { exitCode: null, timedOut: true, elapsedMs: 2_256_004, timeoutMs: 2_256_000 });
-	});
-
-	const result = await runCapture(cwd, harness, lineageId);
-
-	assert.equal(result.status, "blocked");
-	assert.equal(result.outcome, "unachievable-lens-declaration-failed");
-	assert.equal(result.mutation_performed, false);
-	assert.equal(result.mutation_outcome, "none");
-	assert.deepEqual(result.failure, { kind: "pi-timed-out", stage: "pi", exit_code: null, timed_out: true, elapsed_ms: 2_256_004, timeout_ms: 2_256_000 });
-	assert.ok(result.declaration_failure, "the declaration refusal rides the envelope");
-	assert.equal(harness.statusCalls.length, 1, "a refused declaration performs no bound STATUS re-query");
-	assert.match(String(result.next_action), /fresh STATUS/);
-});
-
-// gentle-pi#822 (outside-diff finding): the declaration failure's own envelope carries the mutation truth — a failure AFTER the provider recorded the declaration reports committed, never a hardcoded none.
-test("a declaration failure whose envelope already committed propagates its mutation state", async (t) => {
-	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	const cwd = repository(t);
-	const lineageId = "relay-lineage";
-	const harness = nativeHarness([finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-risk", 0)])], async () => {
-		throw Object.assign(new Error("review capture-unachievable failed after recording"), { failureEnvelope: { raw: { code: "invalid_request", message: "review capture-unachievable failed after recording" }, mutationOutcome: "committed" } });
-	});
-	__testing.setReviewHostRelayRunnerForTesting(async () => {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "pi reviewer subprocess exceeded the relay bound", { exitCode: null, timedOut: true, elapsedMs: 2_256_004, timeoutMs: 2_256_000 });
-	});
-
-	const result = await runCapture(cwd, harness, lineageId);
-
-	assert.equal(result.status, "blocked");
-	assert.equal(result.outcome, "unachievable-lens-declaration-failed");
-	assert.equal(result.mutation_performed, true);
-	assert.equal(result.mutation_outcome, "committed");
-	assert.ok(result.declaration_failure, "the declaration failure still rides the envelope");
-	assert.equal(harness.statusCalls.length, 1, "a committed outcome needs no reconciliation re-query");
-});
-
-// gentle-pi#822 (outside-diff finding): an unknown declaration outcome is proven or disproven by one bound STATUS re-query without ever changing the failure outcome.
-test("an unknown declaration outcome is proven committed by one bound STATUS re-query", async (t) => {
-	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	const cwd = repository(t);
-	const lineageId = "relay-lineage";
-	const input = relayCollectInput(lineageId, "review-risk", 0);
-	const stop = unachievableStopStatus(lineageId, "review-risk", 0);
-	const harness = nativeHarness([finalizeStatus(lineageId, [input]), stop], async () => {
-		throw Object.assign(new Error("native command timed out while recording the declaration"), { failureEnvelope: { raw: { code: "deadline_exceeded", message: "native command timed out" }, mutationOutcome: "unknown" } });
-	});
-	__testing.setReviewHostRelayRunnerForTesting(async () => {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "pi reviewer subprocess exceeded the relay bound", { exitCode: null, timedOut: true, elapsedMs: 2_256_004, timeoutMs: 2_256_000 });
-	});
-
-	const result = await runCapture(cwd, harness, lineageId);
-
-	assert.equal(result.status, "blocked");
-	assert.equal(result.outcome, "unachievable-lens-declaration-failed", "the failure outcome never changes");
-	assert.equal(result.mutation_performed, true);
-	assert.equal(result.mutation_outcome, "committed");
-	assert.equal(harness.statusCalls.length, 2, "one selection STATUS plus exactly one bound reconciliation re-query");
-	assert.equal(harness.statusCalls.at(-1)?.agent, "pi", "the reconciliation re-query preserves the Pi host runtime");
-});
-
-// gentle-pi#822 (outside-diff finding): a malformed declaration error with no envelope at all keeps the conservative none outcome and performs no re-query.
-test("a malformed declaration error without an envelope keeps mutation none", async (t) => {
-	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	const cwd = repository(t);
-	const lineageId = "relay-lineage";
-	const harness = nativeHarness([finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-risk", 0)])], async () => {
-		throw new TypeError("cannot read properties of undefined (reading 'detail')");
-	});
-	__testing.setReviewHostRelayRunnerForTesting(async () => {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "pi reviewer subprocess exceeded the relay bound", { exitCode: null, timedOut: true, elapsedMs: 2_256_004, timeoutMs: 2_256_000 });
-	});
-
-	const result = await runCapture(cwd, harness, lineageId);
-
-	assert.equal(result.status, "blocked");
-	assert.equal(result.outcome, "unachievable-lens-declaration-failed");
-	assert.equal(result.mutation_performed, false);
-	assert.equal(result.mutation_outcome, "none");
-	assert.equal(harness.statusCalls.length, 1, "no envelope means no unknown outcome and no re-query");
 });
 
 test("a non-timeout transport failure keeps its generic continuation and now carries its measurements", async (t) => {

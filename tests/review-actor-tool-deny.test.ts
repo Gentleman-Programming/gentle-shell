@@ -103,7 +103,6 @@ test("a tool absent from the allowlist resolves to denied under the deny-all rul
 		"write",
 		"bash",
 		"mem_save",
-		"codegraph_explore",
 		"mcp__slack__slack_send_message",
 		"subagent_run",
 	] as const;
@@ -124,7 +123,7 @@ test("a tool absent from the allowlist resolves to denied under the deny-all rul
 	for (const lens of ["review-risk", "review-resilience", "review-readability", "review-reliability"]) {
 		const lensActive = resolveActiveTools(readToolEntries(join(ASSETS_AGENTS_DIR, `${lens}.md`)), registry);
 		assert.deepEqual(lensActive, ["read", "grep", "find", "gentle_review_scope"], `${lens} must expose only candidate readers and the bounded scope reader`);
-		for (const omitted of ["bash", "edit", "write", "mem_save", "codegraph_explore", "mcp__slack__slack_send_message", "subagent_run"]) {
+		for (const omitted of ["bash", "edit", "write", "mem_save", "mcp__slack__slack_send_message", "subagent_run"]) {
 			assert.ok(!lensActive.includes(omitted), `${lens} must deny ${omitted}`);
 		}
 	}

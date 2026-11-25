@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import {
 	decodeReviewConsentV3,
 } from "../lib/review-integration-v2.ts";
@@ -1095,6 +1098,115 @@ test("node execFile adapter passes AbortSignal to child_process", async () => {
 	});
 	controller.abort();
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
+});
+
+test("POSIX review STATUS settles as timed out when the native child ignores SIGTERM", { skip: process.platform === "win32" }, async (t) => {
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-native-status-")));
+	const invocation = join(cwd, "invocation.json");
+	const binary = join(cwd, "gentle-ai.cjs");
+	t.after(() => {
+		try { process.kill(JSON.parse(readFileSync(invocation, "utf8")).pid, "SIGKILL"); } catch { /* Not started, or already reaped. */ }
+		rmSync(cwd, { recursive: true, force: true });
+	});
+	execFileSync("git", ["init", "-q"], { cwd });
+	const status = negotiatedStartStatus(TARGET, ["--contract=gentle-ai.review-integration/v2"]);
+	writeFileSync(binary, `#!${process.execPath}
+if (!process.argv.includes("--lineage")) {
+	process.stdout.write(${JSON.stringify(JSON.stringify(status))});
+} else {
+	process.on("SIGTERM", () => {});
+	require("node:fs").writeFileSync(${JSON.stringify(invocation)}, JSON.stringify({ argv: process.argv.slice(2), pid: process.pid }));
+	setTimeout(() => {}, 10_000);
+}
+`, { mode: 0o700 });
+	let review: { execute(id: string, parameters: Record<string, unknown>, signal: undefined, onUpdate: undefined, context: unknown): Promise<{ details: Record<string, unknown>; content: unknown }> };
+	createGentleAiExtension({ nativeReviewCli: new NativeReviewCliV216(createNodeExecFileAdapter(), binary, 300), candidateViews: null, processEnv: { GENTLE_AI_TELEMETRY: "0" } })(
+		{ on() {}, registerCommand() {}, registerTool(tool: typeof review & { name: string }) { if (tool.name === "gentle_review") review = tool; } } as never);
+	const context = { cwd, hasUI: false, sessionManager: { getSessionId: () => cwd } };
+	const normal = await review!.execute("status-complete", { operation: "status" }, undefined, undefined, context);
+	assert.deepEqual(normal.details, { operation: "status", status: "ready", result: status });
+
+	const lineageId = "stalled-native-status";
+	const pending = review!.execute("status-timeout", { operation: "status", lineageId }, undefined, undefined, context);
+	const result = await Promise.race([pending, delay(1_500, "still pending", { ref: false })]);
+	const { argv, pid } = JSON.parse(readFileSync(invocation, "utf8"));
+	assert.deepEqual(argv, ["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", cwd, "--projection", "workspace", "--lineage", lineageId, "--agent", "pi", "--next-transition"]);
+	assert.notEqual(result, "still pending", "STATUS was still pending 1,500 ms after invocation (native deadline 300 ms)");
+	if (typeof result === "string") return;
+	assert.deepEqual(result.content, [{ type: "text", text: JSON.stringify(result.details) }]);
+	assert.deepEqual({
+		status: result.details.status,
+		outcome: result.details.outcome,
+		mutationPerformed: result.details.mutation_performed,
+		mutationOutcome: result.details.mutation_outcome,
+		nextAction: result.details.next_action,
+		diagnostics: result.details.diagnostics,
+	}, {
+		status: "blocked", outcome: "native-status-timed-out", mutationPerformed: false, mutationOutcome: "none", nextAction: "rerun-native-status",
+		diagnostics: { operation: "review/status", error_code: "timeout", exit_code: 1, timed_out: true, output_limit_exceeded: false },
+	});
+	// Settlement doesn't wait for libuv to reap the signalled child.
+	const reapingDeadline = Date.now() + 1_000;
+	while (Date.now() < reapingDeadline) {
+		try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return; throw error; }
+		await delay(10);
+	}
+	assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "timed-out child must not be left running");
+});
+
+test("POSIX review STATUS settles as timed out after the native child exits with inherited pipes open", { skip: process.platform === "win32" }, async (t) => {
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-native-status-pipes-")));
+	const invocation = join(cwd, "invocation.json");
+	const binary = join(cwd, "gentle-ai.cjs");
+	const readInvocation = (): { pid: number; descendantPid: number; argv: string[] } => JSON.parse(readFileSync(invocation, "utf8"));
+	t.after(() => {
+		try { process.kill(readInvocation().descendantPid, "SIGKILL"); } catch { /* Not started, or already gone. */ }
+		rmSync(cwd, { recursive: true, force: true });
+	});
+	execFileSync("git", ["init", "-q"], { cwd });
+	writeFileSync(binary, `#!${process.execPath}
+const { spawn } = require("node:child_process");
+const { renameSync, writeFileSync } = require("node:fs");
+const descendant = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { detached: true, stdio: "inherit" });
+const invocation = ${JSON.stringify(invocation)};
+writeFileSync(invocation + ".tmp", JSON.stringify({ pid: process.pid, descendantPid: descendant.pid, argv: process.argv.slice(2) }));
+renameSync(invocation + ".tmp", invocation);
+process.exit(0);
+`, { mode: 0o700 });
+	let review: { execute(id: string, parameters: Record<string, unknown>, signal: undefined, onUpdate: undefined, context: unknown): Promise<{ details: Record<string, unknown> }> };
+	createGentleAiExtension({ nativeReviewCli: new NativeReviewCliV216(createNodeExecFileAdapter(), binary, 500), candidateViews: null, processEnv: { GENTLE_AI_TELEMETRY: "0" } })(
+		{ on() {}, registerCommand() {}, registerTool(tool: typeof review & { name: string }) { if (tool.name === "gentle_review") review = tool; } } as never);
+	const lineageId = "exited-native-status";
+	const pending = review!.execute("status-open-pipes", { operation: "status", lineageId }, undefined, undefined, { cwd, hasUI: false, sessionManager: { getSessionId: () => cwd } });
+	const limit = delay(1_500, "still pending", { ref: false });
+	const reaped = async () => {
+		while (!existsSync(invocation)) await delay(10, undefined, { ref: false, signal: t.signal });
+		const record = readInvocation();
+		for (;;) {
+			try { process.kill(record.pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return record; throw error; }
+			await delay(10, undefined, { ref: false, signal: t.signal });
+		}
+	};
+	const first = await Promise.race([reaped(), pending, limit]);
+	assert.ok(typeof first === "object" && "descendantPid" in first, "the native child must exit before STATUS settles");
+	assert.deepEqual(first.argv, ["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", cwd, "--projection", "workspace", "--lineage", lineageId, "--agent", "pi", "--next-transition"]);
+
+	const result = await Promise.race([pending, limit]);
+	assert.ok(typeof result !== "string", "STATUS must settle without waiting for the descendant to close the pipes");
+	assert.equal(result.details.status, "blocked");
+	assert.equal(result.details.outcome, "native-status-timed-out");
+	assert.equal(result.details.mutation_performed, false);
+	assert.equal(result.details.mutation_outcome, "none");
+	assert.deepEqual(result.details.diagnostics, { operation: "review/status", error_code: "timeout", exit_code: 1, timed_out: true, output_limit_exceeded: false });
+	assert.doesNotThrow(() => process.kill(first.descendantPid, 0), "the descendant is still alive when STATUS settles");
+});
+
+test("POSIX non-STATUS adapter calls retain Node's ordinary timeout handling", { skip: process.platform === "win32" }, async () => {
+	const result = await createNodeExecFileAdapter()({
+		file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 10_000)"],
+		cwd: process.cwd(), maxBufferBytes: 1024, timeoutMs: 100,
+	});
+	assert.deepEqual(result, { stdout: "", stderr: "", exitCode: 1, signal: "SIGTERM", timedOut: true, outputLimitExceeded: false });
 });
 
 // On Windows, killing gentle-ai alone leaves its git children running against

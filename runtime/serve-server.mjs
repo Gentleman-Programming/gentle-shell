@@ -31,7 +31,7 @@ export const SERVE_PROTOCOL = 1;
 export const SERVE_IDENTITY_SCHEMA = "gentle-shell.serve.identity/v1";
 /** Public identity path: a client holding a connection code probes it to find the address that reaches this server. */
 export const SERVE_IDENTITY_PATH = "/.well-known/gentle-shell";
-export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards", "server-forwards", "services", "tower", "files", "git"]         ;
+export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards", "server-forwards", "services", "tower", "files", "git", "unpair"]         ;
 
 export const SERVE_SERVER_LIMITS = {
 	heartbeatMs: 20_000,
@@ -614,6 +614,15 @@ export function startServeServer(options                    )                   
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			need(principal, "admin");
 			return sendJson(res, 200, { devices: options.auth.listDevices() });
+		}
+		if (path === "/api/devices/self") {
+			if (method !== "DELETE") throw new HttpError(405, "method_not_allowed", "Use DELETE");
+			// Any paired device may unpair itself, whatever its scopes; the server's own token is no device.
+			if (!principal) throw new HttpError(401, "unauthorized", "A valid bearer token is required");
+			if (principal.deviceId === "local") throw new HttpError(400, "not_a_device", "The server's own token is no paired device");
+			if (!options.auth.revoke(principal.deviceId)) throw new HttpError(404, "not_found", "No such device");
+			log(`device ${principal.deviceId} unpaired itself`);
+			return sendJson(res, 200, { revoked: principal.deviceId });
 		}
 		const device = /^\/api\/devices\/([A-Za-z0-9_]{1,64})$/.exec(path);
 		if (device) {

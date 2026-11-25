@@ -346,6 +346,29 @@ test("revoking a device closes its open streams at once and its token stops work
 	await call("DELETE", `/api/sessions/${id}`, { token: ADMIN });
 });
 
+test("a device unpairs itself without admin: its streams close and its token stops working", async () => {
+	const laptop = await pairDevice(["sessions:read", "sessions:operate"], "laptop");
+	const other = await pairDevice(["sessions:read"], "other");
+	const server = await call("GET", "/api/server", { token: laptop.token });
+	assert.ok(server.body.capabilities.includes("unpair"));
+	const id = await startSession();
+	const open = await stream(`/api/sessions/${id}/events`, laptop.token);
+	await open.waitFor("event: hello");
+	assert.equal((await call("GET", "/api/devices/self", { token: laptop.token })).status, 405);
+	assert.equal((await call("DELETE", "/api/devices/self")).status, 401);
+	assert.equal((await call("DELETE", "/api/devices/self", { token: ADMIN })).status, 400);
+	const revoked = await call("DELETE", "/api/devices/self", { token: laptop.token });
+	assert.equal(revoked.status, 200);
+	assert.equal(revoked.body.revoked, laptop.id);
+	await open.closed;
+	assert.equal((await call("GET", "/api/server", { token: laptop.token })).status, 401);
+	assert.equal((await call("DELETE", "/api/devices/self", { token: laptop.token })).status, 401);
+	// Only the caller goes; its session keeps running.
+	assert.equal((await call("GET", "/api/server", { token: other.token })).status, 200);
+	assert.equal((await call("GET", `/api/sessions/${id}`, { token: ADMIN })).status, 200);
+	await call("DELETE", `/api/sessions/${id}`, { token: ADMIN });
+});
+
 test("pairing over HTTP is single use and admin can stop the server", async () => {
 	const code = await call("POST", "/api/pairing-codes", { token: ADMIN, body: {} });
 	assert.equal((await call("POST", "/api/pair", { body: { code: code.body.code, name: "a" } })).status, 201);

@@ -4,7 +4,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { PROFILE_TIER_EVENT, supportsOpenAIFast } from "../lib/openai-fast-tier.ts";
 import { isDeepStrictEqual } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { appendSystemPromptOnce, type AppendableSystemPromptOptions } from "../lib/append-system-prompt.ts";
 import { filterChildSessionContextFiles, type ContextFileOptions } from "../lib/child-context-files.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "../lib/yolo-temp-scratch.ts";
@@ -125,6 +125,7 @@ import {
 	routingColumnWidths,
 	serializeProfileExport,
 	setActiveProfile,
+	setProfileControlledEngineering,
 	setProfileOrchestratorMode,
 	updateProfile,
 	writeProfilesFileSync,
@@ -133,10 +134,11 @@ import {
 	type OrchestratorMode,
 	type ProfileListItem,
 	type ProfileRoutingRow,
+	type ProfileWorkflow,
 	type ProfilesFileReadResult,
 	type ProfilesParseDrops,
 } from "../lib/agent-profiles.ts";
-import { resolveOrchestratorMode } from "../lib/orchestrator-mode-policy.ts";
+import { CONTROLLED_ENGINEERING_ENV, resolveOrchestratorMode } from "../lib/orchestrator-mode-policy.ts";
 import {
 	clearProfilePinSync,
 	evaluateProfilePin,
@@ -1775,25 +1777,90 @@ const NEUTRAL_PERSONA_PROMPT = `Persona:
 - Correct errors directly, explain why, and show the better path.`;
 
 /**
- * The workflow mode this primary session runs under (full-delegation-mode S2).
- * Read through the live session profile on every prompt build, never from the
- * startup freeze, so a profile switch is visible on the very next turn. Any
- * failure here degrades to the organic rules instead of breaking the prompt.
+ * The workflow this primary session runs under (full-delegation-mode S2,
+ * controlled-engineering S3): its orchestrator mode and whether its profile
+ * enables Controlled Engineering. Read through the live session profile on
+ * every prompt build, never from the startup freeze, so a profile switch is
+ * visible on the very next turn. Any failure here degrades to the organic
+ * rules without the option instead of breaking the prompt.
  */
-function resolveSessionDelegationMode(
+function resolveSessionWorkflow(
 	ctx: Pick<ExtensionContext, "cwd"> & { sessionManager?: { getSessionId?: () => string | undefined } },
 	env?: NodeJS.ProcessEnv,
-): OrchestratorMode {
+): ProfileWorkflow {
 	try {
-		return resolveOrchestratorMode({
+		const resolution = resolveOrchestratorMode({
 			cwd: ctx.cwd,
 			configHome: gentleAiConfigHome(),
 			sessionId: ctx.sessionManager?.getSessionId?.(),
 			...(env === undefined ? {} : { env }),
-		}).mode;
+		});
+		return { orchestratorMode: resolution.mode, controlledEngineering: resolution.controlledEngineering };
 	} catch {
-		return DEFAULT_ORCHESTRATOR_MODE;
+		return { orchestratorMode: DEFAULT_ORCHESTRATOR_MODE, controlledEngineering: false };
 	}
+}
+
+// controlled-engineering S2, approved text. A separate section, never part of
+// the cached orchestrator prompt, so the option does not change its cache key.
+const CONTROLLED_ENGINEERING_PROMPT = `## Controlled Engineering
+
+Build what the request and the evidence need, complete and correct.
+Nothing enters without a reason you can point to.
+
+Work the way the project already works:
+- Before you build, test or run anything, find how the project does it
+  (AGENTS.md, README, scripts, CI config) and use that command, environment
+  and data setup as documented.
+- Do not create a new environment, container, database, test harness or
+  tool path when the project has one. If the documented one fails, report
+  the failure with its output; do not build a replacement.
+- Run a documented project command as written (for example its make
+  target). Do not expand it into the commands behind it or change its
+  flags.
+
+Before writing:
+- Name the evidence for each thing you will build: the user's words, a
+  failing test, an observed failure, or a caller that exists today. A case
+  nobody reported and no real producer reaches gets no code.
+- Name the smallest change that resolves it (often one line, a message, or
+  a deletion). Start there.
+- Smallest at the root, not at the symptom: find the callers of what you
+  touch and fix the shared cause once.
+
+Each of these needs a requirement that names it; otherwise leave it out:
+- a new state, flag, option, config key, command or mode
+- a retry, timeout, lock, watchdog, cache or fallback
+- an interface, layer, wrapper or generic parameter with a single use
+- a second copy or recomputation of something another place already owns
+- a schema, contract version or compatibility path for data nothing ships
+- variants, extra artifacts or checks the request did not name
+
+Verify in proportion:
+- The project's existing tests for what you changed, plus the test of each
+  rule you changed, are complete verification unless the user asked for more.
+- Anything beyond that (a scratch copy, an isolated environment, an extra
+  script, a second pass) needs a reason from the request or a named risk.
+  Say what you are about to do and why, in one line, before doing it.
+- Where this section and broader verification guidance differ, this section
+  wins for ordinary verification. High-risk changes and review consent keep
+  their own rules.
+
+Always keep: validation at trust boundaries, handling that prevents data
+loss, security checks, everything the user asked for, and the test of each
+rule you changed. Size is not the goal: do not compress or split code to
+look small.
+
+Before finishing, read your diff and list what it adds beyond the smallest
+change. Remove what has no reason. Close with \`Additions: none\` or one line
+per addition with its reason.`;
+
+/** Adds or removes the section; bridge options can be reused across turns. */
+function updateControlledEngineeringPrompt(options: AppendableSystemPromptOptions | null | undefined, active: boolean): void {
+	if (!options) return;
+	options.appendSystemPrompt = (options.appendSystemPrompt ?? "")
+		.replace(`\n\n${CONTROLLED_ENGINEERING_PROMPT}`, "").replace(CONTROLLED_ENGINEERING_PROMPT, "");
+	if (active) appendSystemPromptOnce(options, CONTROLLED_ENGINEERING_PROMPT);
 }
 
 const TEST_FIRST_PRINCIPLE = "- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a `mktemp -d` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.";
@@ -4234,6 +4301,8 @@ const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
 	{ text: "m menu", keep: 9 },
 	{ text: "esc close", keep: 4 },
 	{ text: "a all fast", keep: 11 },
+	// Controlled Engineering (controlled-engineering S4) yields first on narrow terminals.
+	{ text: "c controlled", keep: 12 },
 ];
 /** Model card chrome (title, search, rule, blank, hint), its borders, and a margin so the card never touches the frame. */
 const ROUTING_MODEL_CARD_CHROME_ROWS = 11;
@@ -4241,9 +4310,9 @@ const ROUTING_MODEL_CARD_CHROME_ROWS = 11;
 type RoutingTableAction =
 	| { type: "load"; name: string }
 	| { type: "custom"; target: string; config: AgentModelConfig }
-	| { type: "use-session"; name: string; config?: AgentModelConfig; orchestratorMode?: OrchestratorMode }
+	| { type: "use-session"; name: string; config?: AgentModelConfig; orchestratorMode?: OrchestratorMode; controlledEngineering?: boolean }
 	| { type: "apply-global"; name: string; config: AgentModelConfig }
-	| { type: "save"; name: string; config: AgentModelConfig; orchestratorMode?: OrchestratorMode }
+	| { type: "save"; name: string; config: AgentModelConfig; orchestratorMode?: OrchestratorMode; controlledEngineering?: boolean }
 	| { type: "create" }
 	| { type: "create-live" }
 	| { type: "duplicate"; name: string }
@@ -4267,6 +4336,9 @@ type RoutingTableResult = RoutingTableAction & {
 	saveFirstMode?: OrchestratorMode;
 	/** The unsaved mode draft carried across a reopen that keeps the routing draft (custom prompt). */
 	modeDraft?: OrchestratorMode;
+	/** The Controlled Engineering draft, carried exactly like the two mode fields above. */
+	saveFirstControlledEngineering?: boolean;
+	controlledEngineeringDraft?: boolean;
 };
 
 type RoutingTableButton = "use" | "default" | "save" | "switch-save" | "switch-discard" | "switch-stay";
@@ -4285,7 +4357,7 @@ type RoutingProfileSwitch =
  * the next tab let the terminal paint the screen beneath for a frame (and wait
  * on the async model catalog before the new frame), which is the tab flicker.
  */
-type RoutingProfileSwitcher = (name: string, saveFirst?: AgentModelConfig, saveFirstMode?: OrchestratorMode) => RoutingProfileSwitch;
+type RoutingProfileSwitcher = (name: string, saveFirst?: AgentModelConfig, saveFirstMode?: OrchestratorMode, saveFirstControlledEngineering?: boolean) => RoutingProfileSwitch;
 
 type RoutingTableMouseAction =
 	| { kind: "tab"; name: string }
@@ -4331,6 +4403,8 @@ const ORCHESTRATOR_MODE_CHIP_FORMS: Array<{ text: string; mode: OrchestratorMode
 ];
 /** One tone for every mode form: the modes are peers, never ranked. */
 const ORCHESTRATOR_MODE_CHIP_TONE: PanelTone = "status";
+/** Appended to the mode chip while Controlled Engineering is on; off adds nothing. */
+const CONTROLLED_ENGINEERING_CHIP = " · controlled";
 /**
  * The focused-Orchestrator explainer, appended to the description slot only
  * while that row is the focused one. Symmetric by construction: one line
@@ -4408,6 +4482,9 @@ class RoutingTablePanel implements OverlayComponent {
 	/** The shown profile's committed and drafted orchestrator workflow; `w` drafts, a commit lands it. */
 	private committedMode: OrchestratorMode;
 	private modeDraft: OrchestratorMode;
+	/** The same pair for Controlled Engineering; `c` drafts it. */
+	private committedControlled: boolean;
+	private controlledDraft: boolean;
 	private readonly rows: string[];
 	private readonly agents: string[];
 	private readonly catalog: string[];
@@ -4443,6 +4520,7 @@ class RoutingTablePanel implements OverlayComponent {
 			switchProfile?: RoutingProfileSwitcher;
 			fallbacks?: RoutingFallbacks;
 			modeDraft?: OrchestratorMode;
+			controlledEngineeringDraft?: boolean;
 		} = {},
 	) {
 		this.switchProfile = options.switchProfile;
@@ -4455,9 +4533,12 @@ class RoutingTablePanel implements OverlayComponent {
 		this.profileName = hasOwnProfile(this.file.profiles, profileName) ? profileName : (names[0] ?? profileName);
 		this.stored = cloneModelConfig(normalizeModelConfig(this.file.profiles[this.profileName]) ?? {});
 		this.draft = cloneModelConfig(draft);
-		this.committedMode = readProfileWorkflow(this.file, this.profileName).orchestratorMode;
+		const workflow = readProfileWorkflow(this.file, this.profileName);
+		this.committedMode = workflow.orchestratorMode;
+		this.committedControlled = workflow.controlledEngineering === true;
 		// A carried draft keeps its unsaved mode across the reopen; a fresh open starts at the committed mode.
 		this.modeDraft = options.modeDraft ?? this.committedMode;
+		this.controlledDraft = options.controlledEngineeringDraft ?? this.committedControlled;
 		this.agents = [...agents];
 		this.rows = [PROFILE_ORCHESTRATOR_KEY, ROUTING_ALL_ROW, ...agents];
 		// The control entries of the old panel (keep current, custom id) are not
@@ -4490,6 +4571,7 @@ class RoutingTablePanel implements OverlayComponent {
 		}
 		// The drafted orchestrator mode is one unsaved change, like a routing edit.
 		if (this.modeDraft !== this.committedMode) count += 1;
+		if (this.controlledDraft !== this.committedControlled) count += 1;
 		return count;
 	}
 
@@ -4610,7 +4692,7 @@ class RoutingTablePanel implements OverlayComponent {
 	private finish(result: RoutingTableResult): void {
 		if (this.completed) return;
 		if (result.type === "load" && this.switchProfile) {
-			this.showProfile(result.name, result.saveFirst, result.saveFirstMode);
+			this.showProfile(result.name, result.saveFirst, result.saveFirstMode, result.saveFirstControlledEngineering);
 			return;
 		}
 		this.completed = true;
@@ -4618,8 +4700,8 @@ class RoutingTablePanel implements OverlayComponent {
 	}
 
 	/** Replaces the shown profile on this same screen, as a fresh open on that tab would. */
-	private showProfile(name: string, saveFirst?: AgentModelConfig, saveFirstMode?: OrchestratorMode): void {
-		const next = this.switchProfile!(name, saveFirst, saveFirstMode);
+	private showProfile(name: string, saveFirst?: AgentModelConfig, saveFirstMode?: OrchestratorMode, saveFirstControlledEngineering?: boolean): void {
+		const next = this.switchProfile!(name, saveFirst, saveFirstMode, saveFirstControlledEngineering);
 		this.closeOverlay();
 		if ("error" in next) {
 			this.say(next.error);
@@ -4629,8 +4711,11 @@ class RoutingTablePanel implements OverlayComponent {
 		this.profileName = hasOwnProfile(this.file.profiles, name) ? name : (this.profileNames()[0] ?? name);
 		this.stored = cloneModelConfig(normalizeModelConfig(this.file.profiles[this.profileName]) ?? {});
 		this.draft = cloneModelConfig(this.stored);
-		this.committedMode = readProfileWorkflow(this.file, this.profileName).orchestratorMode;
+		const workflow = readProfileWorkflow(this.file, this.profileName);
+		this.committedMode = workflow.orchestratorMode;
 		this.modeDraft = this.committedMode;
+		this.committedControlled = workflow.controlledEngineering === true;
+		this.controlledDraft = this.committedControlled;
 		this.sessionBoundName = next.sessionBoundName;
 		this.pinWinner = next.pinWinner;
 		this.notices = next.notices;
@@ -4807,6 +4892,12 @@ class RoutingTablePanel implements OverlayComponent {
 		this.say(`Orchestrator mode ${this.modeDraft}. Save keeps it in ${this.profileName}.`);
 	}
 
+	/** `c` drafts the shown profile's Controlled Engineering option; saving or using the profile commits it. */
+	private toggleControlledEngineering(): void {
+		this.controlledDraft = !this.controlledDraft;
+		this.say(`Controlled Engineering ${this.controlledDraft ? "on" : "off"}. Save keeps it in ${this.profileName}.`);
+	}
+
 	private setAllFast(): void {
 		let count = 0;
 		for (const key of [PROFILE_ORCHESTRATOR_KEY, ...this.agents]) {
@@ -4834,7 +4925,7 @@ class RoutingTablePanel implements OverlayComponent {
 			return;
 		}
 		if (option === ROUTING_CUSTOM_MODEL) {
-			this.finish({ type: "custom", target: this.target, config: cloneModelConfig(this.draft), modeDraft: this.modeDraft });
+			this.finish({ type: "custom", target: this.target, config: cloneModelConfig(this.draft), modeDraft: this.modeDraft, controlledEngineeringDraft: this.controlledDraft });
 			return;
 		}
 		const model = option === this.inheritLabel(this.target) ? undefined : option;
@@ -4919,7 +5010,7 @@ class RoutingTablePanel implements OverlayComponent {
 		const config = cloneModelConfig(this.draft);
 		switch (button) {
 			case "use":
-				this.finish({ type: "use-session", name: this.profileName, config, orchestratorMode: this.modeDraft });
+				this.finish({ type: "use-session", name: this.profileName, config, orchestratorMode: this.modeDraft, controlledEngineering: this.controlledDraft });
 				return;
 			case "default":
 				this.finish({ type: "apply-global", name: this.profileName, config });
@@ -4929,10 +5020,10 @@ class RoutingTablePanel implements OverlayComponent {
 					this.say("Nothing to save.");
 					return;
 				}
-				this.finish({ type: "save", name: this.profileName, config, orchestratorMode: this.modeDraft });
+				this.finish({ type: "save", name: this.profileName, config, orchestratorMode: this.modeDraft, controlledEngineering: this.controlledDraft });
 				return;
 			case "switch-save":
-				if (this.pending) this.finish({ ...this.pending, saveFirst: config, saveFirstMode: this.modeDraft });
+				if (this.pending) this.finish({ ...this.pending, saveFirst: config, saveFirstMode: this.modeDraft, saveFirstControlledEngineering: this.controlledDraft });
 				return;
 			case "switch-discard":
 				if (this.pending) this.finish(this.pending);
@@ -4999,6 +5090,7 @@ class RoutingTablePanel implements OverlayComponent {
 		if (matchesKey(data, "f")) return this.openFallbacks(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "t")) return this.toggleTier(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "w")) return this.toggleOrchestratorMode();
+		if (matchesKey(data, "c")) return this.toggleControlledEngineering();
 		if (matchesKey(data, "a")) return this.setAllFast();
 		if (matchesKey(data, "s") || matchesKey(data, "ctrl+s")) return this.pressButton("save");
 		if (matchesKey(data, "u")) return this.pressButton("use");
@@ -5288,8 +5380,9 @@ class RoutingTablePanel implements OverlayComponent {
 				: model === LEAVE_ORCHESTRATOR_UNTOUCHED || model === "inherit" || model === ROUTING_PI_DEFAULT ? "dim" : "text";
 			const effortTone: PanelTone = this.isEdited(key, "thinking") ? "edited" : effort === "inherit" || effort === ROUTING_PI_DEFAULT ? "dim" : "status";
 			const chain = this.fallbacks ? this.chain(key) : [];
+			const controlled = this.controlledDraft ? CONTROLLED_ENGINEERING_CHIP : "";
 			const chips = key === PROFILE_ORCHESTRATOR_KEY
-				? ORCHESTRATOR_MODE_CHIP_FORMS.filter((form) => form.mode === this.modeDraft)
+				? ORCHESTRATOR_MODE_CHIP_FORMS.filter((form) => form.mode === this.modeDraft).map((form) => ({ ...form, text: `${form.text}${controlled}` }))
 				: [];
 			// The chip is a reference the profile always shows, so the chain is sized
 			// around its shortest WORD form (the ladder's second rung) instead of the
@@ -5788,6 +5881,7 @@ interface RoutingTablePanelRequest {
 	file: AgentProfilesFile;
 	/** An unsaved orchestrator mode draft carried across a reopen (custom prompt). */
 	modeDraft?: OrchestratorMode;
+	controlledEngineeringDraft?: boolean;
 	sessionBoundName?: string;
 	pinWinner?: string;
 	feedback?: string;
@@ -5901,6 +5995,7 @@ async function showRoutingTablePanel(
 					switchProfile: request.switchProfile,
 					fallbacks: fileRoutingFallbacks(gentleAiConfigHome()),
 					modeDraft: request.modeDraft,
+					controlledEngineeringDraft: request.controlledEngineeringDraft,
 				},
 			);
 			const container = createNativeFullscreenInteraction({
@@ -7041,16 +7136,20 @@ async function openProfilesPanelLoop(
 	let draftOverride: AgentModelConfig | undefined;
 	// The unsaved mode draft carried across a reopen that keeps the routing draft.
 	let modeDraftOverride: OrchestratorMode | undefined;
+	let controlledDraftOverride: boolean | undefined;
 	// Read once per visit: the opening read serves the first one.
 	let authorityAvailable = true;
-	const writeDraft = (name: string, config: AgentModelConfig, orchestratorMode?: OrchestratorMode): boolean => {
+	const writeDraft = (name: string, config: AgentModelConfig, orchestratorMode?: OrchestratorMode, controlledEngineering?: boolean): boolean => {
 		try {
 			let next = hasOwnProfile(file.profiles, name)
 				? updateProfile(file, name, cloneModelConfig(config))
 				: createProfile(file, name, cloneModelConfig(config));
-			// The mode lands in the same write as the routing: the two never drift apart.
+			// The mode and the option land in the same write as the routing: they never drift apart.
 			if (orchestratorMode !== undefined && hasOwnProfile(next.profiles, name)) {
 				next = setProfileOrchestratorMode(next, name, orchestratorMode);
+			}
+			if (controlledEngineering !== undefined && hasOwnProfile(next.profiles, name)) {
+				next = setProfileControlledEngineering(next, name, controlledEngineering);
 			}
 			writeProfilesFileSync(path, next);
 			file = next;
@@ -7060,9 +7159,9 @@ async function openProfilesPanelLoop(
 			return false;
 		}
 	};
-	const switchProfile: RoutingProfileSwitcher = (name, saveFirst, saveFirstMode) => {
+	const switchProfile: RoutingProfileSwitcher = (name, saveFirst, saveFirstMode, saveFirstControlledEngineering) => {
 		const previous = selectedName!;
-		if (saveFirst && !writeDraft(previous, saveFirst, saveFirstMode)) {
+		if (saveFirst && !writeDraft(previous, saveFirst, saveFirstMode, saveFirstControlledEngineering)) {
 			const error = feedback ?? `"${previous}" was not saved.`;
 			feedback = undefined;
 			return { error };
@@ -7122,6 +7221,7 @@ async function openProfilesPanelLoop(
 				config: draftOverride ?? stored,
 				file,
 				modeDraft: modeDraftOverride,
+				controlledEngineeringDraft: controlledDraftOverride,
 				sessionBoundName: launch?.name,
 				pinWinner: pinWinner(),
 				feedback,
@@ -7131,8 +7231,9 @@ async function openProfilesPanelLoop(
 			draftOverride = undefined;
 			feedback = undefined;
 			modeDraftOverride = undefined;
+			controlledDraftOverride = undefined;
 			const previous = selectedName;
-			if (result.saveFirst && !writeDraft(previous, result.saveFirst, result.saveFirstMode)) {
+			if (result.saveFirst && !writeDraft(previous, result.saveFirst, result.saveFirstMode, result.saveFirstControlledEngineering)) {
 				draftOverride = result.saveFirst;
 				continue;
 			}
@@ -7151,6 +7252,7 @@ async function openProfilesPanelLoop(
 					const answer = await step(() => ctx.ui.input(`Custom model id for ${label}`, "provider/model"));
 					draftOverride = cloneModelConfig(result.config);
 					modeDraftOverride = result.modeDraft;
+					controlledDraftOverride = result.controlledEngineeringDraft;
 					if (answer === undefined || answer.trim() === "") {
 						feedback = "No custom model set.";
 						continue;
@@ -7166,7 +7268,7 @@ async function openProfilesPanelLoop(
 					continue;
 				}
 				case "save":
-					if (writeDraft(previous, result.config, result.orchestratorMode)) feedback = `Saved "${previous}".`;
+					if (writeDraft(previous, result.config, result.orchestratorMode, result.controlledEngineering)) feedback = `Saved "${previous}".`;
 					else draftOverride = result.config;
 					continue;
 				case "use-session": {
@@ -7177,6 +7279,7 @@ async function openProfilesPanelLoop(
 						// Keep what is on screen: the next visit shows the same unsaved edits.
 						if (result.config) draftOverride = cloneModelConfig(result.config);
 						modeDraftOverride = result.orchestratorMode;
+						controlledDraftOverride = result.controlledEngineering;
 						continue;
 					}
 					try {
@@ -7188,13 +7291,15 @@ async function openProfilesPanelLoop(
 						// and the status line says so.
 						const modeChanged = result.orchestratorMode !== undefined
 							&& result.orchestratorMode !== readProfileWorkflow(file, previous).orchestratorMode;
-						if ((saved || modeChanged) && !writeDraft(previous, config, result.orchestratorMode)) {
+						const controlledChanged = result.controlledEngineering !== undefined
+							&& result.controlledEngineering !== readProfileWorkflow(file, previous).controlledEngineering;
+						if ((saved || modeChanged || controlledChanged) && !writeDraft(previous, config, result.orchestratorMode, result.controlledEngineering)) {
 							draftOverride = config;
 							continue;
 						}
 						const report: ProfilesPanelReport = {};
 						file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "use-session", name: previous, config }, report));
-						feedback = `${saved ? `Saved "${previous}". ` : ""}${modeChanged ? `"${previous}" now keeps its orchestrator in ${result.orchestratorMode} mode. ` : ""}${report.status ?? ""}`.trim() || undefined;
+						feedback = `${saved ? `Saved "${previous}". ` : ""}${modeChanged ? `"${previous}" now keeps its orchestrator in ${result.orchestratorMode} mode. ` : ""}${controlledChanged ? `"${previous}" now has Controlled Engineering ${result.controlledEngineering ? "on" : "off"}. ` : ""}${report.status ?? ""}`.trim() || undefined;
 						continue;
 					} finally {
 						endDesktopProfileApply();
@@ -13183,6 +13288,7 @@ function createGentleAiExtensionForTesting(
 		if (!currentPrompt()) {
 			updateYoloPrompt(event.systemPromptOptions, false, false);
 			updateAutoPrompt(event.systemPromptOptions, false);
+			updateControlledEngineeringPrompt(event.systemPromptOptions, false);
 			return undefined;
 		}
 		const promptGeneration = rddStatusGeneration(promptCwd);
@@ -13192,6 +13298,7 @@ function createGentleAiExtensionForTesting(
 		if (!currentPrompt()) {
 			updateYoloPrompt(event.systemPromptOptions, false, false);
 			updateAutoPrompt(event.systemPromptOptions, false);
+			updateControlledEngineeringPrompt(event.systemPromptOptions, false);
 			return undefined;
 		}
 		const staleRead = rddStatusGeneration(promptCwd) !== promptGeneration;
@@ -13204,6 +13311,7 @@ function createGentleAiExtensionForTesting(
 		if (rddStatusLine !== undefined && !staleRead) pinnedRddStatusLines.set(subagentDepthKey, { cwd: promptCwd, line: rddStatusLine });
 		rddOffReviewLoadout = isPrimarySession && isRddStatusLineOff(rddStatusLine);
 		if (rddOffReviewLoadout) applyRddOffReviewPrompt(event.systemPromptOptions as ReviewToolPromptOptions | undefined);
+		const sessionWorkflow = isPrimarySession ? resolveSessionWorkflow(ctx, permissionEnvironment) : undefined;
 		const gentlePrompt = rddStatusLine === undefined
 			? ""
 			: `\n\n${buildGentlePrompt(
@@ -13216,7 +13324,7 @@ function createGentleAiExtensionForTesting(
 					// on another profile changes these rules on the next turn, and pressing
 					// Enter back restores them. A child or named-agent session keeps the
 					// organic rules: its own instructions are the bounded task it received.
-					isPrimarySession ? resolveSessionDelegationMode(ctx, permissionEnvironment) : DEFAULT_ORCHESTRATOR_MODE,
+					sessionWorkflow?.orchestratorMode ?? DEFAULT_ORCHESTRATOR_MODE,
 				)}`;
 		// gentle-pi#560 / gentle-ai#4056, #4057: inject the mirrored provider
 		// contract bundle's review execution contract for the primary session
@@ -13247,6 +13355,11 @@ function createGentleAiExtensionForTesting(
 		// and forwards only systemPromptOptions, so the harness is delivered
 		// through the mutable appendSystemPrompt section instead of a replacement.
 		appendSystemPromptOnce(event.systemPromptOptions, `${gentlePrompt}${reviewContractPrompt}`);
+		// controlled-engineering S3: an organic primary whose profile enables the
+		// option, or a writer or verify child the launcher marked; nobody else.
+		updateControlledEngineeringPrompt(event.systemPromptOptions, sessionWorkflow !== undefined
+			? sessionWorkflow.orchestratorMode === "organic" && sessionWorkflow.controlledEngineering === true
+			: isChildSession && permissionEnvironment[CONTROLLED_ENGINEERING_ENV] === "1");
 		const promptMode = isPrimarySession ? await yolo.mode(ctx) : "normal";
 		updateYoloPrompt(event.systemPromptOptions, promptMode === "yolo", promptMode === "super-yolo");
 		updateAutoPrompt(event.systemPromptOptions, promptMode === "auto");
@@ -13372,14 +13485,14 @@ function createGentleAiExtensionForTesting(
 		// so a crossing is announced on the next sampled result — never later than one window past it.
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		const primary = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(sessionKey) ?? 0) === 0;
-		const explorationNotice = explorationBudget.result(sessionKey, event, primary, ctx.signal?.aborted === true, () => resolveSessionDelegationMode(ctx, permissionEnvironment));
+		const explorationNotice = explorationBudget.result(sessionKey, event, primary, ctx.signal?.aborted === true, () => resolveSessionWorkflow(ctx, permissionEnvironment).orchestratorMode);
 		// Keep discovery payloads intact. Steer only an already-active run so the
 		// next model step sees the notice without starting a new run while idle.
 		if (explorationNotice && typeof ctx.isIdle === "function" && !ctx.isIdle()) {
 			try { pi.sendMessage({ customType: "gentle-pi.exploration-budget", content: explorationNotice, details: explorationBudget.facts(sessionKey), display: true }, { deliverAs: "steer", triggerTurn: true }); } catch { /* Advisory only. */ }
 		}
 		let notice: string | undefined;
-		try { notice = primary ? contextBackstopSignal(sessionKey, contextBackstopMeasure(sessionKey, () => ctx.getContextUsage?.()), () => resolveSessionDelegationMode(ctx, permissionEnvironment)) : undefined; } catch { notice = undefined; }
+		try { notice = primary ? contextBackstopSignal(sessionKey, contextBackstopMeasure(sessionKey, () => ctx.getContextUsage?.()), () => resolveSessionWorkflow(ctx, permissionEnvironment).orchestratorMode) : undefined; } catch { notice = undefined; }
 		const withNotice = (patch: ToolResultEventResult | undefined) => notice ? appendContextBackstopNotice(event, patch, notice) : patch;
 		// Harness roadmap T4: a parent commit reports the branch's authored
 		// changed lines so delivery slicing reads a number, not an estimate.
@@ -13433,7 +13546,7 @@ function createGentleAiExtensionForTesting(
 				const root = needsDocument ? resolveSessionWorktree(target, ctx.cwd)?.root ?? target : target;
 				// The guard reads the same mode the prompt was built with, from the session's own environment, so the
 				// two can never disagree about whether a small change belongs to a writer.
-				const orchestratorMode = resolveSessionDelegationMode(ctx, permissionEnvironment);
+				const orchestratorMode = resolveSessionWorkflow(ctx, permissionEnvironment).orchestratorMode;
 				// cost-speed P6: the launches of the same assistant message, read from the session branch (persisted on
 				// `message_end`, before Pi prepares any of its calls). A nested codemode call is never in the message.
 				const sameMessageCalls = sameMessageToolCalls(ctx.sessionManager, event.parentToolCallId === undefined ? event.toolCallId : undefined);

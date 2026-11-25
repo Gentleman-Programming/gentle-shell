@@ -100,9 +100,11 @@ export async function liveFeeds(feeds) {
   const want = [...new Set(feeds.map((f) => f.identity?.pid).filter(positive))].filter((pid) => !(now - (alive.get(pid)?.at ?? 0) < ALIVE_MS));
   if (want.length) {
     try {
-      // `ps -p` lists the pids that run; it exits 1 when one of them does not.
+      // `ps -p` lists the pids that run; it exits 1 when one of them does not. A `ps` that
+      // does not understand `-o` exits 1 too (MSYS/Git on Windows), so only a successful
+      // listing is trusted: an unusable `ps` leaves every snapshot live, as when it is missing.
       const r = await exec("ps", ["-o", "pid=", "-p", want.join(",")], { timeout: 3000 });
-      if (r.code === 0 || r.code === 1) {
+      if (r.code === 0) {
         const running = new Set(String(r.stdout).split(/\s+/).map(Number).filter(positive));
         for (const pid of want) alive.set(pid, { ok: running.has(pid), at: now });
       }

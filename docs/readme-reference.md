@@ -1296,7 +1296,7 @@ On the models screen, `c` toggles the shown profile's option and `s` saves it to
 
 The section reaches only sessions that write or verify code:
 
-- the primary session, when its profile has the option on and its orchestrator mode is `organic` (a full delegation orchestrator does not write);
+- the primary session, when its profile has the option on and its orchestrator mode is `organic` (a full delegation orchestrator does not write); the mode that counts is the session's effective mode, so `GENTLE_PI_ORCHESTRATOR_MODE` decides it when set;
 - `gentle-ai-worker`, `jd-fix-agent` and `gentle-ai-verify` children, when the launching session's profile has the option on, whatever its mode.
 
 Explore, review and every other agent never receive it. A child launched by hand with only the curated child extensions (without the Gentle Shell package) does not receive the section either; the normal Gentle Shell launch does. The option is read on every prompt build and every launch, so a profile switch applies on the next turn. It is stored in the same `workflow` entry as the mode, as `"controlledEngineering": true` beside `orchestratorMode`; off is never written, so a profile that does not enable it serializes exactly as before and gets exactly today's prompt. Only exactly `true` turns it on; any other value reads as off and drops nothing, so the entry keeps its orchestrator mode.

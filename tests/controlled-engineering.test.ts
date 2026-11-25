@@ -8,9 +8,10 @@ import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 
 // ---------------------------------------------------------------------------
 // controlled-engineering S2/S3/S6: the approved section reaches the system
-// prompt verbatim, once, only for sessions that write code: the primary
-// session in organic mode when its profile enables the option, and the child
-// sessions the launcher marked (gentle-ai-worker and jd-fix-agent).
+// prompt verbatim, once, only for sessions that write or verify code: the
+// primary session in organic mode when its profile enables the option, and the
+// child sessions the launcher marked (gentle-ai-worker, jd-fix-agent and
+// gentle-ai-verify).
 // ---------------------------------------------------------------------------
 
 // The S2 text, copied verbatim from odd/tasks/controlled-engineering.md.
@@ -178,6 +179,18 @@ test("S3: a full-delegation primary never gets the section, even with the option
 	const prompt = await build({ appendSystemPrompt: "" }, "ce-primary-full");
 	assert.match(prompt, /COORDINATOR in full delegation mode/);
 	assert.equal(occurrences(prompt), 0);
+});
+
+test("S3: the primary gate follows the effective mode, so the GENTLE_PI_ORCHESTRATOR_MODE override decides it", async () => {
+	// The option comes from the profile; the mode is the session's effective one.
+	writeProfiles({ orchestratorMode: "organic", controlledEngineering: true });
+	const overriddenFull = await build({ appendSystemPrompt: "" }, "ce-primary-env-full", { GENTLE_PI_ORCHESTRATOR_MODE: "full-delegation" });
+	assert.match(overriddenFull, /COORDINATOR in full delegation mode/);
+	assert.equal(occurrences(overriddenFull), 0);
+	writeProfiles({ orchestratorMode: "full-delegation", controlledEngineering: true });
+	const overriddenOrganic = await build({ appendSystemPrompt: "" }, "ce-primary-env-organic", { GENTLE_PI_ORCHESTRATOR_MODE: "organic" });
+	assert.doesNotMatch(overriddenOrganic, /COORDINATOR in full delegation mode/);
+	assert.equal(occurrences(overriddenOrganic), 1);
 });
 
 test("S3: a child the launcher marked gets the section; an unmarked child does not", async () => {

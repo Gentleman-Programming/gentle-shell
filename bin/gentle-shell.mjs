@@ -1564,6 +1564,9 @@ function handleSetupCheck(args, json) {
 	try {
 		home = resolveHome({ args, env: process.env, homedir: homedir(), config: loadConfig() });
 		if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
+		// A missing home just needs setup; one that exists but cannot be listed
+		// is a read error (exit 3), not a home to report as empty.
+		if (existsSync(home.dir)) readdirSync(home.dir);
 		result = setupCheck(readRawConfig(resolveConfigPath()), safeRealpath(home.dir), resolveSetupGentleAiPin(), ownPackageVersion());
 		// Automatic setup never touches a --link home, so it is foreign here too.
 		foreign = home.mode === "link" || homeIsForeign(home, result.previous, homeHasContent(home.dir));

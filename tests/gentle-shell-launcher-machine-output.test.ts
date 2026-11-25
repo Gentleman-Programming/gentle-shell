@@ -137,7 +137,7 @@ test("describeSetupCheck prints one readable line without --json", () => {
 	assert.equal(describeSetupCheck({ needsSetup: false, reasons: [] }, { home: isolatedHome, foreign: false, json: false }),
 		"gentle-shell: /gentle-shell/agent is set up");
 	assert.equal(describeSetupCheck({ needsSetup: true, reasons: ["gentle-ai-changed", "gentle-pi-changed"] }, { home: isolatedHome, foreign: false, json: false }),
-		"gentle-shell: /gentle-shell/agent needs setup (gentle-ai changed, gentle-pi changed); run `gentle-shell setup`");
+		"gentle-shell: /gentle-shell/agent needs setup (gentle-ai changed, gentle-pi changed); run `gentle-shell --isolated setup`");
 	const custom: ResolvedHome = { mode: "path", dir: "/my home", source: "flag" };
 	assert.equal(describeSetupCheck({ needsSetup: true, reasons: ["never-provisioned"] }, { home: custom, foreign: true, json: false }),
 		"gentle-shell: /my home needs setup (never provisioned; not created by Gentle Shell, so it is never set up automatically); run `gentle-shell --home '/my home' setup`");
@@ -313,6 +313,19 @@ test("gentle-shell setup --check reports an unreadable config with exit 3, as JS
 	assert.equal(text.stdout, "");
 	assert.equal(text.stderr, "gentle-shell setup --check: could not read the launcher config or home (EISDIR)\n");
 	assert.ok(!json.stdout.includes(root) && !text.stderr.includes(root));
+	assert.deepEqual(snapshot(root), before);
+});
+
+test("gentle-shell setup --check reports a home that cannot be listed with exit 3, not as needing setup", () => {
+	const root = scratch();
+	// A file where the home directory should be: listing it fails (ENOTDIR).
+	const home = join(root, "not-a-dir");
+	writeFileSync(home, "x");
+	const before = snapshot(root);
+	const json = run(root, ["--home", home, "setup", "--check", "--json"]);
+	assert.equal(json.status, 3, json.stdout + json.stderr);
+	assert.deepEqual(JSON.parse(json.stdout), { schema: "gentle-shell.setup-check/v1", error: "could not read the launcher config or home (ENOTDIR)" });
+	assert.ok(!json.stdout.includes(root));
 	assert.deepEqual(snapshot(root), before);
 });
 

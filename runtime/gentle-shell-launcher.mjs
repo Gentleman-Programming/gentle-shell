@@ -585,7 +585,10 @@ export function describeSetupCheck(result                                       
 	if (!result.needsSetup) return `gentle-shell: ${home.dir} is set up`;
 	const why = result.reasons.map((reason) => SETUP_CHECK_REASON_TEXT[reason]).join(", ");
 	const foreignNote = foreign ? "; not created by Gentle Shell, so it is never set up automatically" : "";
-	const command = ["gentle-shell", ...homeSelectorFlags(home).map(shellQuote), "setup"].join(" ");
+	// An isolated home is named explicitly: when the saved default is another
+	// home, a bare `gentle-shell setup` would set up that one instead.
+	const selectors = home.mode === "isolated" ? ["--isolated"] : homeSelectorFlags(home);
+	const command = ["gentle-shell", ...selectors.map(shellQuote), "setup"].join(" ");
 	return `gentle-shell: ${home.dir} needs setup (${why}${foreignNote}); run \`${command}\``;
 }
 

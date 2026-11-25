@@ -386,3 +386,15 @@ test("shell word splitting removes quotes and escapes and splits on control oper
 	assert.deepEqual(shellCommandWords("cat .env"), ["cat", ".env"]);
 	assert.deepEqual(shellCommandWords("cat 'unterminated"), ["cat", "unterminated"]);
 });
+
+test("a quoted reader name written as $'…' or $\"…\" still exposes the line, while an uppercase variable does not (S2, L18)", () => {
+	const envFile = ".en" + "v";
+	const key = "~/.s" + "sh/id_ed25519";
+	for (const [command, path] of [
+		[`$'cat' ${envFile}`, envFile],
+		[`$"cat" ${envFile}`, envFile],
+		[`$'cat' ${key}`, key],
+	]) assert.equal(findSensitiveCommandPath(command), path, command);
+	for (const command of [`node --env-file ${envFile} app.js --stage $ENV`, `node --env-file ${envFile} app.js --stage \${ENV}`])
+		assert.equal(findSensitiveCommandPath(command), undefined, command);
+});

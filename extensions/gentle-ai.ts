@@ -2592,14 +2592,16 @@ const commandName = (word: string): string => word.slice(word.lastIndexOf("/") +
 // The command names a line contains. A line continuation inside a name is
 // removed, and every word is also split at spaces, `$`, `(`, `)` and backticks,
 // so a reader inside a quoted or glued word (`"$(cat key)"`, `x`cat key``,
-// `bash -c "cat key"`) still counts. A `$NAME` or `${NAME}` reference is a
-// variable, never a command (`--stage $ENV`), so it becomes a space first.
+// `bash -c "cat key"`) still counts. A `$NAME` or `${NAME}` reference with an
+// uppercase letter is a variable, never a command (`--stage $ENV`), so it
+// becomes a space first. An all-lowercase one stays: quote removal turns
+// bash's `$'cat'` and `$"cat"` into `$cat`, and bash runs those as `cat`.
 // Only this check splits; the words the guard tests and reports stay as
 // shellCommandWords gives them.
 const VARIABLE_REFERENCE = /\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/g;
 function commandLineNames(command: string): string[] {
 	return shellCommandWords(command.replace(/\\\r?\n/g, ""))
-		.flatMap((word) => word.replace(VARIABLE_REFERENCE, " ").split(/[\s$()`]+/))
+		.flatMap((word) => word.replace(VARIABLE_REFERENCE, (reference) => /[A-Z]/.test(reference) ? " " : reference).split(/[\s$()`]+/))
 		.filter((piece) => piece.length > 0)
 		.map(commandName);
 }

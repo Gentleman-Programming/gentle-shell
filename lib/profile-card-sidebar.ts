@@ -84,7 +84,7 @@ export interface ProfileCardOwner {
 	 * A session boundary (`session_start`): restart on the profile in effect for
 	 * the new session even when the card is already visible, so the card never
 	 * shows (and the use action never applies) a profile the new session does not
-	 * use. A hidden card still reads nothing.
+	 * use, and expands a collapsed card. A hidden card still reads nothing.
 	 */
 	resetForSession(): void;
 	/** Cheap staleness check for render time: refreshItems at most once per PROFILE_CARD_REFRESH_MS while visible. */
@@ -158,6 +158,9 @@ export function createProfileCardOwner(options: ProfileCardOwnerOptions): Profil
 			if (reload(false)) emit();
 		},
 		resetForSession() {
+			// Collapse is in-memory for one session: the new session starts expanded, before
+			// the guard so a card that was folded and then hidden also expands.
+			collapsed = false;
 			// The shown profile belongs to the session that showed it: a boundary restarts at
 			// the profile in effect now, even when the previous selection still exists.
 			if (!visible) return;

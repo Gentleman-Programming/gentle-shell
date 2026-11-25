@@ -113,6 +113,41 @@ test("an empty card collapses to its header too", (t) => {
 	assert.deepEqual(lines(f.rail).map((line) => line.replace(/\s+/g, " ")), ["▸ PROFILE"]);
 });
 
+test("a session boundary expands a collapsed card and the body is back", (t) => {
+	const f = fixture(t, [item("alpha"), item("beta", { session: true })]);
+	assert.equal(lines(f.rail).length, 3);
+	f.rail.handleMouse!(mouse("click", 3, 0));
+	assert.equal(f.owner.collapsed(), true);
+	assert.equal(lines(f.rail).length, 1, "the card is folded to its header");
+	const digestCollapsed = f.rail.digest!();
+	// The collapse state is in memory for one session: a boundary starts expanded.
+	f.owner.resetForSession();
+	assert.equal(f.owner.collapsed(), false, "the collapse state does not survive the session boundary");
+	assert.notEqual(f.rail.digest!(), digestCollapsed, "the boundary repaints the expanded card");
+	const open = lines(f.rail);
+	assert.equal(open.length, 3, "the body rows are back");
+	assert.equal(f.owner.shown()?.name, "beta", "the boundary still restarts on the new session's profile");
+});
+
+test("a hidden card expands at the session boundary without reading a profile store", (t) => {
+	const home = mkdtempSync(join(tmpdir(), "profile-card-collapse-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	let loads = 0;
+	const owner = createProfileCardOwner({ loadItems: () => { loads++; return [item("alpha")]; }, configHome: () => home });
+	// The card was shown and folded, then turned off: its collapse state is still set.
+	writeProfileCard(true, { gentlePiConfigHome: home });
+	owner.refreshVisibility();
+	owner.toggleCollapsed();
+	assert.equal(owner.collapsed(), true);
+	writeProfileCard(false, { gentlePiConfigHome: home });
+	owner.refreshVisibility();
+	assert.equal(owner.visible(), false);
+	const reads = loads;
+	owner.resetForSession();
+	assert.equal(loads, reads, "a hidden card never touches the profile stores");
+	assert.equal(owner.collapsed(), false, "the boundary expands the card for the next session");
+});
+
 test("the pure renderer: collapsed drops body rows and hits, hovered highlights only the header", () => {
 	const items = [item("alpha"), item("beta")];
 	const collapsed = renderProfileCardSection(items, 0, theme, 48, { collapsed: true });

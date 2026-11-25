@@ -179,7 +179,9 @@ test("a panel-sheet render at sheet width never overwrites the rail's click map"
 	const sheetNextX = sheetRow.indexOf("▶");
 	assert.notEqual(sheetNextX, railNextX, "the sheet frame puts ▶ somewhere else");
 	const shown = () => text(f.rail)[1]!.match(/◀ (\w+)/)![1];
-	assert.equal(shown(), "alpha");
+	// Read the shown profile from the owner: rendering the rail here would repaint its
+	// width-48 frame and refresh its hit map, which is what this test must not need.
+	assert.equal(f.owner.shown()?.name, "alpha");
 	// A rail click still routes against the frame the rail painted for its own width.
 	assert.deepEqual(f.rail.handleMouse!(click(railNextX, 1)), { handled: true, render: true }, "rail ▶ still works after a sheet render");
 	assert.equal(shown(), "beta", "the rail click moved the card");

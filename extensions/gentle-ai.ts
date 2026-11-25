@@ -9599,15 +9599,16 @@ function retainNativeCaptureRoutes(selections: ReviewContinuationRegistry, works
 	const selection = reviewIntendedUntrackedInput(status);
 	if (!canCapture && (selection === undefined || !hasBoundSelectionLineage(selection, lineageId))) return;
 	const inputs = canCapture ? status.nextTransition?.collect?.inputs ?? [] : [selection!];
+	const verifiedSelection = selection !== undefined && hasBoundSelectionLineage(selection, lineageId)
+		&& intendedUntrackedStatusMismatch(selection, status) === undefined;
 	// Pin the commit for alias comparison without changing the request used to
 	// re-read STATUS. The provider's base tree alone cannot distinguish commits.
-	let selectionBaseCommit: string | undefined;
-	if (baseRef !== undefined && selection !== undefined && hasBoundSelectionLineage(selection, lineageId)
-		&& status.projection.kind === "base-diff" && /^sha256:[0-9a-f]{64}$/.test(status.targetIdentity)
-		&& intendedUntrackedStatusMismatch(selection, status) === undefined) {
+	let baseCommit: string | undefined;
+	if (baseRef !== undefined && status.projection.kind === "base-diff" && /^sha256:[0-9a-f]{64}$/.test(status.targetIdentity)
+		&& inputs.some((input) => input !== selection || verifiedSelection)) {
 		try {
 			const base = resolveCanonicalCandidateBase(workspaceRoot, baseRef);
-			if (base.tree === status.projection.baseTree) selectionBaseCommit = base.commit;
+			if (base.tree === status.projection.baseTree) baseCommit = base.commit;
 		} catch { /* No verified alias; keep the strict selector comparison. */ }
 	}
 	const routes = inputs.map((input) => {
@@ -9618,7 +9619,7 @@ function retainNativeCaptureRoutes(selections: ReviewContinuationRegistry, works
 			?? status.targetIdentity;
 		return { binding: canonicalReviewCaptureBinding(input), route: Object.freeze({
 			workspaceRoot, lineageId, targetIdentity, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true as const }),
-			...(input === selection && targetIdentity === status.targetIdentity && selectionBaseCommit !== undefined ? { selectionBaseCommit } : {}),
+			...(baseCommit !== undefined && (input !== selection || (verifiedSelection && targetIdentity === status.targetIdentity)) ? { baseCommit } : {}),
 		}) };
 	});
 	for (const { binding, route } of routes) {
@@ -9627,10 +9628,9 @@ function retainNativeCaptureRoutes(selections: ReviewContinuationRegistry, works
 		if (existing.workspaceRoot !== route.workspaceRoot) throw new NativeCaptureRouteRegistrationError("workspace-mismatch");
 		if (existing.lineageId !== route.lineageId) throw new NativeCaptureRouteRegistrationError("lineage-mismatch");
 		if (existing.targetIdentity !== route.targetIdentity) throw new NativeCaptureRouteRegistrationError("target-mismatch");
-		if (existing.baseRef !== undefined && route.baseRef !== undefined && existing.baseRef !== route.baseRef) {
-			if (route.selectionBaseCommit === undefined || !("selectionBaseCommit" in existing) || existing.selectionBaseCommit !== route.selectionBaseCommit) {
-				throw new NativeCaptureRouteRegistrationError("selector-mismatch");
-			}
+		if (existing.baseRef !== undefined && route.baseRef !== undefined && existing.baseRef !== route.baseRef
+			&& (route.baseCommit === undefined || existing.baseCommit !== route.baseCommit)) {
+			throw new NativeCaptureRouteRegistrationError("selector-mismatch");
 		}
 		// Only a fresh offer for the identical verified target can add or omit
 		// its selector. A missing selector must never erase a known one.

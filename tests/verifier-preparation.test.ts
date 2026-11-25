@@ -394,3 +394,14 @@ test("#3231: a promisor remote spelled yes is refused", t => {
 	f.git("config", "remote.origin.promisor", "yes");
 	refused(f.prepare([]), "unsupported shallow, shared, sparse, partial or replaced Git history");
 });
+
+test("#3231: a common sparse checkout overridden to false for the linked worktree prepares ready", t => {
+	const l = linkedWorktree(t);
+	l.f.git("config", "extensions.worktreeConfig", "true");
+	l.f.git("config", "core.sparseCheckout", "true");
+	l.wt("config", "--worktree", "core.sparseCheckout", "false");
+	assert.equal(l.wt("config", "--bool", "core.sparseCheckout"), "false");
+	const result = l.prepare(["app.cjs", "selected [x].cjs"]);
+	assert.equal(result.status, 0, result.stdout + result.stderr);
+	assert.equal(result.receipt.status, "ready");
+});

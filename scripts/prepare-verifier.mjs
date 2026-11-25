@@ -47,8 +47,11 @@ try {
 	const head = git(source, ["rev-parse", "--verify", "HEAD^{commit}"]).trim();
 	// Global and system config are disabled in env, so --list reads only repository and per-worktree config.
 	const config = git(source, ["config", "--list"]);
-	// Git also reads yes, on and 1 as true; let Git normalize the boolean instead of matching its spelling.
-	const enabled = pattern => { try { return /^\S+ true$/m.test(git(source, ["config", "--type=bool", "--get-regexp", pattern])); } catch (error) { if (error.status === 1) return false; throw error; } };
+	// Git also reads yes, on and 1 as true, and a later scope (config.worktree) overrides an earlier one:
+	// read each matching key's effective value through --get instead of matching every listed spelling.
+	const unsetAsEmpty = args => { try { return git(source, args); } catch (error) { if (error.status === 1) return ""; throw error; } };
+	const enabled = pattern => [...new Set(unsetAsEmpty(["config", "--name-only", "--get-regexp", pattern]).split("\n").filter(Boolean))]
+		.some(key => git(source, ["config", "--type=bool", "--get", key]).trim() === "true");
 	if (existsSync(join(commonDir, "shallow")) || existsSync(join(commonDir, "objects", "info", "alternates")) ||
 		/^extensions\.partialclone=/mi.test(config) || enabled("^core\\.sparsecheckout$") || enabled("^remote\\..*\\.promisor$") || git(source, ["for-each-ref", "--format=%(refname)", "refs/replace"]).trim()) fail("unsupported shallow, shared, sparse, partial or replaced Git history");
 	if (plan.baseline !== undefined && (typeof plan.baseline !== "string" || !/^[a-f0-9]{40,64}$/.test(plan.baseline))) fail("baseline must be a full commit object ID");

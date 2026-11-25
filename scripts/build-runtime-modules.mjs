@@ -43,6 +43,7 @@ const sources = [
 	"serve-forward",
 	"serve-http",
 	"serve-files",
+	"serve-git",
 	"serve-server",
 	"serve-share",
 	"serve-cli",

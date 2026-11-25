@@ -12,6 +12,7 @@ import { basename, sep } from "node:path";
 import { hasScope, isServeScope, type Principal, type ServeAuth, type ServeScope } from "./serve-auth.ts";
 import { startDiscoveryResponder, type DiscoveryResponder } from "./serve-discovery.ts";
 import { FileService, type SERVE_FS_LIMITS } from "./serve-files.ts";
+import { GitService, type SERVE_GIT_LIMITS } from "./serve-git.ts";
 import { ForwardError, ForwardManager, type ForwardInfo, type SERVE_FORWARD_LIMITS } from "./serve-forward.ts";
 import { HttpError, need, readJsonBody, realDirectory, SECURITY_HEADERS, sendError, sendJson } from "./serve-http.ts";
 import { HOST_TOOL_METHODS, ServeSession, SessionError, type ServeSessionLimits, type SessionLaunch } from "./serve-session.ts";
@@ -21,7 +22,7 @@ export const SERVE_PROTOCOL = 1;
 export const SERVE_IDENTITY_SCHEMA = "gentle-shell.serve.identity/v1";
 /** Public identity path: a client holding a connection code probes it to find the address that reaches this server. */
 export const SERVE_IDENTITY_PATH = "/.well-known/gentle-shell";
-export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards", "tower", "files"] as const;
+export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards", "tower", "files", "git"] as const;
 
 export const SERVE_SERVER_LIMITS = {
 	heartbeatMs: 20_000,
@@ -94,6 +95,9 @@ export interface ServeServerOptions {
 	/** Starts Gentle Tower on this machine's loopback (`POST /api/tower`); the real CLI runs it in-process. */
 	startTower?: () => Promise<ServeTower>;
 	fsLimits?: Partial<typeof SERVE_FS_LIMITS>;
+	gitLimits?: Partial<typeof SERVE_GIT_LIMITS>;
+	/** The environment for git commands and service lookups; this process's by default. */
+	env?: NodeJS.ProcessEnv;
 }
 
 /** A running Gentle Tower: its loopback port, the path that carries its token, and how to stop it. */
@@ -179,6 +183,8 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 	});
 	// Files on this machine, and their change streams.
 	const files = new FileService({ limits: options.fsLimits, now, log });
+	// git commands in folders on this machine.
+	const git = new GitService({ env: options.env ?? process.env, limits: options.gitLimits, log });
 	// Gentle Tower, when a device asked for it; stopped with the server.
 	let tower: (ServeTower & { startedAt: number }) | undefined;
 	let towerStarting: Promise<ServeTower & { startedAt: number }> | undefined;
@@ -450,6 +456,10 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 			return sendJson(res, 201, { session: sessionView(started, who) });
 		}
 		if (await files.route(req, res, method, path, url, principal)) return;
+		if (path === "/api/git") {
+			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
+			return git.route(req, res, principal);
+		}
 		if (path === "/api/tower") return towerRoute(req, res, method, principal);
 		const forward = /^\/api\/sessions\/([A-Za-z0-9_]{1,64})\/forwards(?:\/([A-Za-z0-9_]{1,64}))?$/.exec(path);
 		if (forward) return forwardRoute(req, res, method, principal, forward[1], forward[2]);
@@ -606,6 +616,7 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 				await discovery?.close();
 				forwards.closeAll();
 				files.closeAll();
+				git.closeAll();
 				await towerStarting?.catch(() => undefined);
 				await stopTower();
 				await Promise.all([...sessions.values()].map((s) => s.stop()));

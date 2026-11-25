@@ -147,7 +147,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | --- | --- | --- |
 | `GET /.well-known/gentle-shell` | none | `{ schema: "gentle-shell.serve.identity/v1", serverId, name, protocol, version }`: who answers at this address (`name` is the machine's hostname). No secrets; `Host` and `Origin` rules still apply. A client holding a [connection code](#connection-code) probes it before pairing. |
 | `POST /api/pair` | none (the code) | `{ code, name? }` → `201 { id, name, scopes, createdAt, token }`. `403 invalid_code`, `429 rate_limited`, `409 too_many_devices`. |
-| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `tower` and `files`. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
+| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `tower`, `files` and `git`. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
 | `POST /api/server/stop` | `admin` | `202`; the server stops its sessions and exits. |
 | `POST /api/pairing-codes` | `admin` | `{ scopes? }` → `201 { code, scopes, expiresAt }` |
 | `GET /api/devices` | `admin` | `{ devices: [{ id, name, scopes, createdAt, lastUsedAt? }] }` |
@@ -175,6 +175,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | `POST /api/fs/remove` | `sessions:operate` | `{ path, recursive? }` → `{ removed }` |
 | `GET /api/fs/search?root=&q=&limit=` | `sessions:read` | `{ root, results: [{ path, name, kind, score }], truncated }` |
 | `GET /api/fs/watch?path=` | `sessions:read` | SSE stream of change batches. |
+| `POST /api/git` | per command | `{ cwd, args, stdin?, env?, timeoutMs? }` → `{ code, signal, stdout, stderr, truncated, timedOut }`. See [git on the server](#git-on-the-server). |
 
 `Session` is `{ id, name, cwd?, state: "running"|"exited", startedAt, exitedAt?, exitCode?, exitSignal?, seq, subscribers, pendingDialogs, lastActiveDevice }`. `name` is the folder's basename; the absolute `cwd` is included only for a token with `sessions:operate` (which can start sessions in any folder anyway). `lastActiveDevice` is the id of the device that most recently drove the session (started it, or sent any request that needs `sessions:operate`: a prompt, a steer, a follow-up, a dialog answer, a host message, a Desktop write), or `null`.
 
@@ -356,6 +357,30 @@ Errors are mapped from the file system: `404 not_found`, `400 not_a_directory`, 
 - **Refused targets.** `remove` and `rename` refuse (`403 protected_path`) the file system root, the server user's home folder, and every folder above the home. The check runs on the entry itself with its folder's symlinks resolved, so `/home/you/link-to-root/home` is refused like `/home`, while removing `/home/you/link-to-home` removes only the link.
 - **No partial writes.** A write that fails, is cut short or is too large leaves the target untouched and removes its temporary file.
 
+## git on the server
+
+`POST /api/git` runs one `git` command in a folder on the server and answers when it ends, so a client shows and drives a repository that lives there (status, diffs, staging, commits, branches, fetch and push).
+
+```json
+{ "cwd": "/home/you/project", "args": ["status", "--porcelain=v2", "-z"], "stdin": "<base64>", "env": { "GIT_AUTHOR_NAME": "…" }, "timeoutMs": 120000 }
+```
+
+- **No shell.** `git` (from the server's `PATH`) runs with `args` as its arguments, in `cwd` (an absolute path to an existing folder, symlinks resolved), in its own process group without a controlling terminal. `args`: 1-256 strings without NUL, each at most 32 KiB. `stdin` (base64, at most 8 MiB) is written to its standard input, which is then closed; without it standard input is empty.
+- **Answer.** `200 { code, signal, stdout, stderr, truncated, timedOut }` whatever the exit code: `code` is git's exit code (`null` when a signal ended it), `stdout` and `stderr` are base64. `stdout` is cut at 32 MiB — git is then stopped and `truncated` is `true` — and `stderr` at 1 MiB. `501 git_missing` when the server has no `git`.
+- **Nobody to ask.** The environment is the server's, without inherited `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the like, plus `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never` (a credential prompt fails instead of waiting), `GIT_PAGER=cat`, `GIT_EDITOR=true` (a commit without `-m` aborts; a rebase takes its todo as is) and `GIT_MERGE_AUTOEDIT=no`; read-only commands also get `GIT_OPTIONAL_LOCKS=0` (they never write the index). `env` may add only: `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_AUTHOR_DATE`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL`, `GIT_COMMITTER_DATE`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_NAMESPACE`, `GIT_LITERAL_PATHSPECS`, `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS`, `GIT_ICASE_PATHSPECS`, `GIT_REFLOG_ACTION`, `GIT_MERGE_AUTOEDIT`, `GIT_MERGE_VERBOSITY`, `GIT_OPTIONAL_LOCKS` (any other name: `400 env_not_allowed`). SSH keys, agents and credential helpers are the server user's own.
+- **Time.** 120 s by default; `timeoutMs` (1000 or more) may lower it, or raise it up to 600 s for `fetch`, `push`, `clone`, `pull`, `ls-remote` and `submodule` (`400 invalid_timeout` otherwise). At the limit git's process group gets SIGTERM, then SIGKILL 2 s later, and the answer has `timedOut: true`. At most 16 commands run at once (`429 too_many_git`); the server's stop ends them.
+
+### git scopes and refusals
+
+A command that only reads needs `sessions:read`; anything else needs `sessions:operate`. The subcommand is the first argument after git's global options (`-C <dir>`, `--no-pager`, `--git-dir=…`, …). Reads are:
+
+- `status`, `diff`, `log`, `show`, `rev-parse`, `ls-files`, `for-each-ref`, `cat-file`, `ls-tree`, `rev-list`, `merge-base`, `blame`, `describe`, `shortlog`, `name-rev`, `check-ignore`, `check-attr`, `grep`, `show-ref`, `diff-tree`, `diff-files`, `diff-index`, `count-objects`, `version`, `ls-remote`, and git with no subcommand (`--version`) — unless they carry `--output` (writes a file) or, for `grep`, `-O`/`--open-files-in-pager` (runs a program);
+- `branch` and `tag` listing (no name, or `--list`/`-l`, `--contains`, `--merged`, `--points-at`, `--show-current`, …, and no flag that creates, deletes, moves or signs); `config --get`/`--get-all`/`--get-regexp`/`--get-urlmatch`/`--list` and `config get`/`config list`; `remote` with no subcommand, `remote get-url` and `remote show`; `stash list`/`show`; `worktree list`; `symbolic-ref` with one name.
+
+Any `-c`/`--config-env` override makes a command an operation (configuration can make a read run a program). Some configuration and options are refused outright with `400 git_refused`, whatever the scope, because they make git run another program: the keys `core.sshCommand`, `core.fsmonitor`, `core.hooksPath`, `core.gitProxy`, `uploadpack.*`, `alias.*`, `remote.<name>.uploadpack`, `remote.<name>.receivepack` and `protocol.ext.allow` (in `-c`, `--config-env`, and `clone -c`/`--config`); `--exec-path=<dir>`; `--upload-pack`, `--receive-pack` and `--exec` (and `-u` for `clone` and `ls-remote`). Arguments after `--` are paths and never checked as options.
+
+This is defence in depth, not a sandbox: `sessions:operate` is the server user's authority (it can already write `.git/config` through the file endpoints or a session's tools), so the refusals only keep the convenient injection routes closed and keep `sessions:read` from becoming command execution.
+
 ## Security model
 
 - **Loopback by default.** Without `--listen` the server binds `127.0.0.1` on a random port. Remote use goes through `ssh -L` (or a tunnel) to that port.
@@ -395,6 +420,7 @@ Errors are mapped from the file system: `404 not_found`, `400 not_a_directory`, 
 | Folder list | 5000 entries, then `truncated` |
 | File search | 1000 results; 200 000 entries or 5 s walked, then `truncated` |
 | Change streams | 32 per device; batches after 150 ms quiet, at most 1 s late, 1000 paths |
+| git command | 120 s (600 s for network commands); 32 MiB stdout, 1 MiB stderr, 8 MiB stdin; 16 at once |
 
 ## Try it from source on Linux
 

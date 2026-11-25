@@ -13,6 +13,7 @@ import { basename, sep } from "node:path";
 import { hasScope, isServeScope,                                                 } from "./serve-auth.mjs";
 import { startDiscoveryResponder,                         } from "./serve-discovery.mjs";
 import { FileService,                      } from "./serve-files.mjs";
+import { GitService,                       } from "./serve-git.mjs";
 import { ForwardError, ForwardManager,                                             } from "./serve-forward.mjs";
 import { HttpError, need, readJsonBody, realDirectory, SECURITY_HEADERS, sendError, sendJson } from "./serve-http.mjs";
 import { HOST_TOOL_METHODS, ServeSession, SessionError,                                             } from "./serve-session.mjs";
@@ -22,7 +23,7 @@ export const SERVE_PROTOCOL = 1;
 export const SERVE_IDENTITY_SCHEMA = "gentle-shell.serve.identity/v1";
 /** Public identity path: a client holding a connection code probes it to find the address that reaches this server. */
 export const SERVE_IDENTITY_PATH = "/.well-known/gentle-shell";
-export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards", "tower", "files"]         ;
+export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards", "tower", "files", "git"]         ;
 
 export const SERVE_SERVER_LIMITS = {
 	heartbeatMs: 20_000,
@@ -72,6 +73,9 @@ export function carriesHostToolRequest(message        )          {
 	}
 	return !!request && typeof request === "object" && "method" in request && typeof request.method === "string" && Object.hasOwn(HOST_TOOL_METHODS, request.method);
 }
+
+
+
 
 
 
@@ -180,6 +184,8 @@ export function startServeServer(options                    )                   
 	});
 	// Files on this machine, and their change streams.
 	const files = new FileService({ limits: options.fsLimits, now, log });
+	// git commands in folders on this machine.
+	const git = new GitService({ env: options.env ?? process.env, limits: options.gitLimits, log });
 	// Gentle Tower, when a device asked for it; stopped with the server.
 	let tower                                                  ;
 	let towerStarting                                                         ;
@@ -451,6 +457,10 @@ export function startServeServer(options                    )                   
 			return sendJson(res, 201, { session: sessionView(started, who) });
 		}
 		if (await files.route(req, res, method, path, url, principal)) return;
+		if (path === "/api/git") {
+			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
+			return git.route(req, res, principal);
+		}
 		if (path === "/api/tower") return towerRoute(req, res, method, principal);
 		const forward = /^\/api\/sessions\/([A-Za-z0-9_]{1,64})\/forwards(?:\/([A-Za-z0-9_]{1,64}))?$/.exec(path);
 		if (forward) return forwardRoute(req, res, method, principal, forward[1], forward[2]);
@@ -607,6 +617,7 @@ export function startServeServer(options                    )                   
 				await discovery?.close();
 				forwards.closeAll();
 				files.closeAll();
+				git.closeAll();
 				await towerStarting?.catch(() => undefined);
 				await stopTower();
 				await Promise.all([...sessions.values()].map((s) => s.stop()));

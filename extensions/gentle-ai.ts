@@ -7807,7 +7807,7 @@ function parseReviewControllerParameters(value: unknown): ReviewControllerParame
 	};
 	for (const key of ["changeName", "idempotencyKey", "transition", "input", "outputPath", "inputPath", "operationId", "lineageIds", "acknowledgeUntrustedBundleSource", "workspaceRoot"] as const) {
 		const optional = value[key];
-		if (key === "input" && key in value && (value.operation === REVIEW_CONTROLLER_OPERATION.START || value.operation === REVIEW_CONTROLLER_OPERATION.ASSESS || value.operation === REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT || value.operation === REVIEW_CONTROLLER_OPERATION.ABANDON || value.operation === REVIEW_CONTROLLER_OPERATION.STATUS)) {
+		if (key === "input" && key in value) {
 			parameters.input = serializeReviewJsonArgument(optional);
 			continue;
 		}

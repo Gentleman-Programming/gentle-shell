@@ -159,6 +159,25 @@ test("a relative dangling symlink to an outside file requests consent (#1659)", 
 	assert.equal(existsSync(dangling), false);
 });
 
+test("a dangling outside link with an ordinary parent segment asks", { skip: process.platform === "win32" }, async t => {
+	const f = fixture(t, { skills: true });
+	const work = realpathSync(process.cwd());
+	const leaf = "__gentle_path_consent_missing_leaf__.md";
+	const target = join(work, leaf);
+	assert.equal(existsSync(target), false);
+	symlinkSync(`${relative(f.repo, work)}/skills/../${leaf}`, join(f.repo, "alias"), "file");
+	assert.deepEqual(await f.call("write", { path: "alias", content: "fixture" }), declined);
+	assert.deepEqual(f.prompts, [[title, target]]);
+	assert.equal(existsSync(target), false);
+
+	// Lexically cancelling prefix/.. would leave this path inside f.repo.
+	symlinkSync(join(work, "skills"), join(f.repo, "prefix"), "dir");
+	symlinkSync(`prefix/../${leaf}`, join(f.repo, "redirected"), "file");
+	assert.deepEqual(await f.call("write", { path: "redirected", content: "fixture" }), declined);
+	assert.deepEqual(f.prompts, [[title, target], [title, target]]);
+	assert.equal(existsSync(target), false);
+});
+
 test("an empty or malformed durable registration cannot widen the worktree boundary (#1660)", async t => {
 	const f = fixture(t, { hasUI: false });
 	for (const root of ["", ".", "../repo", parse(outside).root]) {

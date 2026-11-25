@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -39,18 +39,18 @@ function canonicalizePath(absolute: string): string {
 		if (stat?.isSymbolicLink()) {
 			if (++links > 40) throw new Error("Too many symbolic links");
 			const target = readlinkSync(probe);
-			const components = target.split(process.platform === "win32" ? /[\\/]/ : "/").filter(part => part !== "" && part !== ".");
-			const firstChild = components.findIndex(part => part !== "..");
-			if ((isAbsolute(target) ? components : firstChild < 0 ? [] : components.slice(firstChild)).includes("..")) {
-				throw new Error("Ambiguous symbolic link parent traversal");
-			}
-			probe = resolve(realpathSync.native(dirname(probe)), target, ...missing.reverse());
-			missing.length = 0;
+			const { root } = parse(target);
+			const base = resolve(realpathSync.native(dirname(probe)), root);
+			// Keep parent segments for native realpath: a preceding component
+			// may itself be a symlink. Append the missing tail only after that.
+			probe = base + (base.endsWith(sep) ? "" : sep) + target.slice(root.length);
 			continue;
 		}
 		const parent = dirname(probe);
-		if (stat || parent === probe) throw new Error("Unresolved path");
-		missing.push(basename(probe));
+		const component = basename(probe);
+		// A parent segment is meaningful only if its prefix actually resolves.
+		if (stat || parent === probe || component === "..") throw new Error("Unresolved path");
+		missing.push(component);
 		probe = parent;
 	}
 }

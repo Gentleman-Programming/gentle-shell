@@ -64,8 +64,8 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials", "set_host_tools", "host_tool_result", "host_tool_progress", "host_message", "set_host_context", "set_host_activity"],
-  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel", "session_snapshot"]
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials", "set_host_tools", "host_tool_result", "host_tool_progress", "host_message", "set_host_context", "set_host_activity", "login_start", "login_complete", "login_cancel", "set_api_key", "remove_credentials", "list_packages", "install_package", "remove_package"],
+  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel", "login_prompt", "login_finished", "package_progress", "package_finished", "session_snapshot"]
 }
 ```
 
@@ -1556,8 +1556,8 @@ Lists the providers this session knows models for, and whether each has credenti
   "ok": true,
   "data": {
     "providers": [
-      { "provider": "anthropic", "displayName": "Anthropic", "configured": true, "type": "oauth", "source": "stored" },
-      { "provider": "openai-codex", "displayName": "OpenAI Codex", "configured": false, "type": null, "source": null }
+      { "provider": "anthropic", "displayName": "Anthropic", "configured": true, "type": "oauth", "source": "stored", "loginKinds": ["oauth", "api_key"] },
+      { "provider": "openai-codex", "displayName": "OpenAI Codex", "configured": false, "type": null, "source": null, "loginKinds": ["oauth", "device"] }
     ],
     "truncated": false
   }
@@ -1570,6 +1570,7 @@ Lists the providers this session knows models for, and whether each has credenti
 | `configured` | Pi has credentials it can use for this provider. |
 | `type` | `oauth` (a sign-in) or `api_key` when configured, otherwise `null`. |
 | `source` | Where Pi found them: `stored` (Pi's credential store), `runtime`, `environment`, `models_json` (a key or a command in `models.json`; which one is not said), or `extension` (a provider extension's fallback). `null` when not configured. |
+| `loginKinds` | How a client can sign in to this provider, from Pi's provider definition: `oauth` (a browser sign-in), `device` (a device code the user types on the provider's page), `api_key` (a key, with [`set_api_key`](#set_api_key)). Pi's OAuth flows that run a device code only (`github-copilot`, `kimi-coding`, `meta`, `xai`) list `device` and not `oauth`; `openai-codex` and `radius` list both (the flow asks which). Empty when the provider takes only ambient credentials (environment, AWS profiles). |
 
 The registry's status label (an environment variable name or a command) never crosses, nor any value. Errors: `invalid_request` (any param), and `auth_unavailable` (no registry in this session, or the registry read failed).
 
@@ -1684,6 +1685,78 @@ Sent by [`gentle-shell serve`](serve.md#host-tools), never by an app: the provid
 ```
 
 At most 64 distinct providers of 1-64 characters each; the list replaces the previous one, and a session change forgets it. Answers `{ "set": true }`. Errors: `invalid_request`.
+
+### `login_start`
+
+Starts Pi's own sign-in to a provider for a client that is not in front of this machine: the flow `/login` runs, through Pi's model runtime (`ModelRuntime.login`, behind the session's `ctx.modelRegistry`). What Pi's login dialog would show becomes a [`login_prompt`](#login_prompt) event; each question waits for [`login_complete`](#login_complete); the end is one [`login_finished`](#login_finished).
+
+```json
+{ "provider": "anthropic", "kind": "oauth" }
+```
+
+`provider` is a provider id from [`get_auth_status`](#get_auth_status). `kind` is optional: `oauth` (the provider's OAuth sign-in, a browser sign-in or a device code, whichever its `loginKinds` say) or `api_key` (the provider's interactive key setup, for a provider whose key comes with other values, such as an account id). Without it, `oauth` when the provider has one, else `api_key`. Answers `{ "loginId": "login_<16 hex>" }` before the flow's first event. One sign-in per provider at a time (also against `set_api_key` and `remove_credentials` for it), and each is cancelled after 15 minutes. A session change (new session, `switch_session`, shutdown) cancels it, with no `login_finished`.
+
+On success Pi stores the credential in its credential store (`auth.json` in the agent home, owner-only) exactly as `/login` does, synchronizes the provider, and this slice then refreshes the registry as [`reload_credentials`](#reload_credentials) does: the provider's models are available at once, without restarting the session. Other sessions read the stored credential on their next request and list the provider as configured after their own `reload_credentials`.
+
+Errors: `invalid_request`, `login_unavailable` (no model runtime in this session), `unknown_provider`, `login_unsupported` (the provider has no sign-in of that kind), `login_in_progress`.
+
+A browser sign-in whose provider redirects to a loopback callback on this machine (`http://localhost:1455/auth/callback` for OpenAI, `http://localhost:53692/callback` for Anthropic) cannot be completed by the browser of another device: that redirect would reach the client's own machine. Pi listens for it here and, at the same time, asks for the code or the redirect URL to be pasted (`input` with `redirectPrefix`). A client intercepts its browser's redirect to `redirectPrefix` (or lets the user paste the address bar) and sends the full URL with `login_complete`; Pi checks the state and exchanges the code exactly as its callback would. When the redirect does reach this machine's callback (the client runs on it), Pi completes on its own and the paste prompt is withdrawn.
+
+### `login_complete`
+
+Answers the question a sign-in is waiting on (the last `login_prompt` of kind `input`):
+
+```json
+{ "loginId": "login_…", "value": "http://localhost:1455/auth/callback?code=…&state=…" }
+```
+
+`value` is at most 8 KiB: the pasted code, the full redirect URL, the text typed, the key (for `secret: true`), or, for a choice (`options`), one option's `id`. Answers `{ "accepted": true }`. Errors: `invalid_request` (also a value that is not one of the options), `unknown_login` (no such sign-in running, or it finished), `no_pending_prompt` (the sign-in is not waiting for an answer: a device code, or the redirect already reached Pi's callback).
+
+### `login_cancel`
+
+```json
+{ "loginId": "login_…" }
+```
+
+Ends a running sign-in: Pi's flow is aborted, nothing is stored, and `login_finished` follows with `ok: false` and `error: "Sign-in cancelled"`. Answers `{ "cancelled": true }`. Errors: `invalid_request`, `unknown_login`.
+
+### `set_api_key`
+
+Saves an API key for a provider, the way `/login`'s key setup does: the provider's own key setup (`apiKey.login`) receives the key, and Pi stores `{ "type": "api_key", "key" }` in its credential store (owner-only) and synchronizes the provider; then the registry is refreshed as `reload_credentials` does.
+
+```json
+{ "provider": "openrouter", "key": "sk-or-…" }
+```
+
+`key` is one line of 1-4096 printable characters; surrounding whitespace is dropped. Answers `{ "saved": true }`. The key is never echoed in an answer, an event or an error, and this process never logs it. Errors: `invalid_request`, `login_unavailable`, `unknown_provider`, `login_unsupported` (no key setup: ambient credentials only, or OAuth only), `login_in_progress`, `interactive_setup_required` (the provider asks for more than the key; use `login_start` with `kind: "api_key"`), `save_failed`.
+
+### `remove_credentials`
+
+```json
+{ "provider": "openrouter" }
+```
+
+`/logout`: removes what Pi stored for the provider, a sign-in or a key, through Pi's runtime (`ModelRuntime.logout`), then refreshes the registry. Environment variables and `models.json` are not touched, so a provider configured there stays configured. Answers `{ "removed": true }`, or `{ "removed": false }` when nothing was stored for it. Errors: `invalid_request`, `login_unavailable`, `login_in_progress`, `remove_failed`.
+
+### `list_packages`
+
+The packages Pi's settings name, as `gentle-shell list` prints them. Params must be an empty object.
+
+```json
+{ "ok": true, "data": { "packages": [{ "source": "npm:pi-skills", "version": "1.4.0", "scope": "user" }, { "source": "git:github.com/acme/tools", "scope": "project" }] } }
+```
+
+`scope` is `user` (the agent home's settings) or `project` (the session folder's). `version` is the installed package's `package.json` version, when it is installed and has one. At most 500. Errors: `invalid_request`, `packages_unavailable`.
+
+### `install_package`
+
+### `remove_package`
+
+```json
+{ "source": "npm:pi-skills", "scope": "user" }
+```
+
+Run the same CLI a user would, as a job: `gentle-shell [home] install <source> [-l]` / `remove <source> [-l]` (`-l` for `scope: "project"`; `scope` defaults to `user`), with the launcher and home this session was started with, in the session's folder, stdin closed, color off. So the source syntax (`npm:`, `git:`, URLs, local paths), the project trust check (a project-scope change needs the folder trusted), the npm or git work and the settings write are the CLI's own, and so are its error messages. `source` is 1-1024 characters, without control characters, surrounding spaces, or a leading `-` (it would be read as an option). Answers `{ "jobId": "pkg_<16 hex>" }`, then [`package_progress`](#package_progress) events with the CLI's output lines and one [`package_finished`](#package_finished). One job at a time per session; a job still running after 20 minutes is stopped. After a success the session reloads (`/reload`: extensions, skills, prompts and themes) once the agent is idle, so what was installed is there without restarting it; the reload replaces this session's extensions like any `/reload`, so a client asks [`capabilities`](#capabilities) again after it. Other sessions on the same machine load the change when they start or reload. Errors: `invalid_request`, `packages_unavailable`, `package_job_running`.
 
 ## Responses
 
@@ -2063,6 +2136,47 @@ The call is over without the client's answer (the turn was aborted, or 10 minute
 { "event": "host_tool_cancel", "data": { "callId": "htc_3f2a…" } }
 ```
 
+### `login_prompt`
+
+Something a running sign-in ([`login_start`](#login_start)) shows or asks, in order:
+
+```json
+{ "event": "login_prompt", "data": { "loginId": "login_…", "kind": "open_url", "url": "https://auth.openai.com/oauth/authorize?…", "message": "Complete login in your browser.", "redirectPrefix": "http://localhost:1455/" } }
+```
+
+| `kind` | Fields | The client |
+| --- | --- | --- |
+| `open_url` | `url` (`https:`/`http:`), `message?`, `redirectPrefix?` | Opens `url` in a browser. `redirectPrefix` is the loopback callback the provider redirects to (`http://localhost:1455/`, `http://127.0.0.1:53692/`…) when the sign-in waits for that redirect: the client watches for a navigation that starts with it and sends the full URL with `login_complete` when the paste `input` comes. |
+| `device_code` | `url` (the verification page), `userCode` | Shows the code and opens (or offers) the page; nothing to answer, Pi polls the provider. |
+| `input` | `message`, `placeholder?`, `secret?: true`, `options?: [{ id, label }]`, `redirectPrefix?` | Asks the user and answers with `login_complete`. `secret` masks the field (a key). `options` is a choice (Anthropic, OpenAI Codex and Radius first ask browser or device/copy-code); the answer is an option's `id`. `redirectPrefix` marks the paste prompt that races Pi's own callback: the intercepted redirect URL, or the code, is the answer. |
+| `progress` | `message`, `url?` | Shows a status line (`url`: a link to show with it). |
+
+Text fields are one line each, control characters replaced, at most 1024 characters (`placeholder` and option labels 256, `userCode` 64, URLs 4096); an event Pi raises without anything to show is not sent.
+
+### `login_finished`
+
+```json
+{ "event": "login_finished", "data": { "loginId": "login_…", "provider": "anthropic", "ok": true } }
+```
+
+The sign-in is over. `ok: true`: the credential is stored and the registry was refreshed (as `reload_credentials`); a client reads [`get_auth_status`](#get_auth_status) again. `ok: false` carries `error`, Pi's message on one line, at most 300 characters: `Sign-in cancelled`, `Sign-in timed out` (15 minutes), or the provider flow's own failure (a state mismatch, a refused code). Never a credential.
+
+### `package_progress`
+
+```json
+{ "event": "package_progress", "data": { "jobId": "pkg_…", "line": "Installing npm:pi-skills..." } }
+```
+
+One line of the CLI's output (stdout and stderr, in order per stream), color codes and control characters removed, blank lines skipped, at most 2000 characters. At most 2000 lines per job; after that one `… N more lines` line closes the progress.
+
+### `package_finished`
+
+```json
+{ "event": "package_finished", "data": { "jobId": "pkg_…", "ok": false, "error": "No matching package found for npm:pi-skills" } }
+```
+
+The job is over: `ok` is the CLI's exit status 0. On failure `error` is the CLI's last line on stderr (at most 300 characters), or `Stopped: it ran past the time limit`. After `ok: true` the session reloads once idle (see [`install_package`](#install_package)).
+
 ## Configuration limits
 
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`, `persona-config.ts`, `banner-config.ts`, `notification-policy.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
@@ -2228,10 +2342,18 @@ The call is over without the client's answer (the turn was aborted, or 10 minute
 
 ## Credential limits
 
-- **Status, never values.** Only `getAll`, `getProviderAuthStatus`, `isUsingOAuth`, `getProviderDisplayName`, and `refresh` are called. The slice never reads `auth.json` and never calls a registry method that returns a key or a token.
-- **No sign-in or sign-out.** Signing in stays with Pi's login flow; removing credentials is out of scope.
-- **Offline reload.** `reload_credentials` never allows the network, so it does not fetch model catalogs.
-- **No event.** Ask again, or call `reload_credentials`, after a change elsewhere.
+- **Status, never values.** `get_auth_status` and `reload_credentials` call only `getAll`, `getProviderAuthStatus`, `isUsingOAuth`, `getProviderDisplayName`, `getProvider` (for `loginKinds`: which sign-in methods a provider defines), and `refresh`. They never read `auth.json` and never call a registry method that returns a key or a token.
+- **Sign-in is Pi's.** `login_start`, `set_api_key` and `remove_credentials` drive Pi's own `ModelRuntime.login` / `logout`, the code `/login` and `/logout` run: the provider's flow, Pi's credential store (`auth.json`, `0600` in a `0700` agent home) and Pi's synchronization. This slice keeps no credential, never reads one back, never logs one, and never puts one in an answer or an event; an API key goes one way.
+- **Bounded sign-ins.** One per provider at a time, 15 minutes each, cancelled with the session. A client answers only the question the flow is waiting on.
+- **Offline reload.** `reload_credentials` (and the reload after a sign-in, a saved key or a removal) never allows the network, so it does not fetch model catalogs.
+- **No status event.** Ask again, or call `reload_credentials`, after a change elsewhere; a sign-in from this channel ends with `login_finished`.
+
+## Packages limits
+
+- **The CLI's own rules.** Installs and removals run `gentle-shell install|remove <source> [-l]` with this session's launcher and home (`GENTLE_SHELL_LAUNCH`, set by the launcher for every Pi it starts; a Pi started without it uses this package's launcher with `--home <agent dir>`). A source that starts with `-` is refused before it could become an option; everything else (source syntax, project trust, npm, git) is the CLI's.
+- **One job per session, 20 minutes.** Its output is bounded (2000 lines of 2000 characters); stdin is closed, so nothing can wait for a prompt.
+- **Reload after success.** The session reloads once idle, as a user would after installing; a failed job reloads nothing. A session change stops a running job, with no `package_finished`.
+- **Same authority as the terminal.** Installing a package runs its install scripts as the server user, exactly as `gentle-shell install` typed in the session's terminal would; through `gentle-shell serve` it needs `sessions:operate`.
 
 ## Host tools limits
 

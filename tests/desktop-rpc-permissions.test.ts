@@ -145,8 +145,16 @@ test("capabilities advertise the wired permission domain and no agent tool", asy
 		"host_message",
 		"set_host_context",
 		"set_host_activity",
+		"login_start",
+		"login_complete",
+		"login_cancel",
+		"set_api_key",
+		"remove_credentials",
+		"list_packages",
+		"install_package",
+		"remove_package",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel", "login_prompt", "login_finished", "package_progress", "package_finished"]);
 	assert.deepEqual(app.tools, [], "the control surface is never an agent-callable tool");
 });
 

@@ -2220,8 +2220,16 @@ async function main() {
 		// launch does, so its sessions still treat it as Gentle Shell's own.
 		if ((serve.action === "start" || serve.action === "share") && (home.mode === "isolated" || home.mode === "path") && !existsSync(home.dir)) await bootstrapOwnedHome(home);
 		const homeFlags = home.mode === "link" ? ["--link"] : home.mode === "isolated" ? ["--isolated"] : ["--home", home.dir];
+		// After `POST /api/upgrade` the server restarts on the launcher of the installed version: this one
+		// (npm and pnpm upgrade it in place), or the bundled version `current` names by then.
+		const restartLauncher = bundled ? () => {
+			const current = join(bundled.root, "current");
+			const versionDir = process.platform === "win32" ? join(bundled.root, "versions", readFileSync(current, "utf8").trim()) : current;
+			return join(versionDir, "node_modules", "gentle-pi", "bin", "gentle-shell.mjs");
+		} : undefined;
 		process.exitCode = await runServeCommand(serve, { agentHome: home.dir, homeFlags, launcher: fileURLToPath(import.meta.url), nodePath: process.execPath,
-			version: ownPackageVersion(), env: process.env, stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text) });
+			version: ownPackageVersion(), env: process.env, stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text),
+			...(restartLauncher ? { restartLauncher } : {}) });
 		return;
 	}
 	// `gentle-shell [home selectors] relay`: the rendezvous that lets devices outside
@@ -2546,6 +2554,10 @@ async function main() {
 	// A nested launch must not inherit a stale reporter handoff.
 	if (herdr.reporter) invocation.env[HERDR_REPORTER_ENV] = "1";
 	else delete invocation.env[HERDR_REPORTER_ENV];
+	// A Desktop client's package install or removal runs this same CLI with this
+	// same home (lib/desktop-packages-service.ts), wherever the session runs.
+	const selfHomeFlags = home.mode === "path" ? ["--home", resolvePath(home.dir)] : homeSelectorFlags(home);
+	invocation.env.GENTLE_SHELL_LAUNCH = JSON.stringify({ command: process.execPath, args: [fileURLToPath(import.meta.url), ...selfHomeFlags] });
 
 	const resumeHandoff = args.piSubcommand === undefined ? createResumeHandoff() : undefined;
 	const childEnv = resumeHandoff ? { ...invocation.env, [RESUME_HANDOFF_ENV]: resumeHandoff.path } : invocation.env;

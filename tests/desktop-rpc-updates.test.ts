@@ -133,7 +133,7 @@ test("the Desktop transport advertises get_update_status once and no new event",
 	assert.ok(response.data.methods.includes("get_update_status"));
 	assert.equal(response.data.methods.filter((method: string) => method === "get_update_status").length, 1);
 	assert.ok(response.data.methods.includes("get_usage_stats"), "the previous methods stay advertised");
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel", "login_prompt", "login_finished", "package_progress", "package_finished"]);
 });
 
 // ---- Without refresh: cache only, no network ----

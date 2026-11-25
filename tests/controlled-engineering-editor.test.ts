@@ -180,3 +180,13 @@ test("the option draft survives a save-and-switch and the custom model round tri
 	assert.equal((actions.find((action) => (action as PanelResult).type === "save") as PanelResult | undefined)?.controlledEngineering, true);
 	assert.deepEqual(custom.stored()?.workflow?.["team"], { orchestratorMode: "organic", controlledEngineering: true });
 });
+
+test("S4: the focused Orchestrator row always names the c key, whether the option is on or off", () => {
+	for (const workflow of [undefined, { orchestratorMode: "organic", controlledEngineering: true }]) {
+		for (const width of [100, 120]) {
+			const description = renderPanel([], panelFile(workflow), [], width).find((line) => /w switches/.test(line));
+			assert.ok(description, `explainer visible at ${width}`);
+			assert.match(description, /w switches · c controlled/, `c key named at ${width}`);
+		}
+	}
+});

@@ -4434,6 +4434,8 @@ const CONTROLLED_ENGINEERING_CHIP = " · controlled";
  * budget on the fixtures' titles); it drops before it displaces the sentence.
  */
 const ORCHESTRATOR_MODE_EXPLAINER = "◎ inline · ⇄ writer · w switches";
+/** The same line naming the Controlled Engineering key, used whenever it fits. */
+const ORCHESTRATOR_EXPLAINER_WITH_CONTROLLED = `${ORCHESTRATOR_MODE_EXPLAINER} · c controlled`;
 
 /**
  * `/gentle:profiles` — one screen, one table, profiles as
@@ -5367,8 +5369,10 @@ class RoutingTablePanel implements OverlayComponent {
 		// the sentence nor wraps the line into an extra body row.
 		let described = sentence;
 		if (this.rows[this.cursor] === PROFILE_ORCHESTRATOR_KEY) {
-			const combined = described ? `${described}   ${ORCHESTRATOR_MODE_EXPLAINER}` : ORCHESTRATOR_MODE_EXPLAINER;
-			if (visibleWidth(combined) <= room) described = combined;
+			const combined = [ORCHESTRATOR_EXPLAINER_WITH_CONTROLLED, ORCHESTRATOR_MODE_EXPLAINER]
+				.map((explainer) => described ? `${described}   ${explainer}` : explainer)
+				.find((candidate) => visibleWidth(candidate) <= room);
+			if (combined) described = combined;
 		}
 		lines.push(` ${this.renderText(title, "title")}${described ? `   ${this.renderText(described, "muted")}` : ""}`);
 		const notices = this.noticeLines(inner);

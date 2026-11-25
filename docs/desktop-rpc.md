@@ -171,6 +171,8 @@ Any other key — including `scope`, `path`, `file`, or `physical_path` — is r
 | `banner` | `readBannerConfigSync` over `<configHome>/banner.json` | `global` | `false` | `{ showRose, showTextLogo, color }`. |
 | `notifications` | `parseNotificationSettingsFile` over `<configHome>/notifications.json` | `global` | `false` | The validated settings without `schema`, every `file:` sound replaced by `"file"`. |
 | `model_defaults` | `readOrchestratorSettings` + `projectPiModelDefaults` over `<agentHome>/settings.json` (Pi's own settings) | `global` | `false` | `{ defaultProvider?, defaultModel?, defaultThinkingLevel?, enabledModels? }`: only these four keys, each only when it has the shape Pi reads. Writable — see [`set_config`](#set_config). |
+| `custom_models` | `readCustomModels` over `<agentHome>/models.json` (Pi's custom providers and models) | `global` | `false` | The whole document as Pi reads it (`providers`, and any other key), every secret replaced by `"•••"`. Writable — see [`set_config`](#data-for-custom_models). |
+| `mcp_servers` | `readMcpLayer` over `<agentHome>/mcp.json` + `<cwd>/.pi/mcp.json` (Pi's MCP servers) | `global+project` | `false` | `{ projectTrusted, global?, project? }`: each layer's whole document, every secret replaced by `"•••"`. Writable per layer — see [`set_config`](#data-for-mcp_servers). |
 
 Success:
 
@@ -202,7 +204,7 @@ Success:
 | --- | --- |
 | `store` | The store identifier that was read. |
 | `scope` | Which owner layers this store is assembled from: `global`, `global+project`, or `local+repo`. |
-| `readOnly` | `false` for the seven writable stores (`profiles`, `profile_fallbacks`, `pins`, `persona`, `banner`, `notifications`, `model_defaults`); `true` for the three derived or installer-owned stores (`models`, `subagents`, `managed_assets`). |
+| `readOnly` | `false` for the nine writable stores (`profiles`, `profile_fallbacks`, `pins`, `persona`, `banner`, `notifications`, `model_defaults`, `custom_models`, `mcp_servers`); `true` for the three derived or installer-owned stores (`models`, `subagents`, `managed_assets`). |
 | `status` | `ok` (normalized content follows), `missing` (no layer produced content because no layer file exists), or `invalid` (layers exist but none of them produced content). See [Layer semantics](#layer-semantics). |
 | `revision` | Opaque read-time digest of the canonical normalized content. See [Revision limits](#revision-limits). |
 | `value` | Normalized owner content, present when the store produced one. Absent when a layer is missing or invalid. |
@@ -213,11 +215,13 @@ Success:
 
 `status` answers for the store; `layers` answers for each file it is assembled from. For a merged store the two are different questions:
 
-- `profiles`, `profile_fallbacks`, `managed_assets`, `banner`, `notifications`, and `model_defaults` have one layer, so `status` is that layer's status.
+- `profiles`, `profile_fallbacks`, `managed_assets`, `banner`, `notifications`, `model_defaults`, and `custom_models` have one layer, so `status` is that layer's status.
 - `persona` has a `global` layer (`persona.json` in the Gentle config home) and a `project` layer (`<cwd>/.pi/gentle-ai/persona.json`); `value` is `{ "mode": "gentleman" | "neutral" }`, the mode in effect (the project layer wins), exactly as the prompt build resolves it.
 - `banner` is `{ showRose, showTextLogo, color }` from `banner.json`. A file without those three valid settings is `invalid` and is never repaired by a read; extra keys are ignored, as the `/gentle:banner` editor ignores them, and a Desktop write keeps only the three settings.
 - `notifications` is the owner's validated `notifications.json` without its `schema` key. Every `file:` sound is replaced by the marker `"file"`, so no sound path crosses the wire.
 - `model_defaults` is the model part of Pi's `settings.json` in the agent home — what Configuration › Models shows: `defaultProvider` and `defaultModel` (non-empty strings), `defaultThinkingLevel` (a Pi thinking level), `enabledModels` (the scoped models, an array of patterns such as `anthropic/*` or `openai/gpt-5`; absent means all). A key with another shape reads as unset, as Pi treats it; every other settings key stays out of the answer. A file that is not a JSON object is `invalid`.
+- `custom_models` is Pi's own `models.json` in the agent home — the custom providers and models (`providers.<id>`: `baseUrl`, `api`, `apiKey`, `headers`, `models`, `modelOverrides`, …). It is read exactly as Pi loads it: `//` comments and trailing commas are allowed, and the document must pass the schema Pi publishes with its package (`schemas/models.schema.json`); a file that does not is `invalid`, because Pi ignores it whole. `value` is the whole document, unknown keys included, with the secrets redacted (see [Secrets](#secrets-in-custom_models-and-mcp_servers)). Pi has no project `models.json`.
+- `mcp_servers` is Pi's MCP configuration: the `global` layer is `<agentHome>/mcp.json`, the `project` layer `<cwd>/.pi/mcp.json`, which Pi reads only in a trusted project — `value.projectTrusted` says whether it does in this session. `value.global` and `value.project` are each layer's whole document (`mcpServers`, `autoEnableCodemode`, any other key), present when that file is a JSON object whose `mcpServers`, if any, is an object, and redacted (see [Secrets](#secrets-in-custom_models-and-mcp_servers)). Pi merges the layers per server: a project entry replaces the global one of the same name, and a project entry without `command`, `url`, or `type` only overrides `enabled`, `exposure`, and `toolExposure` of a global server. A server Pi would refuse stays in the document as written; Pi skips only that server.
 - `subagents` mirrors the runtime reader: a layer that cannot be parsed is skipped and the remaining layer still merges. `status` is `ok` as soon as one layer is usable, and `layers` still names the broken one.
 - `models` keeps the owner's merge rule, which rejects the saved routing when a layer it reads is malformed; there `status` is `invalid` even if the other layer is fine.
 - `missing` means every layer file is absent. `invalid` means layer files exist but none produced content; in that case the owner would fall back to its own defaults, which are not the content of this store, so no `value` is returned.
@@ -308,6 +312,8 @@ A write target is one file, not one store, with one exception: `persona`'s `glob
 | `banner` | `global` | `<configHome>/banner.json` |
 | `notifications` | `global` | `<configHome>/notifications.json` |
 | `model_defaults` | `global` | `<agentHome>/settings.json` |
+| `custom_models` | `global` | `<agentHome>/models.json` |
+| `mcp_servers` | `global`, `project` | `<agentHome>/mcp.json`, `<cwd>/.pi/mcp.json` |
 
 `persona`'s `global` target covers both persona files, because the owner rewrites the project file too when it exists: its `writeRevision` digests both layers (so a project edit makes a token stale even while the global file is missing), and its `value` is `{ global, project }` layer states rather than one file. Each file is replaced atomically, but the two-file write is not a transaction: a failure after the global file is written can leave the project file unchanged, and the answer reports the layers as they are.
 
@@ -428,12 +434,67 @@ One selected layer and what it should hold — a profile to pin, or `null` to cl
 
 A layer whose file currently reads `invalid` is likewise a valid target for a set: replacing a broken pin with a valid one is an explicit operation.
 
+#### `data` for `custom_models`
+
+The complete new `models.json`, as `get_config` returned it with the client's changes:
+
+```json
+{
+  "providers": {
+    "local": {
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "api": "openai-completions",
+      "apiKey": "•••",
+      "models": [{ "id": "llama-3.1-70b", "contextWindow": 128000 }]
+    }
+  }
+}
+```
+
+It replaces the whole file. It must pass Pi's own models schema (`providers` is required; unknown keys are kept, as Pi keeps them); otherwise the answer is `invalid_data` and its `message` names the first problem as Pi's loader would, for example `Invalid custom_models data: providers.local.models.0.id: must not have fewer than 1 characters`. The file is written as plain JSON (`0600`, atomically), so comments in it do not survive a write. A file that currently reads `invalid` may be replaced: nothing of it is kept.
+
+After a write that changed the file, the session's model registry re-reads it before the answer is sent (`modelRegistry.refresh`, no network), so the new models are usable in this session at once. Other sessions on the same machine refresh theirs when their watcher sees the change (see [`config_changed`](#config_changed)).
+
+#### `data` for `mcp_servers`
+
+One selected layer and its complete new document:
+
+```json
+{
+  "source": "global",
+  "document": {
+    "mcpServers": {
+      "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."], "env": { "TOKEN": "•••" } },
+      "docs": { "url": "https://docs.example/mcp", "headers": { "Authorization": "•••" } }
+    }
+  }
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `source` | yes | `global` (`<agentHome>/mcp.json`) or `project` (`<cwd>/.pi/mcp.json`). |
+| `document` | yes | The whole new file for that layer. |
+
+Exactly `{source, document}` is accepted. Every server is checked as Pi loads it: Pi's own `validateMcpServerConfig` (stdio `command`/`args`/`env`/`cwd`, HTTP `url`/`headers`/`oauth`/`auth`, `enabled`, `exposure`, `toolExposure`, `description`, `timeout`), names that clash once `-` and `_` are equal are refused, `autoEnableCodemode` must be a boolean, and for the `project` layer an override must name a global server and set only `enabled`, `exposure`, or `toolExposure`, and `auth` is refused. The first problem answers `invalid_data` with a message such as `Invalid mcp_servers data: server "docs": auth is only allowed in the global mcp.json`. The `expectedRevision` is that layer's own `writeRevision`.
+
+Pi's MCP extension reads `mcp.json` only when a session starts. After a write that changed a layer, the session reloads itself (as `/reload` does) once it is idle and after the answer has been sent, so its servers connect without a restart; the client sees the session's usual reload (a new event epoch). Other sessions get a `config_changed` (`source: "external"`) and load the servers on their next reload or start.
+
+#### Secrets in `custom_models` and `mcp_servers`
+
+No secret crosses the wire. Every string in a secret position is read as the marker `"•••"`:
+
+- `custom_models`: each provider's `apiKey`, and every value of `headers` on a provider, on a `models[]` entry, and on a `modelOverrides` entry;
+- `mcp_servers`: every value of a server's `env` and `headers`, and its `oauth.clientSecret`.
+
+That covers literal keys as well as `$NAME`/`${NAME}` references and `!command` values, which can carry a key too. Sending `"•••"` back in the same position keeps the value the file holds there — the same provider's `apiKey` or header, the same model (matched by `id`, so models may be reordered), the same MCP server's `env` entry, header, or client secret. `"•••"` where the current file holds no string at that position is `invalid_data`; any other string replaces the secret. The revisions digest the real content, so a secret changed elsewhere still moves them. Values outside these positions (`args`, `url`, `baseUrl`, …) are returned as written.
+
 #### Validation and revision guard
 
 The checks below run in this order, and the first one that fails answers the request. Nothing is read or written after a rejection.
 
 1. **Envelope** (`invalid_request`): exactly the keys `store`, `data`, and `expectedRevision`; `store` must be a string; `data` must be present. A request missing `data` is malformed whatever store or revision it names, so this check comes before the store rules — a `models` write without `data` is `invalid_request`, not `read_only`. Store contents are not looked at here.
-2. **Store identity** (`unknown_store`): the string must be one of the nine store identifiers.
+2. **Store identity** (`unknown_store`): the string must be one of the twelve store identifiers.
 3. **Mutability** (`read_only`): `models`, `subagents`, and `managed_assets` are rejected before their `data` is inspected or their revision is compared, so any payload gets the same answer.
 4. **Usable revision** (`revision_conflict`): `expectedRevision` must be a non-empty string. Absent, empty, and non-string tokens are all "the client did not prove it saw the current state", and this is decided before the payload is validated.
 5. **Session roots** (`config_unavailable`): the bound session must have a working directory.
@@ -477,7 +538,7 @@ The payload is the same `get_config` projection of the store **after** the write
 
 | Field | Meaning |
 | --- | --- |
-| `writeTarget` | The target this request named: `global`, `local`, or `repo`. |
+| `writeTarget` | The target this request named: `global`, `project`, `local`, or `repo`. |
 | `writeRevision` | That target's resulting revision, to use as `expectedRevision` on the next write. |
 | `changed` | `true` only if this request actually changed the target's content. A no-op answers `false` with the unchanged state and no event. |
 
@@ -1949,7 +2010,7 @@ An external change:
 
 `store`, `scope`, `revision`, and `status` match what `get_config` and `get_snapshot` would answer for that store at that moment. There is no `value`, no `writeTarget` or `writeRevision` (an external writer may have touched any layer), and no path; read the store with `get_config` for its content and write targets.
 
-Detection watches the owner files' directories, non-recursively, for an interactive RPC host only: the config home (`profiles.json`, `profile-fallbacks.json`, `models.json`, `persona.json`, `banner.json`, `notifications.json`), the agent home's `settings.json` (`model_defaults`), the project `.pi/gentle-ai/` directory (`persona.json`), the agent home and its `gentle-ai/` directory (global `subagents.json`, the managed-assets manifest), the session cwd's `.pi/` and `.pi/gentle-ai/` (project `subagents.json` and `models.json`, the `repo` pin), and the Git common dir's `gentle-ai/` (the `local` pin) when the cwd is a resolvable worktree. Only events for those owner file names count. About 250 ms after the last relevant event, every store's revision is recomputed with the same readers `get_config` uses, and an event is emitted only for a store whose revision differs from the last revision this channel reported (a `get_config` answer, a `get_snapshot` projection, a `set_config` answer, or an earlier event). Consequences:
+Detection watches the owner files' directories, non-recursively, for an interactive RPC host only: the config home (`profiles.json`, `profile-fallbacks.json`, `models.json`, `persona.json`, `banner.json`, `notifications.json`), the agent home's `settings.json` (`model_defaults`), `models.json` (`custom_models`) and `mcp.json` (`mcp_servers`), the project `.pi/gentle-ai/` directory (`persona.json`), the agent home and its `gentle-ai/` directory (global `subagents.json`, the managed-assets manifest), the session cwd's `.pi/` and `.pi/gentle-ai/` (project `subagents.json`, `mcp.json` and `models.json`, the `repo` pin), and the Git common dir's `gentle-ai/` (the `local` pin) when the cwd is a resolvable worktree. Only events for those owner file names count. About 250 ms after the last relevant event, every store's revision is recomputed with the same readers `get_config` uses, and an event is emitted only for a store whose revision differs from the last revision this channel reported (a `get_config` answer, a `get_snapshot` projection, a `set_config` answer, or an earlier event). A `custom_models` change seen this way also refreshes the session's model registry, so a model another session added is usable here too. Consequences:
 
 - a Desktop `set_config` is never echoed: its response records the resulting revision before the owner's own rename wakes the watcher;
 - reformatting a file, rewriting identical content, or undoing a change inside the window emits nothing, because the revision did not move;
@@ -2190,7 +2251,8 @@ The job is over: `ok` is the CLI's exit status 0. On failure `error` is the CLI'
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`, `persona-config.ts`, `banner-config.ts`, `notification-policy.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
 - **Settings stores.** `persona` takes `{ "mode": "gentleman" | "neutral" }` and writes like `/gentle:persona`: the global file, plus the project file only when it already exists, so a project override never silently outranks the change (its `writeRevision` covers both layers, and a project file is never created). `banner` takes exactly `{ showRose, showTextLogo, color }`. `notifications` takes the settings as read: an event may keep the `"file"` marker only where its current sound is a file, which keeps that file; a new `file:` path is `invalid_data`, because the Desktop never sees one. All three write atomically, and none waits for a profile apply (`profile_apply_busy` applies only to the profile stores). Telemetry and the Pi theme are not config stores here: telemetry is a consent switch, and Pi persists its theme through an asynchronous settings queue and exports no list of installed themes to validate against.
 - **Model defaults.** `model_defaults` takes the complete set of the four keys, as read: a key left out is removed from `settings.json` (`{}` clears every default), every other settings key (`packages`, theme, telemetry, …) is kept, and the file is replaced atomically. Provider and model are 1–256 characters without control characters, `defaultThinkingLevel` a Pi thinking level, `enabledModels` at most 512 distinct such strings; any other key or shape is `invalid_data`. A `settings.json` that is not a JSON object is never replaced: the write answers `write_failed`. Because `apply_profile` sets the orchestrator's `defaultProvider`/`defaultModel`/`defaultThinkingLevel`, a `model_defaults` write waits for an apply like the profile stores (`profile_apply_busy`). Sessions already running keep the model they have; the defaults apply to new sessions.
-- **Bounded write surface.** `set_config` exists only for `profiles`, `profile_fallbacks`, `pins`, `model_defaults`, and the settings stores above, and only as a whole-store replacement, one explicitly selected pin layer, or the explicit clear of one pin layer (`profile: null`). There is no generic physical-file target, no patch operation, no setter for `models`, `subagents`, or `managed_assets`, no way to clear both layers in one request, and no profile application or materialization: a profile write stores the definition, it does not apply it, and nothing else is rewritten as a side effect.
+- **Pi's own files.** `custom_models` and `mcp_servers` are Pi's `models.json` and `mcp.json`, so they are validated by Pi's own rules (its published models schema, its MCP server validator and loader rules) rather than a Gentle owner, replaced whole and atomically (`0600`), and never echo a secret: see [Secrets](#secrets-in-custom_models-and-mcp_servers). A client never reads or writes these files itself; the stores are the only way it reaches them.
+- **Bounded write surface.** `set_config` exists only for `profiles`, `profile_fallbacks`, `pins`, `model_defaults`, `custom_models`, `mcp_servers`, and the settings stores above, and only as a whole-store replacement, one explicitly selected pin or MCP layer, or the explicit clear of one pin layer (`profile: null`). There is no generic physical-file target, no patch operation, no setter for `models`, `subagents`, or `managed_assets`, no way to clear both layers in one request, and no profile application or materialization: a profile write stores the definition, it does not apply it. The only side effects are Pi's own reloads of what was written: a `custom_models` write refreshes the model registry, an `mcp_servers` write reloads the session.
 - **Read-only rationale.** `models` and `subagents` are derived: the owners write them when a profile is applied or a route is materialized, so a Desktop write would fight that writer and leave the runtime and the store disagreeing. `managed_assets` is the installer's ownership manifest with hashes it verifies on install, so a client write would silently disable ownership checks. Only the stores whose owners accept validated writes report `readOnly: false`, and that flag describes the store's owner capability, which now matches this slice's write surface.
 - **No-op means no write.** Sending the content a store already holds, or clearing a pin layer that has no file, is answered with `changed: false`, no rewrite, no mtime churn, no removal, and no event, so a client can safely reconcile by re-sending what it read.
 - **Per-process guard, not a transaction.** The `expectedRevision` check and the owner's atomic rename happen in one synchronous step, so concurrent Desktop requests in one process cannot both commit from the same revision. Across processes there is no lock: another `pi` process, `/gentle:profiles`, or the installer can write between the check and the rename, and this contract cannot detect that. Treat `expectedRevision` as conflict detection, not as mutual exclusion.

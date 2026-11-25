@@ -10,7 +10,10 @@
 // the owner's `writeProfilePinSync` / `clearProfilePinSync`, one explicitly named
 // layer per request. `models`, `subagents`, and `managed_assets` are derived or
 // installer-owned and answer a typed `read_only` error to every write. There is no
-// second store and no cached copy.
+// second store and no cached copy. Pi's own custom models and MCP servers files
+// (`custom_models`, `mcp_servers`) are read and written whole through
+// `pi-user-config.ts`, validated by Pi's own rules, with every secret redacted:
+// clients never touch those files themselves.
 //
 // Changes made outside this channel are detected best effort: once wired for an
 // interactive RPC host, the bridge watches the owner files' directories (see
@@ -56,6 +59,21 @@ import { bannerConfigPath, isBannerConfig, readBannerConfigSync, writeBannerConf
 import { isNotificationSettings, parseNotificationSettingsFile, writeNotificationSettings, type NotificationSettings } from "./notification-policy.ts";
 import { existsSync as fileExists, readFileSync as readFileText } from "node:fs";
 import { join } from "node:path";
+import {
+	collectMcpServers,
+	customModelsPath,
+	customModelsProblem,
+	mcpConfigPaths,
+	readCustomModels,
+	readMcpLayer,
+	redactCustomModels,
+	redactMcpDocument,
+	restoreCustomModels,
+	restoreMcpDocument,
+	writePiConfigDocument,
+	type McpLayer,
+	type PiConfigFileRead,
+} from "./pi-user-config.ts";
 
 export const DESKTOP_CONFIG_METHODS = ["get_config", "set_config"] as const;
 /** Advertised only because this module wires the writer that publishes it. */
@@ -74,6 +92,8 @@ export const DESKTOP_CONFIG_STORES = [
 	"banner",
 	"notifications",
 	"model_defaults",
+	"custom_models",
+	"mcp_servers",
 ] as const;
 
 export type DesktopConfigStore = (typeof DESKTOP_CONFIG_STORES)[number];
@@ -116,7 +136,7 @@ export interface DesktopConfigData {
  * each own a single global file, while `pins` owns two independent layers that a
  * request must select explicitly.
  */
-export type DesktopConfigWriteTarget = "global" | "local" | "repo";
+export type DesktopConfigWriteTarget = "global" | "project" | "local" | "repo";
 
 export interface DesktopConfigWriteTargetInfo {
 	target: DesktopConfigWriteTarget;
@@ -137,10 +157,10 @@ const STALE_REVISION = { code: "revision_conflict", message: "Config changed sin
 const WRITE_FAILED = { code: "write_failed", message: "Config store write failed" } as const;
 
 /** Stores with a layer that the session cwd locates (project layers and pins). */
-const CWD_DEPENDENT_STORES: readonly DesktopConfigStore[] = ["models", "subagents", "pins", "persona"];
+const CWD_DEPENDENT_STORES: readonly DesktopConfigStore[] = ["models", "subagents", "pins", "persona", "mcp_servers"];
 
 /** Authoritative stores this slice may write; every other store is read-only. */
-const AUTHORITATIVE_STORES: ReadonlySet<DesktopConfigStore> = new Set(["profiles", "profile_fallbacks", "pins", "persona", "banner", "notifications", "model_defaults"]);
+const AUTHORITATIVE_STORES: ReadonlySet<DesktopConfigStore> = new Set(["profiles", "profile_fallbacks", "pins", "persona", "banner", "notifications", "model_defaults", "custom_models", "mcp_servers"]);
 
 /** The stores an `apply_profile` reads and rewrites (it sets the orchestrator's model defaults); only their writes wait for an apply. */
 const PROFILE_FAMILY_STORES: ReadonlySet<DesktopConfigStore> = new Set(["profiles", "profile_fallbacks", "pins", "model_defaults"]);
@@ -159,6 +179,8 @@ export interface DesktopConfigRoots {
 	configHome: string;
 	agentHome: string;
 	resolveWorktree?: WorktreeResolver;
+	/** Whether Pi reads the project's own files (`.pi/mcp.json`) in this session. */
+	projectTrusted?: boolean;
 }
 
 export interface DesktopConfigOverrides {
@@ -174,10 +196,17 @@ export interface DesktopConfigOverrides {
  */
 function withRoots(context: ExtensionContext, overrides: DesktopConfigOverrides): DesktopConfigRoots | undefined {
 	if (typeof context.cwd !== "string" || context.cwd.length === 0) return undefined;
+	let projectTrusted = false;
+	try {
+		projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted() === true;
+	} catch {
+		/* a stale context has no trust to report */
+	}
 	return {
 		cwd: context.cwd,
 		configHome: overrides.configHome ?? gentlePiConfigHome(),
 		agentHome: overrides.agentHome ?? resolveGentlePiAgentHome(),
+		projectTrusted,
 		...(overrides.resolveWorktree === undefined ? {} : { resolveWorktree: overrides.resolveWorktree }),
 	};
 }
@@ -478,6 +507,41 @@ function readModelDefaults(root: DesktopConfigRoots): StoreRead {
 	};
 }
 
+// ---- Pi's own custom models and MCP servers files, secrets redacted ----
+
+function readCustomModelsStore(root: DesktopConfigRoots): StoreRead {
+	const read = readCustomModels(root.agentHome);
+	return {
+		status: read.status === "valid" ? "ok" : read.status,
+		// The revision digests the real document, so a key changed elsewhere still moves it.
+		...(read.status === "valid" ? { value: redactCustomModels(read.document), revisionValue: read.document } : {}),
+		layers: [layer("global", read.status)],
+	};
+}
+
+function mcpLayers(root: DesktopConfigRoots): Record<McpLayer, PiConfigFileRead> {
+	const paths = mcpConfigPaths(root.agentHome, root.cwd);
+	return { global: readMcpLayer(paths.global), project: readMcpLayer(paths.project) };
+}
+
+/** Each layer's whole document (Pi merges them per server), and whether Pi reads the project one. */
+function readMcpServers(root: DesktopConfigRoots): StoreRead {
+	const layers = mcpLayers(root);
+	const status = layeredStatus(layers.global.status, layers.project.status);
+	const documents = (redact: boolean) => ({
+		projectTrusted: root.projectTrusted === true,
+		...Object.fromEntries((["global", "project"] as const).flatMap((source) => {
+			const read = layers[source];
+			return read.status === "valid" ? [[source, redact ? redactMcpDocument(read.document) : read.document]] : [];
+		})),
+	});
+	return {
+		status,
+		...(status === "ok" ? { value: documents(true), revisionValue: documents(false) } : {}),
+		layers: [layer("global", layers.global.status), layer("project", layers.project.status)],
+	};
+}
+
 const STORE_READERS: Record<DesktopConfigStore, { scope: DesktopConfigScope; read: (root: DesktopConfigRoots) => StoreRead }> = {
 	profiles: { scope: "global", read: readProfiles },
 	models: { scope: "global+project", read: readModels },
@@ -489,6 +553,8 @@ const STORE_READERS: Record<DesktopConfigStore, { scope: DesktopConfigScope; rea
 	banner: { scope: "global", read: readBanner },
 	notifications: { scope: "global", read: readNotifications },
 	model_defaults: { scope: "global", read: readModelDefaults },
+	custom_models: { scope: "global", read: readCustomModelsStore },
+	mcp_servers: { scope: "global+project", read: readMcpServers },
 };
 
 export function readConfigStore(store: DesktopConfigStore, root: DesktopConfigRoots): DesktopConfigData {
@@ -536,6 +602,7 @@ function watchTarget(path: string): DesktopWatchTarget {
 export function configWatchTargets(root: DesktopConfigRoots): DesktopWatchTarget[] {
 	const models = modelConfigPaths(root.configHome, root.cwd);
 	const subagents = subagentsConfigPaths({ cwd: root.cwd, home: root.agentHome, agentHome: root.agentHome });
+	const mcp = mcpConfigPaths(root.agentHome, root.cwd);
 	const targets = [
 		watchTarget(profilesFilePath(root.configHome)),
 		watchTarget(fallbacksFilePath(root.configHome)),
@@ -549,6 +616,9 @@ export function configWatchTargets(root: DesktopConfigRoots): DesktopWatchTarget
 		watchTarget(bannerConfigPath(root.configHome)),
 		watchTarget(notificationsPath(root)),
 		watchTarget(modelDefaultsPath(root)),
+		watchTarget(customModelsPath(root.agentHome)),
+		watchTarget(mcp.global),
+		watchTarget(mcp.project),
 	];
 	const pins = readProfilePinStatus(root.cwd, root.resolveWorktree);
 	if (pins) targets.push(watchTarget(pins.localPath), watchTarget(pins.repoPath));
@@ -562,6 +632,11 @@ function layerWriteInfo(
 	value: unknown,
 ): DesktopConfigWriteTargetInfo {
 	return { target, status, writeRevision: configWriteRevision(store, target, status, value) };
+}
+
+/** The write target of one of Pi's own files, digesting its real (unredacted) document. */
+function piFileWriteInfo(store: DesktopConfigStore, target: DesktopConfigWriteTarget, read: PiConfigFileRead): DesktopConfigWriteTargetInfo {
+	return layerWriteInfo(store, target, read.status === "valid" ? "ok" : read.status, read.status === "valid" ? read.document : undefined);
 }
 
 /**
@@ -613,6 +688,12 @@ function writeTargetsFor(
 		case "model_defaults": {
 			const read = readModelDefaultsFile(root);
 			return [layerWriteInfo(store, "global", read.status === "valid" ? "ok" : read.status, read.status === "valid" ? read.defaults : undefined)];
+		}
+		case "custom_models":
+			return [piFileWriteInfo(store, "global", readCustomModels(root.agentHome))];
+		case "mcp_servers": {
+			const layers = mcpLayers(root);
+			return [piFileWriteInfo(store, "global", layers.global), piFileWriteInfo(store, "project", layers.project)];
 		}
 		default:
 			return undefined;
@@ -739,6 +820,54 @@ function planModelDefaultsWrite(data: unknown, root: DesktopConfigRoots, expecte
 			if (result.status === "invalid") throw new Error(result.reason);
 		},
 	};
+}
+
+/** `invalid_data` naming what Pi would refuse, so a client can show it; it carries no path. */
+function invalidPiData(store: DesktopConfigStore, problem: string): { code: string; message: string } {
+	return { code: INVALID_DATA.code, message: `Invalid ${store} data: ${problem}` };
+}
+
+/**
+ * `custom_models` replaces the whole models.json with a document Pi's own schema
+ * accepts. A redaction marker keeps the secret stored at the same place; any
+ * other value replaces it. An unreadable file may be replaced, since nothing of
+ * it is kept.
+ */
+function planCustomModelsWrite(data: unknown, root: DesktopConfigRoots, expected: string): WritePlan {
+	const current = readCustomModels(root.agentHome);
+	const restored = restoreCustomModels(data, current.status === "valid" ? current.document : undefined);
+	if ("error" in restored) return { error: invalidPiData("custom_models", restored.error) };
+	const problem = customModelsProblem(restored.document);
+	if (problem !== undefined) return { error: invalidPiData("custom_models", problem) };
+	const { writeRevision } = piFileWriteInfo("custom_models", "global", current);
+	const conflict = revisionConflict(expected, writeRevision);
+	if (conflict) return { error: conflict };
+	const changed = current.status !== "valid" || canonicalJson(current.document) !== canonicalJson(restored.document);
+	return { target: "global", writeRevision, changed, write: () => writePiConfigDocument(customModelsPath(root.agentHome), restored.document) };
+}
+
+/**
+ * `mcp_servers` replaces one layer's whole mcp.json, named by `source`. Every
+ * server must load as Pi loads it; a project file is checked against the global
+ * servers it may override. Markers keep the same server's stored secrets.
+ */
+function planMcpServersWrite(data: unknown, root: DesktopConfigRoots, expected: string): WritePlan {
+	if (!isRecordValue(data) || !("document" in data) || !Object.keys(data).every((key) => key === "source" || key === "document")) return { error: INVALID_DATA };
+	const source = data.source;
+	if (source !== "global" && source !== "project") return { error: INVALID_DATA };
+	const layers = mcpLayers(root);
+	const current = layers[source];
+	const restored = restoreMcpDocument(data.document, current.status === "valid" ? current.document : undefined);
+	if ("error" in restored) return { error: invalidPiData("mcp_servers", restored.error) };
+	const base = source === "project" && layers.global.status === "valid" ? collectMcpServers(layers.global.document, "global").servers : undefined;
+	const problem = collectMcpServers(restored.document, source, base).problems[0];
+	if (problem !== undefined) return { error: invalidPiData("mcp_servers", problem) };
+	const { writeRevision } = piFileWriteInfo("mcp_servers", source, current);
+	const conflict = revisionConflict(expected, writeRevision);
+	if (conflict) return { error: conflict };
+	const changed = current.status !== "valid" || canonicalJson(current.document) !== canonicalJson(restored.document);
+	const path = mcpConfigPaths(root.agentHome, root.cwd)[source];
+	return { target: source, writeRevision, changed, write: () => writePiConfigDocument(path, restored.document) };
 }
 
 /**
@@ -878,6 +1007,8 @@ export class DesktopConfigBridge {
 	private watchedCwd: string | undefined;
 	/** The last revision this channel reported per store (read, snapshot, write, or event). */
 	private readonly reported = new Map<DesktopConfigStore, string>();
+	/** Bumped by every reset, so a reload one session scheduled never runs in the next. */
+	private generation = 0;
 
 	constructor(overrides: DesktopConfigOverrides = {}, watchOptions: DesktopDirectoryWatcherOptions = {}) {
 		this.overrides = overrides;
@@ -902,10 +1033,39 @@ export class DesktopConfigBridge {
 
 	/** Session start/shutdown: watchers, baselines, and the emitter belong to one session. */
 	reset(): void {
+		this.generation += 1;
 		this.host = undefined;
 		this.emit = undefined;
 		this.unwatch();
 		this.reported.clear();
+	}
+
+	/** Pi re-reads models.json when its registry refreshes, so the session has the new custom models at once. */
+	private async refreshModels(host: ExtensionContext): Promise<void> {
+		try {
+			await host.modelRegistry?.refresh({ allowNetwork: false });
+		} catch {
+			/* the file is written; a load problem is Pi's to report through its registry */
+		}
+	}
+
+	/**
+	 * Pi's MCP extension reads mcp.json only when a session starts, so the session
+	 * reloads (`/reload`) once it is idle, as after a package install. It runs after
+	 * the answer has gone out; a session replaced meanwhile loads the file itself.
+	 */
+	private reloadWhenIdle(host: ExtensionContext): void {
+		const generation = this.generation;
+		const command = host as ExtensionContext & { waitForIdle?: () => Promise<void>; reload?: () => Promise<void> };
+		if (typeof command.reload !== "function") return;
+		setImmediate(async () => {
+			try {
+				await command.waitForIdle?.();
+				if (generation === this.generation) await command.reload!();
+			} catch {
+				/* a replaced session reloads on its own start */
+			}
+		});
 	}
 
 	/**
@@ -966,6 +1126,8 @@ export class DesktopConfigBridge {
 			}
 			if (this.reported.get(store) === current.revision) continue;
 			this.reported.set(store, current.revision);
+			// Another session (or an editor) changed models.json: this session's registry follows it too.
+			if (store === "custom_models") void this.refreshModels(host);
 			try {
 				emit(DESKTOP_CONFIG_EVENT, {
 					store: current.store,
@@ -980,7 +1142,7 @@ export class DesktopConfigBridge {
 		}
 	}
 
-	handle(method: string, params: Record<string, unknown>): DesktopRpcOutcome | undefined {
+	handle(method: string, params: Record<string, unknown>): DesktopRpcOutcome | Promise<DesktopRpcOutcome> | undefined {
 		// Only the config methods are this bridge's business; anything else falls
 		// through to the next domain (the permission bridge) untouched.
 		if (method !== "get_config" && method !== "set_config") return undefined;
@@ -1007,9 +1169,11 @@ export class DesktopConfigBridge {
 	 * concurrently, and only an `await` can interleave another request, so the check
 	 * and the owner's atomic rename cannot be split by another Desktop request in
 	 * this process. That is a per-process guarantee only; it is not a cross-process
-	 * transaction (see `docs/desktop-rpc.md`).
+	 * transaction (see `docs/desktop-rpc.md`). Only what follows a committed write
+	 * may wait: a `custom_models` answer waits for the session's model registry to
+	 * re-read the file.
 	 */
-	private write(host: ExtensionContext, params: Record<string, unknown>): DesktopRpcOutcome {
+	private write(host: ExtensionContext, params: Record<string, unknown>): DesktopRpcOutcome | Promise<DesktopRpcOutcome> {
 		for (const key of Object.keys(params)) {
 			if (key !== "store" && key !== "data" && key !== "expectedRevision") {
 				return { ok: false, error: INVALID_PARAMS };
@@ -1045,6 +1209,8 @@ export class DesktopConfigBridge {
 			case "banner": plan = planBannerWrite(params.data, root, expected); break;
 			case "notifications": plan = planNotificationsWrite(params.data, root, expected); break;
 			case "model_defaults": plan = planModelDefaultsWrite(params.data, root, expected); break;
+			case "custom_models": plan = planCustomModelsWrite(params.data, root, expected); break;
+			case "mcp_servers": plan = planMcpServersWrite(params.data, root, expected); break;
 			default: plan = planPinsWrite(params.data, root, expected);
 		}
 		if ("error" in plan) return { ok: false, error: plan.error };
@@ -1071,7 +1237,7 @@ export class DesktopConfigBridge {
 		const changed = writeRevision !== plan.writeRevision;
 		const data = { ...after, writeTarget: plan.target, writeRevision, changed } as Record<string, unknown>;
 		if (!changed) return { ok: true, data };
-		return {
+		const outcome: DesktopRpcOutcome = {
 			ok: true,
 			data,
 			event: {
@@ -1086,6 +1252,10 @@ export class DesktopConfigBridge {
 				},
 			},
 		};
+		// Applied as Pi applies the file: models at once, MCP servers when the session restarts.
+		if (store === "custom_models") return this.refreshModels(host).then(() => outcome);
+		if (store === "mcp_servers") this.reloadWhenIdle(host);
+		return outcome;
 	}
 
 	/** Bounded status/revision/readOnly projection; store content never enters a snapshot. */

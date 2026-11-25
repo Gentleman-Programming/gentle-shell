@@ -539,7 +539,7 @@ test("get_config rejects unknown stores, unsupported params, and physical paths"
 
 	assert.deepEqual(DESKTOP_CONFIG_METHODS, ["get_config", "set_config"]);
 	assert.deepEqual([...DESKTOP_CONFIG_EVENTS], ["config_changed"]);
-	assert.deepEqual([...DESKTOP_CONFIG_STORES], ["profiles", "models", "profile_fallbacks", "subagents", "pins", "managed_assets", "persona", "banner", "notifications", "model_defaults"]);
+	assert.deepEqual([...DESKTOP_CONFIG_STORES], ["profiles", "models", "profile_fallbacks", "subagents", "pins", "managed_assets", "persona", "banner", "notifications", "model_defaults", "custom_models", "mcp_servers"]);
 });
 
 test("reads never mutate any store", async (t) => {
@@ -600,6 +600,8 @@ test("stores carry the documented read-only split", async (t) => {
 		banner: false,
 		notifications: false,
 		model_defaults: false,
+		custom_models: false,
+		mcp_servers: false,
 	});
 });
 

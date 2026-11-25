@@ -16,11 +16,11 @@ test("the parent is routed to read the exact indexed skill before acting", () =>
 
 test("the parent follows the skill's output contract only after reading it", () => {
 	assert.match(parentExecution, /let the skill's declared `## Output Contract` shape the result, so the reply carries the same contract markers applying the skill directly would produce/);
-	assert.match(parentExecution, /Never present contract markers or attribute a skill without the in-session read/);
+	assert.match(parentExecution, /Never present contract markers without the in-session read/);
 });
 
-test("the parent closes with one name-only attribution for an applied or unavailable skill", () => {
-	assert.match(parentExecution, /Close with one attribution line naming the applied skill \(`Skill applied \(parent\): <name>`\)/);
-	assert.match(parentExecution, /if the indexed path is unreadable, proceed unskilled and close with `Skill unavailable \(parent\): <name>` instead, never the applied attribution/);
-	assert.match(parentExecution, /Attribution carries the skill name only, never paths/);
+test("the parent proceeds unskilled on an unreadable path and adds no attribution line", () => {
+	assert.match(parentExecution, /If the indexed path is unreadable, proceed unskilled/);
+	assert.doesNotMatch(skills, /Skill (applied|unavailable) \(parent\)/);
+	assert.doesNotMatch(parentExecution, /attribution/i);
 });

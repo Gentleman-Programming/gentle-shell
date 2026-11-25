@@ -177,34 +177,6 @@ export function classifyReviewHostRelayRefusal(stderr: string): "unknown-flag" |
 }
 
 // ---------------------------------------------------------------------------
-// gentle-pi#638: only a relay-bound reviewer timeout is deterministic for the
-// exact selected slot: relaunching the same materialized request reaches the
-// same wall. Generic admission refusals, including malformed reviewer JSON and
-// binding_mismatch [invalid_request], describe repairable submitted bytes; a
-// fresh reviewer can change them. They keep the existing exact-reoffer path.
-// A future provider-issued, typed slot-deterministic refusal may be added here
-// only when its schema proves that this exact bound slot cannot be repaired.
-// ---------------------------------------------------------------------------
-
-export const REVIEW_HOST_RELAY_UNACHIEVABLE_REASON = {
-	PI_TIMED_OUT: "relay_transport_bound_exceeded",
-} as const;
-
-export function reviewHostRelayUnachievableReason(error: ReviewHostRelayError): string | undefined {
-	return error.kind === REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT
-		? REVIEW_HOST_RELAY_UNACHIEVABLE_REASON.PI_TIMED_OUT
-		: undefined;
-}
-
-// Optional bounded evidence for the declaration's --detail. Only the killed reviewer carries measurements worth recording; an admission refusal's text already rides failure.stderr, and unmeasured failures never get a fabricated detail.
-export function reviewHostRelayUnachievableDetail(error: ReviewHostRelayError): string | undefined {
-	if (error.kind === REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT && error.elapsedMs !== null && error.timeoutMs !== null) {
-		return `killed after ${error.elapsedMs}ms against a ${error.timeoutMs}ms relay bound`;
-	}
-	return undefined;
-}
-
-// ---------------------------------------------------------------------------
 // Slot detection — the provider decides. A collect input routes through the
 // host relay ONLY when the provider itself issued the `--materialize` token
 // (with the pi runtime identity) on a `review.capture-result` collection
@@ -456,8 +428,7 @@ const DEFAULT_GENTLE_AI_TIMEOUT_MS = 120_000;
 // The previous bound was a single hardcoded 600_000 ms reachable only through
 // the test-injectable runner. A field-measured lens legitimately needed 478s
 // against a ~1.58 MB materialized prompt: it survived by hand and was killed
-// under the relay, and the sanctioned continuation then re-spent every lens to
-// reach the same wall. One fixed number cannot serve a prompt class that
+// under the relay. One fixed number cannot serve a prompt class that
 // varies by orders of magnitude, so the bound is derived instead:
 //
 //   floor + ceil(promptBytes / MiB * perMebibyte), clamped to the ceiling
@@ -493,13 +464,9 @@ export function resolveReviewHostRelayPiTimeoutMs(promptByteLength: number, envi
 	return Math.min(scaled, REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS);
 }
 
-// The reviewer completion ran out of time; it did not crash. The message
-// states both measurements and names the two things that can change the
-// outcome, because the one thing that cannot is relaunching the identical
-// slot.
 export function reviewHostRelayPiTimeoutMessage(elapsedMs: number, timeoutMs: number, promptByteLength: number): string {
 	return `the reviewer completion exceeded the relay bound: aborted after ${elapsedMs}ms against a ${timeoutMs}ms limit for a ${promptByteLength}-byte materialized prompt. `
-		+ `Relaunching the same slot unchanged reaches the same wall. Raise ${REVIEW_HOST_RELAY_PI_TIMEOUT_ENV} above the reviewer's real wall time (ceiling ${REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS}ms) or reduce the candidate scope so the materialized prompt is smaller.`;
+		+ `Raise ${REVIEW_HOST_RELAY_PI_TIMEOUT_ENV} above the reviewer's real wall time (ceiling ${REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS}ms) or reduce the candidate scope so the materialized prompt is smaller.`;
 }
 
 interface ProcessCapture {

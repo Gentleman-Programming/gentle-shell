@@ -210,8 +210,6 @@ import {
 	ReviewHostRelayError,
 	reviewHostMediatedRoleSlots,
 	reviewHostRelaySlots,
-	reviewHostRelayUnachievableDetail,
-	reviewHostRelayUnachievableReason,
 	reviewProviderRoleVectorSlots,
 	resolveReviewHostRelaySubmission,
 	runReviewHostRelayReviewerGroup,
@@ -270,7 +268,6 @@ import {
 	isCanonicalProcessString,
 	isNativeReviewAbandonReason,
 	NATIVE_REVIEW_ABANDON_REASONS,
-	isNativeReviewUnachievableVerbRefused,
 	nativeReviewAbandonAuthorization,
 	nativeReviewRecoverAuthorization,
 	NATIVE_REVIEW_AUTHORITY_STATUS,
@@ -296,7 +293,6 @@ import {
 	type NativeReviewModeSource,
 	type NativeReviewModeStatus,
 	type NativeReviewProcessDiagnostics,
-	type NativeReviewUnachievableLensCaptureArtifact,
 	type NativeStartResult,
 	type NativeReviewAssessRequest,
 	type ExecFileAdapter,
@@ -9701,16 +9697,6 @@ const REVIEW_HOST_RELAY_REFUSED_ACTION =
 	"gentle-ai refused this submission at admission and did not consume the lens slot; the reason is in failure.stderr. "
 	+ "Call fresh STATUS and run only the exact slot it reoffers so the reviewer produces a new result that satisfies that refusal; never resubmit the refused bytes.";
 
-// gentle-pi#638: the declaration recorded, so fresh STATUS stops the review with one withdraw binding per declared slot instead of reoffering the reviewer. The withdraw command is the only way back to the same slot; everything else needs a smaller candidate and a new review.
-const REVIEW_HOST_RELAY_UNACHIEVABLE_ACTION =
-	"A deterministic relay failure was declared unachievable for this bound slot, and fresh STATUS now stops this review instead of reoffering the reviewer. "
-	+ "If the failure was transient, run the withdraw command in unachievable_lens_slots with the same binding so the review re-offers this exact reviewer; otherwise reduce the candidate scope and start a new review.";
-
-// gentle-pi#638: the relay failure was deterministic but gentle-ai refused the declaration, so no slot state changed and the review still needs a provider-bound continuation.
-const REVIEW_HOST_RELAY_DECLARATION_FAILED_ACTION =
-	"The relay failure was deterministic for this slot, but gentle-ai refused the unachievable declaration, so no slot state changed. "
-	+ "Call fresh STATUS and follow only its declared action; never replay this capture from transcript inference.";
-
 function reviewHostRelayStreamTimeoutNextAction(error: ReviewHostRelayError): string | undefined {
 	if (error.kind !== REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT) return undefined;
 	const phase = error.reviewerEvidence?.timeoutPhase, limit = error.reviewerEvidence?.streamTimeoutMs;
@@ -9720,17 +9706,6 @@ function reviewHostRelayStreamTimeoutNextAction(error: ReviewHostRelayError): st
 	return `Do not relaunch this slot unchanged: the ${phase} stream bound${measured} stopped the reviewer. `
 		+ `Fix the stalled provider or adjust ${setting}=<milliseconds> first; raising the overall timeout does not change this stream bound. `
 		+ REVIEW_HOST_RELAY_RETRY_ACTION;
-}
-
-function reviewHostRelayTimeoutNextAction(error: ReviewHostRelayError): string {
-	const streamAction = reviewHostRelayStreamTimeoutNextAction(error);
-	if (streamAction !== undefined) return streamAction;
-	const measured = error.elapsedMs === null || error.timeoutMs === null
-		? ""
-		: ` The reviewer was killed after ${error.elapsedMs}ms against a ${error.timeoutMs}ms bound.`;
-	return `Do not relaunch this slot unchanged: the same bound kills the same reviewer run again and re-spends the model tokens for nothing.${measured} `
-		+ `Change one of two things first: export ${REVIEW_HOST_RELAY_PI_TIMEOUT_ENV}=<milliseconds> above the reviewer's real wall time (hard ceiling ${REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS}), or reduce the candidate scope so the materialized prompt is smaller. `
-		+ "Then call fresh STATUS and submit only its exact reoffered slot.";
 }
 
 function reviewHostRelayFailureReport(error: ReviewHostRelayError): Record<string, unknown> {
@@ -10041,101 +10016,6 @@ async function executeReviewHostRelayCapture(
 				mutation_outcome: "none",
 			};
 		}
-		// gentle-pi#638: the two deterministic relay failure classes end the slot, not the transport. Declaring the slot unachievable through the native verb records the provider-owned fact that this reviewer cannot complete under current conditions, then exactly one bound STATUS re-query renders the typed stop with its withdraw binding instead of reoffering the same slot. The declaration binding is re-derived from the slot's own provider-issued `--name=value` tokens, never from transcript state.
-		const unachievableReason = reviewHostRelayUnachievableReason(error);
-		const declarationBinding = unachievableSlotDeclarationBinding(slot);
-		if (unachievableReason !== undefined && declarationBinding !== undefined && nativeReviewCli.captureUnachievableLens !== undefined) {
-			let declared: NativeReviewUnachievableLensCaptureArtifact | undefined;
-			try {
-				declared = await nativeReviewCli.captureUnachievableLens({ cwd, ...declarationBinding, reason: unachievableReason, ...(reviewHostRelayUnachievableDetail(error) === undefined ? {} : { detail: reviewHostRelayUnachievableDetail(error)! }), ...(signal === undefined ? {} : { signal }) });
-			} catch (declarationError) {
-				// Fail open only on the unknown-verb capability refusal: an older binary without `capture-unachievable` keeps today's transport-failure behavior below. Every other declaration failure is surfaced, never hidden behind the relay failure it followed.
-				if (!isNativeReviewUnachievableVerbRefused(declarationError)) {
-					// gentle-pi#822 (outside-diff): the declaration failure's own envelope carries the mutation truth — the process may have recorded the declaration before failing — so the mutation fields are derived from it instead of hardcoded none, and an unknown outcome is proven or disproven by one bound STATUS re-query without ever changing the failure outcome.
-					const declarationFailureReport = nativeOperationFailure("gentle_review_capture", declarationError);
-					let declarationMutationPerformed = declarationFailureReport.mutation_performed === true;
-					let declarationMutationOutcome: "none" | "unknown" | "committed" = declarationFailureReport.mutation_outcome === "committed" ? "committed" : declarationFailureReport.mutation_outcome === "unknown" ? "unknown" : "none";
-					if (declarationMutationOutcome === "unknown") {
-						try {
-							const status = await reconcileUnknownReviewLastEventCapture(nativeReviewCli, cwd, binding, route === undefined ? { agent: REVIEW_HOST_AGENT } : { ...route, agent: REVIEW_HOST_AGENT });
-							syncRetainedNativeStatusSelections(selections, cwd, status, route?.baseRef);
-							const stop = status.nextTransition?.kind === "stop" && status.nextTransition.reasonCode === "unachievable_lens_slot" ? status.nextTransition : undefined;
-							const declaredSlot = stop?.unachievableLensSlots?.find((candidate) => candidate.lens === slot.lens && String(candidate.selectedOrder) === slot.order && candidate.subjectHash === declarationBinding.requestHash && candidate.withdraw.binding.targetIdentity === declarationBinding.targetIdentity && candidate.withdraw.binding.lineageId === declarationBinding.lineageId && candidate.withdraw.binding.revision === declarationBinding.expectedRevision);
-							if (stop !== undefined && declaredSlot !== undefined) {
-								declarationMutationPerformed = true;
-								declarationMutationOutcome = "committed";
-							}
-						} catch {
-							// Without proof the mutation stays unknown; the declaration failure is already the reported outcome.
-						}
-					}
-					return {
-						tool: "gentle_review_capture",
-						status: "blocked",
-						outcome: "unachievable-lens-declaration-failed",
-						reason: error.message,
-						failure: reviewHostRelayFailureReport(error),
-						declaration_failure: declarationFailureReport,
-						mutation_performed: declarationMutationPerformed,
-						mutation_outcome: declarationMutationOutcome,
-						next_action: REVIEW_HOST_RELAY_DECLARATION_FAILED_ACTION,
-					};
-					}
-			}
-			if (declared !== undefined) {
-				const declaration = { lens: declared.lens, selected_order: declared.selectedOrder, subject_hash: declarationBinding.requestHash, reason: declared.reason };
-				try {
-					const status = await reconcileUnknownReviewLastEventCapture(nativeReviewCli, cwd, binding, route === undefined ? { agent: REVIEW_HOST_AGENT } : { ...route, agent: REVIEW_HOST_AGENT });
-					syncRetainedNativeStatusSelections(selections, cwd, status, route?.baseRef);
-					const stop = status.nextTransition?.kind === "stop" && status.nextTransition.reasonCode === "unachievable_lens_slot" ? status.nextTransition : undefined;
-					// gentle-pi#822: the stop may also carry slots declared by other runs, so expose only the entry matching the identity this session just declared. A stop with slots but no matching entry is a reconciliation failure, never a success rendering someone else's withdraw command.
-					const declaredSlot = stop?.unachievableLensSlots?.find((slot) => slot.lens === declaration.lens && slot.selectedOrder === declaration.selected_order && slot.subjectHash === declaration.subject_hash && slot.withdraw.binding.targetIdentity === declarationBinding.targetIdentity && slot.withdraw.binding.lineageId === declarationBinding.lineageId && slot.withdraw.binding.revision === declarationBinding.expectedRevision);
-					// gentle-pi#822: success is proven, never assumed — a STATUS with no unachievable_lens_slot stop at all (no transition, a different reason code, or a collect reoffer) is a reconciliation failure exactly like a stop whose entries do not match the declared identity.
-					if (declaredSlot === undefined) {
-						return {
-							tool: "gentle_review_capture",
-							status: "blocked",
-							outcome: "unachievable-lens-declaration-reconciliation-failed",
-							reason: error.message,
-							failure: reviewHostRelayFailureReport(error),
-							declaration,
-							reconciliation_failure: { operation: "gentle_review_capture", status: "blocked", outcome: "unachievable-lens-slot-declaration-unmatched", reason: stop === undefined ? "the bound STATUS did not return the unachievable_lens_slot stop" : "no unachievable_lens_slots entry matches the declared slot identity", declared_slot: { lens: declaration.lens, selected_order: declaration.selected_order, subject_hash: declaration.subject_hash }, mutation_performed: true, mutation_outcome: "committed" },
-							mutation_performed: true,
-							mutation_outcome: "committed",
-							next_action: REVIEW_HOST_RELAY_DECLARATION_FAILED_ACTION,
-						};
-					}
-					return {
-						tool: "gentle_review_capture",
-						status: "blocked",
-						outcome: "unachievable-lens-slot-declared",
-						reason: error.message,
-						failure: reviewHostRelayFailureReport(error),
-						declaration,
-						provider_action: status.action,
-						...(status.nextTransition === undefined ? {} : { next_transition: status.nextTransition }),
-						unachievable_lens_slots: [{ lens: declaredSlot.lens, selected_order: declaredSlot.selectedOrder, subject_hash: declaredSlot.subjectHash, reason: declaredSlot.reason, ...(declaredSlot.detail === undefined ? {} : { detail: declaredSlot.detail }), withdraw: declaredSlot.withdraw.command }],
-						result: status.raw,
-						next_action: REVIEW_HOST_RELAY_UNACHIEVABLE_ACTION,
-						mutation_performed: true,
-						mutation_outcome: "committed",
-					};
-				} catch (statusError) {
-					return {
-						tool: "gentle_review_capture",
-						status: "blocked",
-						outcome: "unachievable-lens-declaration-reconciliation-failed",
-						reason: error.message,
-						failure: reviewHostRelayFailureReport(error),
-						declaration,
-						reconciliation_failure: nativeOperationFailure("gentle_review_capture", statusError),
-						mutation_performed: true,
-						mutation_outcome: "committed",
-						next_action: REVIEW_HOST_RELAY_DECLARATION_FAILED_ACTION,
-					};
-				}
-			}
-		}
 		return {
 			tool: "gentle_review_capture",
 			status: "blocked",
@@ -10144,32 +10024,14 @@ async function executeReviewHostRelayCapture(
 			reason: error.message,
 			mutation_performed: false,
 			mutation_outcome: "none",
-			next_action: error.kind === REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT
-				? reviewHostRelayTimeoutNextAction(error)
-				: error.kind === REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED
-					? REVIEW_HOST_RELAY_REFUSED_ACTION
-					: REVIEW_HOST_RELAY_RETRY_ACTION,
+			next_action: reviewHostRelayStreamTimeoutNextAction(error)
+				?? (error.kind === REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED ? REVIEW_HOST_RELAY_REFUSED_ACTION : REVIEW_HOST_RELAY_RETRY_ACTION),
 		};
 	}
 }
 
 const REVIEW_PROVIDER_ROLE_RETRY_ACTION =
 	"Call fresh STATUS and execute only the exact one-slot role vector it reoffers; never relaunch from transcript inference.";
-
-// gentle-pi#638: re-derives the capture-unachievable declaration binding from one materialize slot's own provider-issued tokens. The provider renders those tokens as `--name=value` pairs (review-host-relay.ts renderToken), and Go verifies every value against the frozen authority before recording, so a missing required value or subject hash means the slot cannot be declared and the caller keeps its fall-back behavior.
-function unachievableSlotDeclarationBinding(slot: ReviewHostRelaySlot): { lineageId: string; targetIdentity: string; expectedRevision: string; requestHash: string; repositoryContext?: string } | undefined {
-	const tokenValue = (name: string): string | undefined => {
-		const prefix = `--${name}=`;
-		const token = slot.captureArgumentTokens.find((candidate) => candidate.startsWith(prefix));
-		return token === undefined ? undefined : token.slice(prefix.length);
-	};
-	const lineageId = tokenValue("lineage");
-	const targetIdentity = tokenValue("target");
-	const expectedRevision = tokenValue("expected-revision");
-	const repositoryContext = tokenValue("repository-context");
-	if (lineageId === undefined || targetIdentity === undefined || expectedRevision === undefined || slot.subjectHash === undefined) return undefined;
-	return { lineageId, targetIdentity, expectedRevision, requestHash: slot.subjectHash, ...(repositoryContext === undefined ? {} : { repositoryContext }) };
-}
 
 async function executeProviderRoleVectorCapture(
 	slot: ReviewProviderRoleVectorSlot,

@@ -622,7 +622,7 @@ sequenceDiagram
 
 ## Try it from source on Linux
 
-A walkthrough for running this branch on a Linux machine (written for Arch / Omarchy; other distributions differ only in package names) and reaching it from another machine, for example a Mac. No released Gentle Shell has `serve` yet: the installed `gentle-shell` takes `serve` as a prompt for the model, so every command below runs the checkout's launcher.
+A walkthrough for running this branch on a Linux machine (written for Arch / Omarchy; other distributions differ only in package names) and reaching it from another machine, for example a Mac running Gentle Shell GPUI. No released Gentle Shell has `serve` yet: the installed `gentle-shell` takes `serve` as a prompt for the model, so every command below runs the checkout's launcher, and the installed Gentle Shell is left as it is.
 
 ### 1. Install the checkout
 
@@ -630,6 +630,7 @@ Requirements: `git`, Node `^22.19.0 || >=23.6.0` (`package.json` `engines`), and
 
 ```sh
 sudo pacman -S --needed git nodejs npm      # or: mise use -g node@22
+node --version                              # v25 or later? then: sudo npm install -g corepack
 git clone -b feat/serve-phase1 https://github.com/ismaelosuna7824/gentle-shell.git ~/src/gentle-shell
 cd ~/src/gentle-shell
 corepack pnpm install
@@ -637,136 +638,138 @@ corepack pnpm install
 
 `pnpm install` installs the dependencies (Pi included, in `node_modules`) and its `postinstall` downloads the pinned Gentle AI release binary, verified against its signed checksums, into `.gentle-ai/v<version>/` inside the checkout. It writes nothing in your home (a git checkout is not a Pi-managed install, so the global Pi settings are not touched).
 
+[Gentle Tower](#gentle-tower) is a separate web build. Only if you want to open it from a client, build it once in the checkout:
+
+```sh
+corepack pnpm run build:tower
+```
+
 A shell function keeps the commands short:
 
 ```sh
 gsdev() { GENTLE_SHELL_NO_AUTO_SETUP=1 node ~/src/gentle-shell/bin/gentle-shell.mjs "$@"; }
 ```
 
-### 2. Choose the agent home
+`GENTLE_SHELL_NO_AUTO_SETUP=1` keeps the checkout from re-running setup in your agent home when its version differs from the one that set the home up (see [step 3](#3-choose-the-agent-home)).
+
+### 2. Build the terminal host
+
+[Persistent terminals](#persistent-terminals) run in `gentle-term-host`, a native binary from the Gentle Shell GPUI repository. Without it everything else works and opening a terminal answers `501 term_host_missing`. No release ships it for this branch yet, so build it from the GPUI pull request's branch:
+
+```sh
+sudo pacman -S --needed rustup base-devel
+rustup default stable
+git clone -b feat/remote-serve-backend https://github.com/Gentleman-Programming/gentle-shell-gpui ~/src/gentle-shell-gpui
+cd ~/src/gentle-shell-gpui
+cargo build --release -p gentle-term-host
+```
+
+The server looks for it in `$GENTLE_TERM_HOST`, then `<home>/serve/bin/gentle-term-host`, then on `PATH`. Copy it into the home's `serve/bin/` (the home of [step 3](#3-choose-the-agent-home); `gsdev --version` prints it):
+
+```sh
+AGENT_HOME=~/.gentle-shell/agent              # the home line of 'gsdev --version'
+install -d -m 700 "$AGENT_HOME/serve" "$AGENT_HOME/serve/bin"
+install -m 755 target/release/gentle-term-host "$AGENT_HOME/serve/bin/"
+```
+
+Or leave it in place and start the server with `GENTLE_TERM_HOST=$HOME/src/gentle-shell-gpui/target/release/gentle-term-host` in its environment (not carried into the `--always` unit, so prefer `serve/bin/` there). A client can also install one with `PUT /api/term-host`.
+
+### 3. Choose the agent home
 
 The checkout resolves its home exactly as the installed `gentle-shell` does: `--link`, `--isolated` or `--home <dir>` when given, otherwise the home saved in `~/.gentle-shell/config.json`, otherwise `~/.gentle-shell/agent` (or `$GENTLE_SHELL_HOME`). So with no flags it uses the same home as your installed Gentle Shell, with its sign-ins (`auth.json`), providers and settings. Compare the `home` line of both:
 
 ```sh
 gentle-shell --version     # the installed one
-gsdev --version            # the checkout; prints nothing new on disk
+gsdev --version            # the checkout; writes nothing
 ```
 
-- **Reuse your providers (recommended):** run `gsdev serve …` with the same home selector you use day to day (none, or `--link` if you launch `gentle-shell --link`). `serve` itself writes only `<home>/serve/`. Its sessions are ordinary launches of the checkout in that home, so they also read and write the home's sessions and settings, as any Gentle Shell launch does. `GENTLE_SHELL_NO_AUTO_SETUP=1` (in `gsdev`) keeps those launches from re-running setup in the home when the checkout's version differs from the one that set the home up, so the companion packages stay as your installed Gentle Shell left them. The installed Gentle Shell keeps working alongside; the two never share a process.
-- **Fully separate:** `gsdev --home ~/.gentle-shell-serve serve …` uses a new home. Copy your sign-ins into it if you want them (`install -m 600 ~/.gentle-shell/agent/auth.json ~/.gentle-shell-serve/`); without `GENTLE_SHELL_NO_AUTO_SETUP=1` its first session installs the companion packages there.
+- **Reuse your providers (recommended):** run `gsdev serve …` with the same home selector you use day to day (none, or `--link` if you launch `gentle-shell --link`). `serve` itself writes only `<home>/serve/`. Its sessions are ordinary launches of the checkout in that home, so they also read and write the home's sessions and settings, as any Gentle Shell launch does, and a client's Configuration changes (model defaults, `models.json`, MCP servers, packages, setup, sign-in) change that home too. `GENTLE_SHELL_NO_AUTO_SETUP=1` (in `gsdev`) keeps the companion packages as your installed Gentle Shell left them. The installed Gentle Shell keeps working alongside; the two never share a process.
+- **Fully separate:** `gsdev --home ~/.gentle-shell-serve serve …` uses a new home (the selector goes before `serve` in every command below). Copy your sign-ins into it if you want them (`install -m 600 ~/.gentle-shell/agent/auth.json ~/.gentle-shell-serve/`); without `GENTLE_SHELL_NO_AUTO_SETUP=1` its first session installs the companion packages there.
 
 Sessions use the checkout's Pi (`node_modules`), not the installed one's.
 
-### 3. Start, check, stop
-
-```sh
-gsdev serve --listen 127.0.0.1:8787   # starts in the background, prints the URL and the log path
-gsdev serve status                    # URL, pid, sessions
-gsdev serve pair                      # one-time code (5 minutes, single use)
-gsdev serve devices                   # paired devices; --revoke <id> removes one
-gsdev serve stop                      # stops the server; sessions keep running (--sessions stops them too)
-```
-
-The log is `<home>/serve/server.log` (rewritten on each start). Gentle Shell never launches the server on its own: once started it runs until `serve stop`, a reboot, or its process is killed. Sessions run on the Linux machine, so their `cwd` is a path there.
-
-`gsdev serve share --always` writes and enables a systemd user unit for the network server ([Start at login](#start-at-login)). To keep a loopback-only server for the SSH tunnel instead, write the unit by hand (same file name, so use one or the other); it runs the server in the foreground and its output goes to the journal instead of `server.log`:
-
-```sh
-mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/gentle-shell-serve.service <<EOF
-[Unit]
-Description=Gentle Shell serve (source checkout)
-
-[Service]
-Type=simple
-Environment=PATH=$PATH
-Environment=GENTLE_SHELL_NO_AUTO_SETUP=1
-ExecStart=$(command -v node) %h/src/gentle-shell/bin/gentle-shell.mjs serve --foreground --listen 127.0.0.1:8787
-Restart=on-failure
-RestartSec=5
-TimeoutStopSec=30
-
-[Install]
-WantedBy=default.target
-EOF
-systemctl --user daemon-reload
-systemctl --user enable --now gentle-shell-serve
-journalctl --user -u gentle-shell-serve -f
-```
-
-The heredoc writes your current `PATH` and `node` into the unit (a user service does not read your shell profile; sessions' tools need the `PATH`). Add your home selector before `serve` if you use one. `systemctl --user stop gentle-shell-serve` stops it in order (SIGTERM); `gsdev serve stop` also works and is not restarted. A user unit runs while you are logged in; `sudo loginctl enable-linger $USER` starts it at boot and keeps it running after you log out.
-
 ### 4. Reach it from the Mac
 
-**Easiest: `serve share`.** `gsdev serve share` on the Linux machine, then enter the short code it prints in Gentle Shell GPUI on the Mac, or paste the long `gsc1.…` code when the app cannot find the Linux machine ([Quick start](#quick-start-connect-from-gentle-shell-gpui)). It is option (b) below, plain HTTP on your network, without typing addresses. The rest of this step is the manual way.
-
-**(a) SSH tunnel (recommended).** The server stays on loopback and SSH encrypts everything. It needs `sshd` on the Linux machine (`sudo systemctl enable --now sshd`). On the Mac:
-
 ```sh
-ssh -N -L 8787:127.0.0.1:8787 you@linux-box
+gsdev serve share
 ```
 
-The client then uses `http://127.0.0.1:8787`. Keep the **same port on both ends**: the client's `Host` header carries the Mac's local port, and the server accepts only its own (`-L 9000:127.0.0.1:8787` is refused with `421 bad_host`). The tunnel works over a LAN or a tailnet (`you@linux-box` can be a Tailscale name).
+It starts the server in the background on every interface (port 8787, or the next free one up to 8796; `--port <n>` starts the search elsewhere), with forwarded pages on ports 8800-8899, and prints a short code and a long `gsc1.…` code ([Share on your network](#share-on-your-network)). In Gentle Shell GPUI on the Mac, **Configuration → Where agents run → Gentle Shell server**, enter the short code: the app finds the Linux machine with a UDP broadcast ([LAN discovery](#lan-discovery)). Where discovery does not reach (another subnet, a tailnet, Wi-Fi client isolation, a relay) paste the long code instead: it carries the addresses, the port, the pairing code, the certificate fingerprint (`fp`) and the relay (`r`) when there is one ([Connection code](#connection-code)). A code is valid 5 minutes, once; run `serve share` again for another device or a fresh code.
 
-**(b) LAN or Tailscale, plain HTTP.** Bind every interface:
+The network server speaks HTTPS with a self-signed certificate made on first run (`<home>/serve/tls/`). The long code carries its fingerprint, which the app pins; with the short code the app first asks the server for a pairing proof (`POST /api/pair/proof`) that binds the code to the certificate, so the code only goes to a server that already knows it. On the Linux machine itself `http://127.0.0.1:<port>` keeps working; plain HTTP from another machine gets `400 tls_required`. `--no-tls` serves plain HTTP on the network as before, only for a network that encrypts by itself, such as a tailnet.
+
+**Firewall.** Omarchy enables `ufw` (`sudo ufw status`). `share` prints the exact command for the port it took and never runs `sudo` itself:
 
 ```sh
-gsdev serve --listen 0.0.0.0:8787
+sudo ufw allow 8787                 # TCP for HTTPS, UDP for discovery
+sudo ufw allow 8800:8899/tcp        # pages the app opens from here (forwards)
+# firewalld instead:
+sudo firewall-cmd --permanent --add-port=8787/tcp --add-port=8787/udp --add-port=8800-8899/tcp && sudo firewall-cmd --reload
 ```
 
-It prints a warning: device tokens and session traffic cross the network unencrypted, so use it only on a network you trust (a tailnet encrypts at its own layer). Clients may use, in the URL:
+**Start at login.** `gsdev serve share --always` writes `~/.config/systemd/user/gentle-shell-serve.service` with the same command, home flags, `PATH` and the environment listed in [Start at login](#start-at-login) (`GENTLE_SHELL_NO_AUTO_SETUP` included), then runs `systemctl --user enable --now`. The unit uses `KillMode=process`: restarting it ends only the server, and the next one reattaches the sessions and terminals. Its output goes to the journal (`journalctl --user -u gentle-shell-serve -f`). A user unit runs while you are logged in; `sudo loginctl enable-linger $USER` starts it at boot. `gsdev serve share --off` disables and removes it, which stops that server.
 
-- an IP literal: `http://192.168.1.20:8787`, or the Tailscale IP `http://100.x.y.z:8787` (`tailscale ip -4`);
-- the machine's own hostname (`uname -n`), alone or with `.local`: `http://linux-box:8787` — also a tailnet's short MagicDNS name when it equals the hostname;
-- any other DNS name only when allowed by name. A full MagicDNS name such as `linux-box.tail1234.ts.net` is refused (`421 bad_host`) unless the server is started with it:
-
-  ```sh
-  gsdev serve --listen 0.0.0.0:8787 --allow-host linux-box.tail1234.ts.net
-  ```
-
-Binding a single address (`--listen 100.x.y.z:8787`) accepts only that address in `Host`. If `ufw` is enabled (Omarchy enables it; check `sudo ufw status`), open the port to the network you use, for example `sudo ufw allow in on tailscale0 to any port 8787 proto tcp` or `sudo ufw allow from 192.168.1.0/24 to any port 8787` (TCP and UDP: UDP carries [LAN discovery](#lan-discovery)). The SSH tunnel needs no rule beyond SSH's.
-
-### 5. Pair a client and drive a session
-
-On the Linux machine, mint a code (`gsdev serve pair`). On the Mac, with `URL` the address from step 4:
+**Relay.** For a Mac outside the Linux machine's network, run a relay where both can reach it (a VPS, or any machine with an open port) and register the server with it:
 
 ```sh
-URL=http://127.0.0.1:8787
-curl -sX POST $URL/api/pair -H 'Content-Type: application/json' -d '{"code":"ABCD-EFGH","name":"mac"}'
-# → {"id":"dev_…","name":"mac","scopes":["sessions:read","sessions:operate","terminal"],"createdAt":"…","token":"gss_…"}
-TOKEN=gss_…                                           # shown once: keep it
-curl -s $URL/api/server -H "Authorization: Bearer $TOKEN"
+# on the relay machine (the same checkout and gsdev):
+gsdev relay --listen 0.0.0.0:7700       # makes <its home>/relay/secret on first run and says where it is
+# on the Linux server, with that secret's first line:
+install -m 600 /dev/stdin ~/.gentle-shell/agent/serve/relay-secret <<< 'the-relay-secret'
+gsdev serve share --relay gsr://relay.example.com:7700
+```
+
+`GENTLE_SHELL_RELAY_SECRET` works instead of the file, but the `--always` unit does not carry it. The long code then carries the relay (`r`); the short code works on the local network only. The relay sees only TLS ciphertext, so `--relay` cannot be combined with `--no-tls`. `serve status` says whether the relay is connected. `share` does not restart a server with running sessions to change its TLS or relay settings: stop them, or `serve stop`, first.
+
+**SSH tunnel instead.** A server kept on loopback (`gsdev serve --listen 127.0.0.1:8787`) is reached from the Mac through `ssh -N -L 8787:127.0.0.1:8787 you@linux-box` at `http://127.0.0.1:8787`, paired by hand ([step 5](#5-check-pair-by-hand-stop)). Keep the **same port on both ends**: the server accepts only its own port in `Host` (`421 bad_host` otherwise). On a network server, a DNS name other than the machine's hostname (for example a full MagicDNS name) needs `--allow-host <name>`.
+
+### 5. Check, pair by hand, stop
+
+```sh
+gsdev serve status                    # URL, pid, certificate fingerprint, relay, sessions
+gsdev serve pair                      # one-time code for a client that pairs by hand (5 minutes, single use)
+gsdev serve devices                   # paired devices; --revoke <id> removes one
+gsdev serve stop                      # stops the server; sessions and terminals keep running (--sessions stops sessions too)
+```
+
+The log is `<home>/serve/server.log` (rewritten on each start; the journal under `--always`). Gentle Shell never launches the server on its own: once started it runs until `serve stop`, a reboot, or its process is killed. Sessions run on the Linux machine, so their `cwd` is a path there.
+
+By hand on the Linux machine, over plain HTTP on loopback:
+
+```sh
+URL=$(jq -r .url ~/.gentle-shell/agent/serve/server.json)     # http://127.0.0.1:<port>
+curl -s $URL/.well-known/gentle-shell
+curl -sX POST $URL/api/pair -H 'Content-Type: application/json' -d '{"code":"ABCD-EFGH","name":"curl"}'
+# → {"id":"dev_…","name":"curl","scopes":["sessions:read","sessions:operate","terminal"],"createdAt":"…","token":"gss_…"}
+TOKEN=gss_…                                                    # shown once: keep it
 curl -sX POST $URL/api/sessions -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"cwd":"/home/you/project"}'
-SID=ses_…                                             # session.id from the answer
-curl -N "$URL/api/sessions/$SID/events?after=0" -H "Authorization: Bearer $TOKEN"   # in a second terminal
-curl -sX POST $URL/api/sessions/$SID/rpc -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -d '{"type":"get_state"}'
-curl -sX DELETE $URL/api/sessions/$SID -H "Authorization: Bearer $TOKEN"
 ```
 
-A `{"type":"prompt","message":"…"}` command starts a model turn with the home's provider, exactly as typing in the session would. The device stays paired across server restarts (`<home>/serve/devices.json`) until revoked.
-
-The Gentle Shell GPUI desktop app is getting a client for this server: [gentle-shell-gpui#247](https://github.com/Gentleman-Programming/gentle-shell-gpui/issues/247).
+From another machine use `https://<address>:<port>` and pin the fingerprint `serve status` prints; `curl -k` skips that check and is fit only for looking at `/.well-known/gentle-shell`. A `{"type":"prompt","message":"…"}` RPC command starts a model turn with the home's provider, exactly as typing in the session would. A device stays paired across server restarts (`<home>/serve/devices.json`) until revoked.
 
 ### Troubleshooting
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `421 bad_host` | The `Host` header does not name this server and port. A tunnel with a different local port (use the same port on both ends); a DNS name other than the hostname on `0.0.0.0` (use the IP, or `--allow-host <name>`); a loopback server addressed by another name. |
-| `403 forbidden_origin` | The request carries an `Origin` other than `http://<Host>` (a web page on another origin, or a client adding one). Native clients and curl send no `Origin`. |
+| `421 bad_host` | The `Host` header does not name this server and port: a tunnel with a different local port (use the same port on both ends), or a DNS name other than the hostname (use the IP, or `--allow-host <name>`). |
+| `400 tls_required` | Plain `http://` to a network server from another machine. Use `https://` (the app does), or `--no-tls` on a network that encrypts by itself. |
+| `403 forbidden_origin` | The request carries an `Origin` other than the server's own (a web page on another origin). Native clients and curl send no `Origin`. |
 | `401 unauthorized` | No `Authorization: Bearer <token>`, a mistyped token, a revoked device, or a token paired with another home's server (devices are per home). Pair again. |
-| `403 forbidden` | The token lacks the scope (for example `sessions:read` only, or an `admin` endpoint). Pair with `serve pair --scope …`. |
-| `403 invalid_code` | The code is mistyped, expired (5 minutes), already used (the first attempt consumes it), or was minted by another home's server. Mint a new one. After 10 failures in a minute pairing answers `429 rate_limited` until the minute ends. |
-| `could not start: listen EADDRINUSE` | Something else listens on the port: `ss -ltnp 'sport = :8787'`. Pick another port or stop it. `already running at …` means this home's server already runs (`serve status`). |
-| `serve status` says not running but `<home>/serve/server.json` exists | A server that was killed (or a reboot) left it; it is ignored and the next start takes it over. Only if a reused pid makes `status` report a server that does not answer, confirm nothing listens (`ss -ltnp`) and remove `<home>/serve/server.json` and `server.lock`. |
-| `Connection refused` from the Mac | The server listens on loopback (use the tunnel, or `--listen 0.0.0.0:8787`), the firewall drops the port, or the server is not running. |
-| The app does not find the computer from the short code | The two computers are not on the same network segment (another subnet or VLAN, a guest Wi-Fi with client isolation, a VPN or tailnet), or the firewall drops UDP on the port (`sudo ufw allow 8787` opens TCP and UDP). Paste the long `gsc1.…` code instead, which `share` prints under the short one. `share` notes when the server could not open its UDP port at all. |
+| `403 forbidden` | The token lacks the scope (for example an `admin` endpoint). Pair with `serve pair --scope …`. |
+| `403 invalid_code` | The code is mistyped, expired (5 minutes), already used (the first attempt consumes it), or was minted by another home's server. Run `serve share` again. After 10 failures in a minute pairing answers `429 rate_limited` until the minute ends. |
+| The app does not find the computer from the short code | Not the same network segment (another subnet or VLAN, guest Wi-Fi with client isolation, VPN or tailnet), or the firewall drops UDP on the port (`sudo ufw allow 8787` opens TCP and UDP). Paste the long code. `share` says when discovery is off on the server (its UDP port was taken). |
+| `Connection refused` or a timeout from the Mac | The firewall drops the port, the server listens on loopback only (`serve status`; `serve share` reopens it on the network when no session runs), or it is not running. |
+| `ports 8787-8796 are in use`, or `listen EADDRINUSE` | Something else listens: `ss -ltnup 'sport = :8787'`. Stop it or use `serve share --port <n>`. `already running at …` means this home's server already runs (`serve status`). |
+| `share` exits 1 about running sessions | Opening a loopback server to the network, changing its TLS or relay settings, or handing it to `--always` restarts it: stop its sessions or run `serve stop` first. |
+| `serve status` says not running but `<home>/serve/server.json` exists | A killed server (or a reboot) left it; the next start takes it over. Only if a reused pid makes `status` report a server that does not answer, confirm nothing listens (`ss -ltnp`) and remove `<home>/serve/server.json` and `server.lock`. |
+| A terminal answers `501 term_host_missing` | No `gentle-term-host`: [build it](#2-build-the-terminal-host) and put it in `<home>/serve/bin/` or `GENTLE_TERM_HOST`. |
 | `gentle-shell serve` opens a chat | That is the installed release, which has no `serve`; use the checkout (`gsdev serve`). |
-| A forwarded page does not load from another computer | The firewall blocks the forward's port: open the range (`sudo ufw allow 8800:8899/tcp`) and start the server with `--forward-ports` (`share` does). On a loopback server, tunnel the forward's port too. |
-| A forward link answers `401` | The link was already used or is older than 60 s, and this browser has no cookie for the forward (another browser or webview, cookies cleared): ask for a new link (`POST …/forwards` again). |
+| Gentle Tower: `the web app is not built` | Run `corepack pnpm run build:tower` in the checkout. |
+| A forwarded page does not load from another computer | The firewall blocks the forward's port: `sudo ufw allow 8800:8899/tcp`. A server started without `--forward-ports` (not by `share`) gives forwards random ports: `serve stop`, then `serve share`. |
+| A forward link answers `401` | The link was already used or is older than 60 s, and this browser has no cookie for the forward: open it again from the app. |
 | A forward answers `502` | Nothing listens on that port of the server's loopback yet, or the page closed: start it, then reload. |
-| A forward answers `403` | The request came from another page (its `Origin` is another port or host); forwards accept only their own pages. |
+| `serve status` shows the relay `not connected (retrying)` | The relay is unreachable or refuses the server: check its address and port, and that `<home>/serve/relay-secret` (or `GENTLE_SHELL_RELAY_SECRET`) holds the relay's secret. |
 
 ## Not done yet
 
@@ -775,4 +778,4 @@ The Gentle Shell GPUI desktop app is getting a client for this server: [gentle-s
 - **Idle unload and crash resume.** Sessions run until stopped and survive a server restart, but not a reboot or a crash of their keeper: start them again with `sessionId` and Pi reopens the conversation from disk.
 - **`message_update` coalescing.** Slow clients are dropped into a resync instead.
 - **Narrower file scopes.** File access uses `sessions:read` and `sessions:operate`; separate `fs:read`/`fs:write` scopes, or a folder jail per device, are not there.
-- **SSH bootstrap and TLS** (Phase 3), **the mobile web client, QR codes and a relay** (Phase 4).
+- **SSH bootstrap** (Phase 3), **the mobile web client and QR codes** (Phase 4).

@@ -13369,9 +13369,15 @@ function createGentleAiExtensionForTesting(
 		if (!ctx.hasUI || typeof ctx.ui?.confirm !== "function") return { block: true, reason: `Gentle AI safety policy requires interactive confirmation before accessing paths outside the session worktree: ${displayedTarget}. Ask the user for an explicit safer plan.` };
 		if (!sessionId || !manager) return { block: true, reason: "Session identity is unavailable; access outside the session worktree is blocked." };
 		const epoch = reminderEpoch, modeEpoch = yolo.epoch();
-		let changed = false;
+		let changed = false, confirmationFailed = false;
 		const approved = await requestToolConfirmation(pi.events, herdrLifecycle, toolName, async () => {
-			if ((await ctx.ui.confirm("Allow access outside the session worktree?", displayedTarget)) !== true) return false;
+			try {
+				const message = `${toolName}: ${displayedTarget} (approval covers only this target for the rest of the session)`;
+				if ((await ctx.ui.confirm("Allow access outside the session worktree?", message)) !== true) return false;
+			} catch {
+				confirmationFailed = true;
+				return false;
+			}
 			try {
 				changed = ctx.signal?.aborted === true || epoch !== reminderEpoch || modeEpoch !== yolo.epoch()
 					|| ctx.sessionManager !== manager || ctx.cwd !== cwd
@@ -13379,6 +13385,7 @@ function createGentleAiExtensionForTesting(
 			} catch { changed = true; }
 			return !changed;
 		});
+		if (confirmationFailed) return { block: true, reason: "Gentle AI safety policy blocked the path access because the confirmation dialog failed. Retry to request fresh consent." };
 		if (!approved) return { block: true, reason: changed
 			? "Gentle AI safety policy blocked the path access because its target or session changed during confirmation. Retry to request fresh consent."
 			: "Gentle AI safety policy blocked the path access because it was not confirmed." };

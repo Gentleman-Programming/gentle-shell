@@ -4,18 +4,21 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, s
 import { tmpdir } from "node:os";
 import { join, parse, relative } from "node:path";
 import test from "node:test";
-import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { runToolCall, type RunToolCallOptions } from "@earendil-works/pi-agent-core";
+import { SessionManager, type ExtensionAPI, type ExtensionContext, type ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import skillRegistry from "../extensions/skill-registry.ts";
+import { isTempTarget } from "../lib/path-consent-fence.ts";
 import type { PermissionMode } from "../lib/permission-mode-policy.ts";
 import { SESSION_WORKTREE_ENTRY, SessionWorktreeRegistry, worktreeGitEnvironment } from "../lib/session-worktree-registry.ts";
 
-const title = "Allow access outside the session worktree?";
+const prompt = (tool: string, path: string) => ["Allow access outside the session worktree?", `${tool}: ${path} (approval covers only this target for the rest of the session)`];
 const outside = join(parse(process.cwd()).root, "__gentle_path_consent_fixture__", "notes.md");
 const declined = { block: true, reason: "Gentle AI safety policy blocked the path access because it was not confirmed." };
 const headless = (path: string) => ({ block: true, reason: `Gentle AI safety policy requires interactive confirmation before accessing paths outside the session worktree: ${path}. Ask the user for an explicit safer plan.` });
 
-function fixture(t: test.TestContext, options: { mode?: PermissionMode; hasUI?: boolean; approve?: boolean; skills?: boolean; classify?: () => "allow" | "deny" } = {}) {
+function fixture(t: test.TestContext, options: { mode?: PermissionMode; hasUI?: boolean; approve?: boolean; confirm?: () => Promise<boolean>; skills?: boolean; classify?: () => "allow" | "deny" } = {}) {
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), "path-consent-")));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const repo = join(dir, "repo"), config = join(dir, "config");
@@ -52,7 +55,7 @@ function fixture(t: test.TestContext, options: { mode?: PermissionMode; hasUI?: 
 	const ctx = {
 		cwd: repo, mode: "tui", hasUI: options.hasUI ?? true, sessionManager: manager,
 		model: { id: "fixture", provider: "fixture" }, signal: new AbortController().signal,
-		ui: { confirm: async (...args: string[]) => { prompts.push(args); return options.approve === true; }, setStatus() {}, setWidget() {} },
+		ui: { confirm: async (...args: string[]) => { prompts.push(args); return options.confirm ? options.confirm() : options.approve === true; }, setStatus() {}, setWidget() {} },
 	} as unknown as ExtensionContext;
 	async function emit(name: string, event: unknown) {
 		for (const fn of handlers.get(name) ?? []) {
@@ -67,6 +70,19 @@ function fixture(t: test.TestContext, options: { mode?: PermissionMode; hasUI?: 
 	};
 }
 
+function worktreeFixture(t: test.TestContext) {
+	const f = fixture(t, { hasUI: false });
+	const env = { TMPDIR: f.temp };
+	if (isTempTarget(f.dir, env)) {
+		// Some hosts put os.tmpdir() under a fixed temp root. In this fixture,
+		// resolve just the fixed temp aliases to the isolated scratch sibling.
+		const native = realpathSync.native;
+		t.mock.method(realpathSync, "native", (path: string) => native(path === "/tmp" || path === "/var/tmp" ? f.temp : path));
+	}
+	assert.equal(isTempTarget(f.dir, env), false);
+	return f;
+}
+
 const inputs = (path: string) => [
 	["read", { path }], ["write", { path, content: "fixture" }], ["edit", { path, edits: [] }],
 	["grep", { path, pattern: "fixture" }], ["find", { path, pattern: "*" }], ["ls", { path }],
@@ -75,7 +91,7 @@ const inputs = (path: string) => [
 test("all six file tools ask for the exact outside target and a refusal blocks", async t => {
 	const f = fixture(t);
 	for (const [tool, input] of inputs(outside)) assert.deepEqual(await f.call(tool, input), declined, tool);
-	assert.deepEqual(f.prompts, inputs(outside).map(() => [title, outside]));
+	assert.deepEqual(f.prompts, inputs(outside).map(([tool]) => prompt(tool, outside)));
 	for (const [index, [toolName]] of inputs(outside).entries()) {
 		const request = f.permissionEvents[2 * index] as { requestId: string };
 		assert.ok(request.requestId);
@@ -87,6 +103,32 @@ test("all six file tools ask for the exact outside target and a refusal blocks",
 	assert.equal(f.permissionEvents.length, 12);
 });
 
+test("a rejected confirmation explicitly blocks execution and leaves no grant", async t => {
+	const disconnect = new Error("fixture UI disconnected");
+	const f = fixture(t, { confirm: async () => { throw disconnect; } });
+	const blocked = { block: true, reason: "Gentle AI safety policy blocked the path access because the confirmation dialog failed. Retry to request fresh consent." };
+	let executed = 0;
+	let verdict: ToolCallEventResult | undefined;
+	const result = await runToolCall({ type: "toolCall", name: "read", id: "disconnect", arguments: { path: outside } }, {
+		assistantMessage: {} as RunToolCallOptions["assistantMessage"],
+		context: { messages: [] },
+		tools: [{ name: "read", label: "Fixture read", description: "Count executions without touching the file", parameters: Type.Object({ path: Type.String() }),
+			execute: async () => { executed++; return { content: [], details: undefined }; } }],
+		beforeToolCall: async ({ args }) => verdict = await f.call("read", args) as typeof verdict,
+	});
+	assert.equal(result.isError, true);
+	assert.equal(executed, 0);
+	const request = f.permissionEvents[0] as { requestId: string };
+	assert.ok(request.requestId);
+	assert.deepEqual(f.permissionEvents, ["waiting", "denied"].map(state => ({ requestId: request.requestId, state, source: "tool_call",
+		message: "Gentle AI safety policy requires confirmation for this tool call.", toolName: "read" })));
+	assert.deepEqual({ verdict, content: result.result.content }, { verdict: blocked, content: [{ type: "text", text: blocked.reason }] });
+	Object.assign(f.ctx, { hasUI: false });
+	assert.deepEqual(await f.call("read", { path: outside }), headless(outside));
+	assert.deepEqual(f.prompts, [prompt("read", outside)]);
+	assert.equal(f.permissionEvents.length, 2);
+});
+
 test("headless outside access is denied without showing an ask", async t => {
 	const f = fixture(t, { hasUI: false, approve: true });
 	assert.deepEqual(await f.call("write", { path: outside, content: "fixture" }), headless(outside));
@@ -95,8 +137,11 @@ test("headless outside access is denied without showing an ask", async t => {
 });
 
 test("inside targets pass without rewriting the tool input", async t => {
-	const f = fixture(t, { hasUI: false });
-	for (const [tool, input] of inputs("./subdir/file.txt")) {
+	const f = worktreeFixture(t);
+	f.ctx.cwd = join(f.repo, "session");
+	mkdirSync(f.ctx.cwd);
+	f.ctx.sessionManager = SessionManager.inMemory(f.ctx.cwd);
+	for (const [tool, input] of inputs("../subdir/file.txt")) {
 		const original = structuredClone(input);
 		assert.equal(await f.call(tool, Object.freeze(input)), undefined, tool);
 		assert.deepEqual(input, original);
@@ -106,13 +151,14 @@ test("inside targets pass without rewriting the tool input", async t => {
 });
 
 test("the existing session registry admits a linked worktree in the same clone", async t => {
-	const f = fixture(t, { hasUI: false });
+	const f = worktreeFixture(t);
 	f.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "Fixture");
-	const linked = join(f.dir, "linked");
+	const linked = join(f.dir, "linked"), path = join(linked, "file.md");
 	f.git("worktree", "add", "--quiet", "--detach", linked);
+	assert.deepEqual(await f.call("read", { path }), headless(path));
 	const registry = new SessionWorktreeRegistry(f.pi, f.manager, f.repo);
 	assert.equal(registry.register(linked, "explicit"), linked);
-	assert.equal(await f.call("read", { path: join(linked, "file.md") }), undefined);
+	assert.equal(await f.call("read", { path }), undefined);
 	assert.deepEqual(f.prompts, []);
 });
 
@@ -147,7 +193,7 @@ test("a grant covers only the approved canonical target and only in the current 
 	assert.equal(await f.call("read", { path: other }), undefined);
 	f.ctx.sessionManager = SessionManager.inMemory(f.repo);
 	assert.equal(await f.call("read", { path: outside }), undefined);
-	assert.deepEqual(f.prompts, [[title, outside], [title, other], [title, outside]]);
+	assert.deepEqual(f.prompts, [prompt("read", outside), prompt("read", other), prompt("read", outside)]);
 });
 
 test("a relative dangling symlink to an outside file requests consent (#1659)", { skip: process.platform === "win32" }, async t => {
@@ -155,7 +201,7 @@ test("a relative dangling symlink to an outside file requests consent (#1659)", 
 	const dangling = join(parse(outside).root, "__gentle_path_consent_dangling_fixture__.md");
 	symlinkSync(relative(f.repo, dangling), join(f.repo, "alias"), "file");
 	assert.deepEqual(await f.call("write", { path: "alias", content: "fixture" }), declined);
-	assert.deepEqual(f.prompts, [[title, dangling]]);
+	assert.deepEqual(f.prompts, [prompt("write", dangling)]);
 	assert.equal(existsSync(dangling), false);
 });
 
@@ -167,14 +213,14 @@ test("a dangling outside link with an ordinary parent segment asks", { skip: pro
 	assert.equal(existsSync(target), false);
 	symlinkSync(`${relative(f.repo, work)}/skills/../${leaf}`, join(f.repo, "alias"), "file");
 	assert.deepEqual(await f.call("write", { path: "alias", content: "fixture" }), declined);
-	assert.deepEqual(f.prompts, [[title, target]]);
+	assert.deepEqual(f.prompts, [prompt("write", target)]);
 	assert.equal(existsSync(target), false);
 
 	// Lexically cancelling prefix/.. would leave this path inside f.repo.
 	symlinkSync(join(work, "skills"), join(f.repo, "prefix"), "dir");
 	symlinkSync(`prefix/../${leaf}`, join(f.repo, "redirected"), "file");
 	assert.deepEqual(await f.call("write", { path: "redirected", content: "fixture" }), declined);
-	assert.deepEqual(f.prompts, [[title, target], [title, target]]);
+	assert.deepEqual(f.prompts, [prompt("write", target), prompt("write", target)]);
 	assert.equal(existsSync(target), false);
 });
 
@@ -199,14 +245,14 @@ test("a sensitive outside path still denies first with its existing message", as
 test("Normal asks for outside access and does not invoke Auto", async t => {
 	const f = fixture(t, { mode: "normal", approve: true });
 	assert.equal(await f.call("read", { path: outside }), undefined);
-	assert.deepEqual(f.prompts, [[title, outside]]);
+	assert.deepEqual(f.prompts, [prompt("read", outside)]);
 	assert.equal(f.classifications(), 0);
 });
 
 test("Auto still classifies after outside consent, and its denial still wins", async t => {
 	const f = fixture(t, { mode: "auto", approve: true });
 	assert.deepEqual(await f.call("read", { path: outside }), { block: true, reason: "Auto denied this action: Fixture restriction. Find a materially safer alternative within the request, or ask the user; do not pursue the same effect through another tool." });
-	assert.deepEqual(f.prompts, [[title, outside]]);
+	assert.deepEqual(f.prompts, [prompt("read", outside)]);
 	assert.equal(f.classifications(), 1);
 });
 
@@ -220,16 +266,16 @@ test("Auto blocks a target retargeted during classification without granting eit
 	assert.deepEqual(await f.call("read", { path: "alias" }), {
 		block: true, reason: "Gentle AI safety policy blocked the path access because its target changed during Auto classification. Retry to request fresh consent.",
 	});
-	assert.deepEqual(f.prompts, [[title, outside]]);
+	assert.deepEqual(f.prompts, [prompt("read", outside)]);
 	assert.equal(f.classifications(), 1);
 	for (const path of [outside, other]) assert.equal(await f.call("read", { path }), undefined);
-	assert.deepEqual(f.prompts, [[title, outside], [title, outside], [title, other]]);
+	assert.deepEqual(f.prompts, [prompt("read", outside), prompt("read", outside), prompt("read", other)]);
 });
 
 test("YOLO allows non-sensitive outside reads and listings but not outside mutations", async t => {
 	const f = fixture(t, { mode: "yolo" });
 	for (const [tool, input] of inputs(outside)) assert.deepEqual(await f.call(tool, input), tool === "write" || tool === "edit" ? declined : undefined, tool);
-	assert.deepEqual(f.prompts, [[title, outside], [title, outside]]);
+	assert.deepEqual(f.prompts, [prompt("write", outside), prompt("edit", outside)]);
 	assert.equal(f.classifications(), 0);
 });
 

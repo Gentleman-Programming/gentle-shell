@@ -33,7 +33,10 @@ import {
 	buildPiInvocation,
 	checkPiVersion,
 	decideTakeOver,
+	describeSetupCheck,
+	describeSetupCheckError,
 	describeVersion,
+	describeVersionJson,
 	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
 	forceJsonFieldIfAbsentInOriginal,
@@ -43,12 +46,12 @@ import {
 	launcherConfigPath,
 	MIN_SETUP_GENTLE_AI_VERSION,
 	missingPiMessage,
-	needsProvisioning,
 	otherPackageInjections,
 	parseLauncherArgs,
 	parseLauncherConfig,
 	parseTowerArgs,
 	parseRawLauncherConfig,
+	parseSetupCheckArgs,
 	planSpawn,
 	POST_INSTALL_REMOVAL_SOURCES,
 	withLauncherPackagesExcluded,
@@ -60,6 +63,9 @@ import {
 	resolvePiRuntime,
 	restoreJsonField,
 	separateHomeHint,
+	setupCheck,
+	setupCheckErrorMessage,
+	SETUP_CHECK_ERROR_EXIT_CODE,
 	shellQuote,
 	standaloneConfigHome,
 	userPiHome,
@@ -1545,6 +1551,34 @@ async function removePostInstallSources(sources, index, home, runtime, stdio, ti
 	return removePostInstallSources(sources, index + 1, home, runtime, stdio, timeoutMs);
 }
 
+// `gentle-shell [home selectors] setup --check [--json]`: whether the resolved
+// home needs setup and why, from the same config marker, pin and gentle-pi
+// version automatic setup compares (setupCheck). Only reads: no bootstrap,
+// no config write, no download, no Pi. Exit 0 set up, 1 needs setup, 3 when
+// the config or home cannot be read. It compares this running copy's pin and
+// version, the ones automatic setup in this same copy uses; a bundled launch
+// only moves to another copy after an update accepted at its interactive
+// startup prompt, which never runs for a command.
+function handleSetupCheck(args, json) {
+	let home, result, foreign;
+	try {
+		home = resolveHome({ args, env: process.env, homedir: homedir(), config: loadConfig() });
+		if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
+		// A missing home just needs setup; one that exists but cannot be listed
+		// is a read error (exit 3), not a home to report as empty.
+		if (existsSync(home.dir)) readdirSync(home.dir);
+		result = setupCheck(readRawConfig(resolveConfigPath()), safeRealpath(home.dir), resolveSetupGentleAiPin(), ownPackageVersion());
+		// Automatic setup never touches a --link home, so it is foreign here too.
+		foreign = home.mode === "link" || homeIsForeign(home, result.previous, homeHasContent(home.dir));
+	} catch (error) {
+		const report = describeSetupCheckError(setupCheckErrorMessage(error), json);
+		(json ? process.stdout : process.stderr).write(`${report}\n`);
+		return SETUP_CHECK_ERROR_EXIT_CODE;
+	}
+	process.stdout.write(`${describeSetupCheck(result, { home, foreign, json })}\n`);
+	return result.needsSetup ? 1 : 0;
+}
+
 // CLI entry for `gentle-shell [home selectors] setup [--dry-run]`: parses
 // --dry-run, runs the shared flow with the child's stdio inherited (today's
 // behavior, unchanged), then exits with its result — this is the one place
@@ -1630,6 +1664,17 @@ async function bootstrapOwnedHome(home) {
 	mkdirSync(home.dir, { recursive: true, mode: 0o700 });
 	await installIsolatedTuiModeSetting(home.dir);
 	writeHomeOwnershipMarker(home); // R3-001: lets a failed first auto-provision attempt still be retried later
+}
+
+// Whether `dir` exists with at least one entry; unreadable counts as empty.
+// The ownership signal homeIsForeign takes, read before any bootstrap.
+function homeHasContent(dir) {
+	if (!existsSync(dir)) return false;
+	try {
+		return readdirSync(dir).length > 0;
+	} catch {
+		return false;
+	}
 }
 
 function homeNeedsBootstrap(dir) {
@@ -1763,9 +1808,11 @@ async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBoots
 	const pin = resolveSetupGentleAiPin();
 	const gentlePiVersion = ownPackageVersion();
 	const beforeConfig = readRawConfig(configPath);
-	if (!needsProvisioning(beforeConfig, homeKey, pin, gentlePiVersion)) return undefined;
+	// The same comparison `setup --check` reports (setupCheck), so the two never drift.
+	const check = setupCheck(beforeConfig, homeKey, pin, gentlePiVersion);
+	if (!check.needsSetup) return undefined;
 
-	const previous = provisionedEntry(beforeConfig, homeKey);
+	const previous = check.previous;
 	if (homeIsForeign(home, previous, homeHadContentBeforeBootstrap)) {
 		const reason =
 			safeRealpath(home.dir) === safeRealpath(defaultPiAgentDir())
@@ -1785,11 +1832,11 @@ async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBoots
 			);
 		} else {
 			// A marker written before gentle-pi version tracking existed (S8)
-			// has no `gentlePi` field: needsProvisioning above already treats
+			// has no `gentlePi` field: setupCheck above already reports
 			// that as changed, so this reports "unknown" as its prior value
 			// instead of "undefined".
-			const gentleAiChanged = previous.gentleAi !== pin;
-			const gentlePiChanged = previous.gentlePi !== gentlePiVersion;
+			const gentleAiChanged = check.reasons.includes("gentle-ai-changed");
+			const gentlePiChanged = check.reasons.includes("gentle-pi-changed");
 			if (gentleAiChanged && gentlePiChanged) {
 				process.stderr.write(
 					`gentle-shell: gentle-ai pin changed (${previous.gentleAi} -> ${pin}) and gentle-pi changed (${previous.gentlePi ?? "unknown"} -> ${gentlePiVersion}): updating ${home.dir}\n`,
@@ -2180,6 +2227,16 @@ async function main() {
 			stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text) });
 		return;
 	}
+	// `setup --check [--json]`: read-only, so it runs before the bundled-install
+	// resolution, the startup update check, Pi resolution and the home bootstrap.
+	if (args.command === "setup") {
+		const setupArgs = parseSetupCheckArgs(args.commandArgs);
+		if (setupArgs.check) {
+			if (setupArgs.unrecognized !== undefined) fail(`Unrecognized argument for 'gentle-shell setup': ${setupArgs.unrecognized}\nRun 'gentle-shell --help' for usage.`, 2);
+			process.exitCode = handleSetupCheck(args, setupArgs.json);
+			return;
+		}
+	}
 	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).
 	const verifying = args.version && args.command === undefined ? process.env[BUNDLED_VERIFY_ENV] : undefined;
 	const bundled = resolveBundledInstall({ packageRoot, platform: process.platform, fs: bundledFs, verifying });
@@ -2254,7 +2311,8 @@ async function main() {
 	if (!versionCheck.ok && !managedSelfUpdate) fail(versionCheck.message, 1);
 
 	if (args.version) {
-		process.stdout.write(`${describeVersion({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home })}\n`);
+		const describe = args.json === true ? describeVersionJson : describeVersion;
+		process.stdout.write(`${describe({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home })}\n`);
 		process.exit(0);
 	}
 
@@ -2289,14 +2347,7 @@ async function main() {
 	// brand-new --home directory with its own settings.json — after that
 	// bootstrap runs, "did this home already have content" can no longer be
 	// answered by looking at the directory.
-	let homeHadContentBeforeBootstrap = false;
-	if (existsSync(home.dir)) {
-		try {
-			homeHadContentBeforeBootstrap = readdirSync(home.dir).length > 0;
-		} catch {
-			homeHadContentBeforeBootstrap = false;
-		}
-	}
+	const homeHadContentBeforeBootstrap = homeHasContent(home.dir);
 
 	// Isolated-home bootstrap: only on a home gentle-shell has not seen before
 	// (link never bootstraps — it reuses the user's own pi agent home as-is).

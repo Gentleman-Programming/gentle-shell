@@ -60,8 +60,8 @@ export function rpcCommandScope(type: string): ServeScope {
 
 /**
  * Whether a Pi RPC message is a `/gentle:desktop` request for a host tool
- * method (`set_host_tools`, `host_tool_result`, `host_message`,
- * `set_host_context`). Those go only through `/desktop`, where the server sets
+ * method (`set_host_tools`, `host_tool_result`, `host_tool_progress`,
+ * `host_message`, `set_host_context`). Those go only through `/desktop`, where the server sets
  * the provider to the calling device and checks who answers a call; through
  * `/rpc` a client could otherwise register as, or answer for, another device.
  * Pi takes the command's arguments after the first space and the router parses
@@ -700,7 +700,7 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 			return sendJson(res, 202, { accepted: true });
 		}
 		if (typeof command.message === "string" && carriesHostToolRequest(command.message)) {
-			throw new HttpError(400, "use_desktop_endpoint", "Host tool requests (set_host_tools, host_tool_result, host_message, set_host_context) go through POST /api/sessions/:id/desktop");
+			throw new HttpError(400, "use_desktop_endpoint", "Host tool requests (set_host_tools, host_tool_result, host_tool_progress, host_message, set_host_context) go through POST /api/sessions/:id/desktop");
 		}
 		const scope = rpcCommandScope(command.type);
 		need(principal, scope);
@@ -714,24 +714,26 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 		if (!principal) throw new HttpError(401, "unauthorized", "A valid bearer token is required");
 		const body = await readJsonBody(req, Math.max(limits.desktopBodyBytes, limits.hostToolBodyBytes));
 		if (typeof body.method !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(body.method)) throw new HttpError(400, "invalid_request", "method must be a Desktop RPC method name");
-		const hostTool = Object.hasOwn(HOST_TOOL_METHODS, body.method);
-		if (!hostTool && Buffer.byteLength(JSON.stringify(body), "utf8") > limits.desktopBodyBytes) throw new HttpError(413, "too_large", `Body over ${limits.desktopBodyBytes} bytes`);
+		// A progress heartbeat is small: only results, tool lists, messages and context get the large body.
+		const largeBody = Object.hasOwn(HOST_TOOL_METHODS, body.method) && body.method !== "host_tool_progress";
+		if (!largeBody && Buffer.byteLength(JSON.stringify(body), "utf8") > limits.desktopBodyBytes) throw new HttpError(413, "too_large", `Body over ${limits.desktopBodyBytes} bytes`);
 		const params = body.params ?? {};
 		if (!params || typeof params !== "object" || Array.isArray(params)) throw new HttpError(400, "invalid_request", "params must be an object");
 		if (body.method === "set_host_activity") throw new HttpError(403, "forbidden", "set_host_activity is the server's own: it reports which devices are connected and active");
 		const scope = desktopMethodScope(body.method);
 		need(principal, scope);
-		if (scope === "sessions:operate") session.noteActivity(principal.deviceId);
+		// A progress heartbeat is the client's machinery, not the person driving the session: it does not move last-active routing.
+		if (scope === "sessions:operate" && body.method !== "host_tool_progress") session.noteActivity(principal.deviceId);
 		let forwarded = params as Record<string, unknown>;
 		if (body.method === "set_host_tools" || body.method === "set_host_context") {
 			// The provider is always the calling device: a client cannot register tools or context as another device.
 			forwarded = { ...forwarded, provider: principal.deviceId };
 			if (body.method === "set_host_tools") deviceNames.set(principal.deviceId, principal.name);
 		}
-		const callId = body.method === "host_tool_result" && typeof forwarded.callId === "string" ? forwarded.callId : undefined;
+		const callId = (body.method === "host_tool_result" || body.method === "host_tool_progress") && typeof forwarded.callId === "string" ? forwarded.callId : undefined;
 		if (callId !== undefined) {
 			const owner = session.hostCallProvider(callId);
-			if (owner !== undefined && owner !== principal.deviceId) throw new HttpError(403, "forbidden", "Only the device that provides this host tool may answer its call");
+			if (owner !== undefined && owner !== principal.deviceId) throw new HttpError(403, "forbidden", "Only the device that provides this host tool may answer or keep alive its call");
 		}
 		const outcome = await session.desktop(body.method, forwarded, limits.rpcTimeoutMs);
 		if (outcome === undefined) throw new HttpError(504, "desktop_timeout", "The session did not answer the Desktop RPC request in time");
@@ -739,7 +741,11 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 		if (callId !== undefined) {
 			const error = outcome.answer.error;
 			const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-			if (outcome.answer.ok === true || code === "unknown_call" || code === "already_answered") session.hostCallSettled(callId);
+			if (code === "unknown_call" || code === "already_answered") session.hostCallSettled(callId);
+			else if (outcome.answer.ok === true) {
+				if (body.method === "host_tool_progress") session.hostCallProgressed(callId);
+				else session.hostCallSettled(callId);
+			}
 		}
 		if (body.method === "set_host_tools" && outcome.answer.ok === true) {
 			const data = outcome.answer.data;

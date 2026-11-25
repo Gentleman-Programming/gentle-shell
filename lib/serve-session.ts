@@ -54,7 +54,7 @@ export const DIALOG_METHODS: Readonly<Record<string, true>> = { select: true, co
 export const DESKTOP_RPC_SCHEMA = "gentle-shell.desktop-rpc/v1";
 export const DESKTOP_RPC_WIDGET = "gentle-desktop-rpc";
 /** Desktop RPC methods that only a client's own `/desktop` request may carry (see lib/desktop-rpc-host-tools.ts). */
-export const HOST_TOOL_METHODS: Readonly<Record<string, true>> = { set_host_tools: true, host_tool_result: true, host_message: true, set_host_context: true, set_host_activity: true };
+export const HOST_TOOL_METHODS: Readonly<Record<string, true>> = { set_host_tools: true, host_tool_result: true, host_tool_progress: true, host_message: true, set_host_context: true, set_host_activity: true };
 /** The keeper protocol both ends speak; a keeper answering another one is not attached. */
 export const KEEPER_PROTOCOL = 1;
 
@@ -237,6 +237,7 @@ export interface PendingHostCall {
 	tool: string;
 	seq: number;
 	line: string;
+	/** When the call was emitted, or last kept alive by a `host_tool_progress`. */
 	at: number;
 }
 
@@ -406,6 +407,12 @@ export class SessionLog {
 		this.hostCalls.delete(callId);
 	}
 
+	/** A `host_tool_progress` kept the call alive: tracking it starts over. */
+	progress(callId: string): void {
+		const call = this.hostCalls.get(callId);
+		if (call) call.at = this.now();
+	}
+
 	snapshot(): Pick<SessionSnapshot, "state" | "exitCode" | "exitSignal" | "exitedAt" | "seq" | "invalidRecords" | "droppedRecords" | "dialogs" | "answered" | "hostCalls"> {
 		return {
 			state: this.state,
@@ -445,7 +452,7 @@ export class SessionLog {
  * server attaches; `{"t":"invalid"}`, `{"t":"stderr","text"}`,
  * `{"t":"reply","rid","outcome"}`). Server → keeper: `{"op":"hello","token","protocol"}`
  * first, then `>` followed by one Pi RPC command for the session's stdin, or a
- * JSON op (`answer`, `settled`, `notes`, `stop`).
+ * JSON op (`answer`, `settled`, `progressed`, `notes`, `stop`).
  */
 interface LinkHandlers {
 	record: (seq: number, line: string) => void;
@@ -911,6 +918,13 @@ export class ServeSession {
 		if (!this.log.hostCall(callId)) return;
 		this.log.settle(callId);
 		this.link?.send(JSON.stringify({ op: "settled", callId }));
+	}
+
+	/** A `host_tool_progress` reached the session and restarted the call's deadline: keep tracking it as long. */
+	hostCallProgressed(callId: string): void {
+		if (!this.log.hostCall(callId)) return;
+		this.log.progress(callId);
+		this.link?.send(JSON.stringify({ op: "progressed", callId }));
 	}
 
 	pendingHostCalls(): PendingHostCall[] {

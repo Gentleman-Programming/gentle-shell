@@ -220,7 +220,7 @@ The body is one [Pi RPC command](https://github.com/earendil-works/pi/blob/main/
 - The server waits up to 30 s for the response. A command that takes longer (a long `bash`, `compact`) answers `202 { pending: true, id }`, and its response arrives in the stream under that `id`.
 - `extension_ui_response` is the answer to a dialog: see [Dialogs](#dialogs). It answers `202 { accepted: true }`.
 - Bodies are limited to 8 MiB (prompts can carry images).
-- A `/gentle:desktop` prompt whose request is `set_host_tools`, `host_tool_result`, `host_message` or `set_host_context` is refused with `400 use_desktop_endpoint`: those go through `/desktop` only (see [Host tools](#host-tools)).
+- A `/gentle:desktop` prompt whose request is `set_host_tools`, `host_tool_result`, `host_tool_progress`, `host_message` or `set_host_context` is refused with `400 use_desktop_endpoint`: those go through `/desktop` only (see [Host tools](#host-tools)).
 
 ### Desktop RPC: `POST /api/sessions/:id/desktop`
 
@@ -232,11 +232,11 @@ A client can provide [host tools](desktop-rpc.md#set_host_tools): tools the agen
 
 - **The provider is the device.** `set_host_tools` and `set_host_context` through `/desktop` always register under the calling device's id (`provider` in the body is replaced), and need `sessions:operate`. The same requests through `/rpc` are refused, so no client can register tools or context as another device.
 - **Messages.** [`host_message`](desktop-rpc.md#host_message) (a client's custom message into the conversation) goes through `/desktop` only too, with `sessions:operate`. [`set_host_context`](desktop-rpc.md#set_host_context) keeps one hidden context per device, added before each agent run until the device clears it or the session changes.
-- **Only the provider answers.** A `host_tool_result` for a call whose `provider` is another device is refused with `403 forbidden`. The server remembers each call it saw in the session's output until a result settles it, a `host_tool_cancel` ends it, or 11 minutes pass.
+- **Only the provider answers.** A `host_tool_result` or `host_tool_progress` for a call whose `provider` is another device is refused with `403 forbidden`. The server remembers each call it saw in the session's output until a result settles it, a `host_tool_cancel` ends it, or 11 minutes pass since the call or its last accepted `host_tool_progress`.
 - **One tool, several devices.** Devices may offer the same tool name (the Mac and the phone both offer `device_screenshot`). A call goes to the device that most recently drove the session (`lastActiveDevice`) if it offers the tool and has an open event stream; otherwise to the next most recently active one that does; when none does, it is answered at once as not connected. The server keeps the session told with [`set_host_activity`](desktop-rpc.md#set_host_activity) (connected providers, most recently active first) whenever that order changes; clients cannot send it (`403` through `/desktop`, `use_desktop_endpoint` through `/rpc`).
 - **Delivery.** The `host_tool_call` event reaches every subscriber like any Desktop RPC event (`data.provider` says which device runs it; the others ignore it). A device that opens a stream while one of its calls is still waiting, and whose replay does not carry it, also gets it as an SSE event `event: host_tool_call` whose `data` is the original `setWidget` record.
 - **Offline device: an answer at once.** If the call's device has no open event stream when the call appears, the server answers for it right away with an error result the model reads — `<tool> runs in <device name>, which isn't connected right now.` — instead of letting the turn wait. If a device's last stream closes while it owes results, the server waits 10 s for it to reconnect, then answers its waiting calls the same way. Revoking a device answers its calls at once.
-- **Time limit.** The session itself ends a call after 10 minutes without a result, with an error result and a `host_tool_cancel`.
+- **Time limit.** The session itself ends a call after 10 minutes without a result, with an error result and a `host_tool_cancel`. A device still working on a call sends [`host_tool_progress`](desktop-rpc.md#host_tool_progress) through `/desktop` every 60 s (`sessions:operate`; a body up to 80 KiB like other Desktop requests); each one restarts the 10 minutes. A heartbeat is not activity: it does not change `lastActiveDevice` or which device gets the next call.
 
 The server never runs client code: a host tool's work happens on the client, with the client's authority, and only its result comes back into the conversation.
 
@@ -539,7 +539,7 @@ sequenceDiagram
 | Pending stdin per session | 16 MiB, then `503 session_busy` |
 | `/rpc` and `/desktop` wait | 30 s (`202 pending` / `504 desktop_timeout`) |
 | Host tool call, device offline | answered at once; 10 s grace after its last stream closes |
-| Host tool call, no result | 10 minutes |
+| Host tool call, no result | 10 minutes, restarted by each `host_tool_progress` |
 | Heartbeat | 20 s |
 | Pairing code | 5 minutes, single use, 16 live, 10 failures per minute |
 | Stream ticket | 60 s, single use, 256 live |

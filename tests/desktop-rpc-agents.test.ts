@@ -891,6 +891,7 @@ test("the Desktop transport advertises the agents methods and event", (t) => {
 		"reload_credentials",
 		"set_host_tools",
 		"host_tool_result",
+		"host_tool_progress",
 		"host_message",
 		"set_host_context",
 		"set_host_activity",

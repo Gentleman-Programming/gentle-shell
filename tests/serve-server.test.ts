@@ -361,7 +361,7 @@ test("pairing over HTTP is single use and admin can stop the server", async () =
 
 test("only /desktop carries host tool requests: a /gentle:desktop prompt naming them through /rpc is refused", () => {
 	const prompt = (method: string) => `/gentle:desktop ${JSON.stringify({ schema: "gentle-shell.desktop-rpc/v1", requestId: "r", method, params: {} })}`;
-	for (const method of ["set_host_tools", "host_tool_result", "host_message", "set_host_context"]) {
+	for (const method of ["set_host_tools", "host_tool_result", "host_tool_progress", "host_message", "set_host_context"]) {
 		assert.equal(carriesHostToolRequest(prompt(method)), true, method);
 		assert.equal(desktopMethodScope(method), "sessions:operate", method);
 	}
@@ -390,7 +390,7 @@ test("host tools over HTTP: the provider is the calling device, only that device
 	assert.equal(message.status, 200, "a host message's details may exceed the usual Desktop cap");
 	assert.equal(message.body.data.params.customType, "host.genui.event");
 	assert.equal((await desktop(reader.token, "host_message", { customType: "host.x", content: "", display: false, deliver: "auto" })).status, 403, "sending host messages operates");
-	for (const method of ["set_host_tools", "host_tool_result", "host_message", "set_host_context"]) {
+	for (const method of ["set_host_tools", "host_tool_result", "host_tool_progress", "host_message", "set_host_context"]) {
 		const message = `/gentle:desktop ${JSON.stringify({ schema: "gentle-shell.desktop-rpc/v1", requestId: "r", method, params: { provider: laptop.id, tools: [] } })}`;
 		const refused = await call("POST", `/api/sessions/${id}/rpc`, { token: phone.token, body: { type: "prompt", message } });
 		assert.equal(refused.status, 400, method);
@@ -406,6 +406,16 @@ test("host tools over HTTP: the provider is the calling device, only that device
 	assert.equal(stolen.status, 403);
 	assert.equal(stolen.body.error.code, "forbidden");
 	const big = "x".repeat(1024 * 1024);
+	const stolenBeat = await desktop(laptop.token, "host_tool_progress", { callId: "call-1" });
+	assert.equal(stolenBeat.status, 403, "only the provider keeps its call alive");
+	assert.equal(stolenBeat.body.error.code, "forbidden");
+	await desktop(laptop.token, "host_message", { customType: "host.x", content: "hi", display: false, deliver: "auto" });
+	assert.equal((await call("GET", `/api/sessions/${id}`, { token: phone.token })).body.session.lastActiveDevice, laptop.id);
+	const beat = await desktop(phone.token, "host_tool_progress", { callId: "call-1", message: "waiting for review" });
+	assert.equal(beat.status, 200);
+	assert.equal(beat.body.data.method, "host_tool_progress");
+	assert.equal((await call("GET", `/api/sessions/${id}`, { token: phone.token })).body.session.lastActiveDevice, laptop.id, "a heartbeat is not activity");
+	assert.equal((await desktop(phone.token, "host_tool_progress", { callId: "call-1", pad: "x".repeat(100 * 1024) })).status, 413, "a heartbeat keeps the usual Desktop cap");
 	const answered = await desktop(phone.token, "host_tool_result", { callId: "call-1", content: [{ type: "text", text: big }] });
 	assert.equal(answered.status, 200, "a host tool result may be far larger than other Desktop requests");
 	assert.equal(answered.body.data.params.content[0].text.length, big.length);

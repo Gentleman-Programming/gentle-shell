@@ -141,6 +141,7 @@ test("capabilities advertise the wired permission domain and no agent tool", asy
 		"reload_credentials",
 		"set_host_tools",
 		"host_tool_result",
+		"host_tool_progress",
 		"host_message",
 		"set_host_context",
 		"set_host_activity",

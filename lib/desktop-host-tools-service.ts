@@ -39,6 +39,7 @@ import {
 	hostToolOfflineText,
 	modelGuidelines,
 	parseHostMessage,
+	parseHostToolProgress,
 	parseHostToolResult,
 	parseSetHostActivity,
 	parseSetHostContext,
@@ -61,6 +62,8 @@ export interface DesktopHostToolsOptions {
 	timers?: DesktopHostToolsTimers;
 	callTimeoutMs?: number;
 	newCallId?: () => string;
+	/** Epoch milliseconds, for the `deadlineMs` a `host_tool_progress` answers with. */
+	now?: () => number;
 }
 
 /**
@@ -85,6 +88,8 @@ interface PendingCall {
 	provider: string;
 	tool: string;
 	finish: (result: HostToolCallResult) => void;
+	/** Restarts the no-answer deadline; returns the new deadline in epoch ms. */
+	extend: () => number;
 }
 
 const realTimers: DesktopHostToolsTimers = {
@@ -113,6 +118,7 @@ export class DesktopHostToolsBridge {
 	private readonly timers: DesktopHostToolsTimers;
 	private readonly callTimeoutMs: number;
 	private readonly newCallId: () => string;
+	private readonly now: () => number;
 	private emit: DesktopHostToolsEmit | undefined;
 	/** Host tools by name: every provider offering it, oldest registration first; the last one's definition is the active one. */
 	private readonly tools = new Map<string, Array<{ provider: string; spec: HostToolSpec }>>();
@@ -130,6 +136,7 @@ export class DesktopHostToolsBridge {
 		this.timers = options.timers ?? realTimers;
 		this.callTimeoutMs = options.callTimeoutMs ?? DESKTOP_HOST_TOOLS_LIMITS.callTimeoutMs;
 		this.newCallId = options.newCallId ?? (() => `htc_${randomBytes(12).toString("hex")}`);
+		this.now = options.now ?? Date.now;
 	}
 
 	/** Events go out through the Desktop router while the session's transport is up. */
@@ -157,6 +164,7 @@ export class DesktopHostToolsBridge {
 		if (method === "host_message") return this.message(params);
 		if (method === "set_host_context") return this.setContext(params);
 		if (method === "host_tool_result") return this.answer(params);
+		if (method === "host_tool_progress") return this.progress(params);
 		if (method === "set_host_activity") return this.setActivity(params);
 		return undefined;
 	}
@@ -272,11 +280,17 @@ export class DesktopHostToolsBridge {
 			if (this.settled.length > DESKTOP_HOST_TOOLS_LIMITS.settledMemory) this.settled.shift();
 			resolve(result);
 		};
-		this.calls.set(callId, { provider, tool: name, finish });
-		timer = this.timers.setTimeout(() => {
+		const expire = () => {
 			finish(errorResult(provider, `${name} got no answer from ${provider} within ${Math.round(this.callTimeoutMs / 60_000)} minutes.`, callId));
 			this.cancel(callId);
-		}, this.callTimeoutMs);
+		};
+		const extend = () => {
+			this.timers.clearTimeout(timer);
+			timer = this.timers.setTimeout(expire, this.callTimeoutMs);
+			return this.now() + this.callTimeoutMs;
+		};
+		this.calls.set(callId, { provider, tool: name, finish, extend });
+		timer = this.timers.setTimeout(expire, this.callTimeoutMs);
 		signal?.addEventListener("abort", onAbort, { once: true });
 		try {
 			emit("host_tool_call", { callId, provider, tool: name, args });
@@ -302,6 +316,15 @@ export class DesktopHostToolsBridge {
 		if (!call) return { ok: false, error: this.settled.includes(callId) ? ALREADY_ANSWERED : UNKNOWN_CALL };
 		call.finish({ content, details: details ?? { provider: call.provider, callId }, ...(isError ? { isError: true } : {}) });
 		return { ok: true, data: { accepted: true } };
+	}
+
+	/** The client is still working on the call: its no-answer deadline starts over. */
+	private progress(params: Record<string, unknown>): DesktopRpcOutcome {
+		const parsed = parseHostToolProgress(params);
+		if (parsed.ok === false) return { ok: false, error: parsed.error };
+		const call = this.calls.get(parsed.value.callId);
+		if (!call) return { ok: false, error: this.settled.includes(parsed.value.callId) ? ALREADY_ANSWERED : UNKNOWN_CALL };
+		return { ok: true, data: { extended: true, deadlineMs: call.extend() } };
 	}
 
 	/**

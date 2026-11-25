@@ -424,6 +424,9 @@ export class SessionKeeper {
 			case "settled":
 				if (typeof op.callId === "string") this.log.settle(op.callId);
 				return;
+			case "progressed":
+				if (typeof op.callId === "string") this.log.progress(op.callId);
+				return;
 			case "notes":
 				if (Buffer.byteLength(JSON.stringify(op.notes ?? null)) <= this.keeperLimits.notesBytes) this.notes = op.notes ?? null;
 				return;

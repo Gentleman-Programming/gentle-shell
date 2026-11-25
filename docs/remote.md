@@ -141,7 +141,7 @@ sequenceDiagram
 
 ## Host tools across several devices
 
-Some tools only make sense on the device in front of you: a screenshot of this Mac, a photo from the phone, a simulator running on the laptop. A client registers such tools with the session as **host tools**; the agent calls them like any other tool, but they run on the client, with the client's authority, and only the result goes back into the conversation. Nothing is installed on the server for them. Details: [Host tools](serve.md#host-tools) in serve, and [`set_host_tools`](desktop-rpc.md#set_host_tools), [`host_tool_result`](desktop-rpc.md#host_tool_result), [`host_tool_call`](desktop-rpc.md#host_tool_call), [`host_tool_cancel`](desktop-rpc.md#host_tool_cancel), [`set_host_activity`](desktop-rpc.md#set_host_activity) in Desktop RPC.
+Some tools only make sense on the device in front of you: a screenshot of this Mac, a photo from the phone, a simulator running on the laptop. A client registers such tools with the session as **host tools**; the agent calls them like any other tool, but they run on the client, with the client's authority, and only the result goes back into the conversation. Nothing is installed on the server for them. Details: [Host tools](serve.md#host-tools) in serve, and [`set_host_tools`](desktop-rpc.md#set_host_tools), [`host_tool_result`](desktop-rpc.md#host_tool_result), [`host_tool_progress`](desktop-rpc.md#host_tool_progress), [`host_tool_call`](desktop-rpc.md#host_tool_call), [`host_tool_cancel`](desktop-rpc.md#host_tool_cancel), [`set_host_activity`](desktop-rpc.md#set_host_activity) in Desktop RPC.
 
 ```mermaid
 sequenceDiagram
@@ -173,7 +173,8 @@ sequenceDiagram
 - **Last-active routing.** Several devices may offer the same tool name. The server tells the session, with `set_host_activity`, which providers have an open stream, most recently active first ("active" = sent a prompt, a steer, a dialog answer, a Desktop write, or started the session). The session sends each call to the first of them that offers the tool. Clients cannot send `set_host_activity` themselves.
 - **Offline fallback.** If the chosen device has no open stream when the call appears, the server answers it at once with an error result the model reads — `<tool> runs in <device name>, which isn't connected right now.` — instead of letting the turn hang. If a device's last stream closes while it owes results, the server waits 10 s for it to come back, then answers its calls the same way. Revoking a device answers its calls at once.
 - **Cancel.** When the person aborts the turn, the call ends at once as cancelled; when no result arrives within 10 minutes, it ends with an error result. Either way the session emits `host_tool_cancel { callId }` and the client stops running it; a late `host_tool_result` is answered `already_answered`.
-- **Only the provider answers.** The server remembers which device each call went to until it settles (at most 11 minutes); a `host_tool_result` from any other device is refused with `403 forbidden`.
+- **Long calls.** A client still working on a call (a review the person is reading, a browser wait, a device flow) sends `host_tool_progress { callId }` every 60 s; each one restarts the 10 minutes, with no cap on the total. A client that dies stops sending, and the call fails 10 minutes later. Heartbeats are not activity: they never change which device gets the next call.
+- **Only the provider answers.** The server remembers which device each call went to until it settles (at most 11 minutes after the call or its last heartbeat); a `host_tool_result` or `host_tool_progress` from any other device is refused with `403 forbidden`.
 
 ## Pages on the server: port forwarding
 
@@ -324,11 +325,12 @@ Note what `sessions:read` means: **the file endpoints run as the server user wit
 | --- | --- | --- | --- |
 | `set_host_tools` | Method | Client (through `/desktop`; provider forced to the device) | [desktop-rpc.md](desktop-rpc.md#set_host_tools) |
 | `host_tool_result` | Method | The provider device only | [desktop-rpc.md](desktop-rpc.md#host_tool_result) |
+| `host_tool_progress` | Method | The provider device only, every 60 s while it works on a call | [desktop-rpc.md](desktop-rpc.md#host_tool_progress) |
 | `host_message` | Method | Client (through `/desktop`) | [desktop-rpc.md](desktop-rpc.md#host_message) |
 | `set_host_context` | Method | Client (through `/desktop`; provider forced to the device) | [desktop-rpc.md](desktop-rpc.md#set_host_context) |
 | `set_host_activity` | Method | `serve` only (`403` from a client) | [desktop-rpc.md](desktop-rpc.md#set_host_activity) |
 | `host_tool_call` | Event | Session → every subscriber; the named `provider` runs it | [desktop-rpc.md](desktop-rpc.md#host_tool_call) |
-| `host_tool_cancel` | Event | Session, on abort or after 10 minutes | [desktop-rpc.md](desktop-rpc.md#host_tool_cancel) |
+| `host_tool_cancel` | Event | Session, on abort or after 10 minutes without a result or heartbeat | [desktop-rpc.md](desktop-rpc.md#host_tool_cancel) |
 
 Their limits: [Host tools limits](desktop-rpc.md#host-tools-limits).
 
@@ -342,7 +344,7 @@ The most relevant ones; the complete table is [Limits](serve.md#limits).
 | Replay ring per session | 2000 records or 8 MiB |
 | Unsent bytes per event subscriber | 4 MiB, then `resync` |
 | `/rpc` and `/desktop` wait | 30 s (then `202 pending` / `504 desktop_timeout`) |
-| Host tool call | Answered at once when its device is offline; 10 s grace after its last stream closes; 10 minutes without a result |
+| Host tool call | Answered at once when its device is offline; 10 s grace after its last stream closes; 10 minutes without a result, restarted by each `host_tool_progress` |
 | Pairing code / stream ticket / forward ticket | 5 minutes / 60 s / 60 s, all single use |
 | Devices | 64 |
 | Forwards | 32 open, 64 connections each, 12 hours idle |
@@ -359,7 +361,7 @@ Every error is `{ "error": { "code", "message" } }`. The codes a client meets mo
 | Status and code | Meaning | Reference |
 | --- | --- | --- |
 | `401 unauthorized`, `401 invalid_ticket` | No valid token (or revoked); a stream ticket unknown, used or expired | [Authentication](serve.md#authentication) |
-| `403 forbidden` | The token lacks the scope; or a `host_tool_result` for another device's call; or `set_host_activity` from a client | [Authentication](serve.md#authentication), [Host tools](serve.md#host-tools) |
+| `403 forbidden` | The token lacks the scope; or a `host_tool_result` / `host_tool_progress` for another device's call; or `set_host_activity` from a client | [Authentication](serve.md#authentication), [Host tools](serve.md#host-tools) |
 | `403 forbidden_origin`, `421 bad_host` | `Origin` or `Host` rules | [Security model](serve.md#security-model) |
 | `403 invalid_code`, `429 rate_limited`, `409 too_many_devices` | Pairing | [Endpoints](serve.md#endpoints) |
 | `404 not_found` | Unknown session (deleted, or gone after a reboot), forward, terminal (or another device's) | [Replay and resume](serve.md#replay-and-resume) |

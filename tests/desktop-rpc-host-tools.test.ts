@@ -16,11 +16,13 @@ import {
 	HOST_TOOL_RESULT_TOO_LARGE,
 	hostToolOfflineText,
 	INVALID_HOST_MESSAGE,
+	INVALID_HOST_TOOL_PROGRESS,
 	INVALID_SET_HOST_ACTIVITY,
 	INVALID_SET_HOST_CONTEXT,
 	MESSAGE_TOO_LARGE,
 	modelGuidelines,
 	parseHostMessage,
+	parseHostToolProgress,
 	parseHostToolResult,
 	parseSetHostContext,
 	parseSetHostTools,
@@ -63,6 +65,7 @@ function harness(t: test.TestContext) {
 	const timers = new Map<number, FakeTimer>();
 	let nextTimer = 0;
 	let nextCall = 0;
+	let clock = 1_000_000;
 	const sent: Array<{ message: any; options: any }> = [];
 	let idle = true;
 	const pi = {
@@ -86,6 +89,7 @@ function harness(t: test.TestContext) {
 				clearTimeout(handle) { timers.delete(handle as number); },
 			},
 			newCallId: () => `call-${(nextCall += 1)}`,
+			now: () => clock,
 		},
 	});
 	const widgets: string[] = [];
@@ -103,6 +107,7 @@ function harness(t: test.TestContext) {
 		registry,
 		registrations,
 		timers,
+		advance(ms: number) { clock += ms; },
 		widgets,
 		sent,
 		setIdle(value: boolean) { idle = value; },
@@ -133,7 +138,7 @@ function harness(t: test.TestContext) {
 // ---- Contract ----
 
 test("the Desktop transport advertises the host tool methods and both events once", async (t) => {
-	assert.deepEqual([...DESKTOP_HOST_TOOLS_METHODS], ["set_host_tools", "host_tool_result", "host_message", "set_host_context", "set_host_activity"]);
+	assert.deepEqual([...DESKTOP_HOST_TOOLS_METHODS], ["set_host_tools", "host_tool_result", "host_tool_progress", "host_message", "set_host_context", "set_host_activity"]);
 	assert.deepEqual([...DESKTOP_HOST_TOOLS_EVENTS], ["host_tool_call", "host_tool_cancel"]);
 	const app = harness(t);
 	const caps = await app.invoke("capabilities");
@@ -365,6 +370,41 @@ test("a call nobody answers fails after 10 minutes and is cancelled on the clien
 	assert.equal(result.isError, true);
 	assert.equal(result.content[0].text, "desktop_shot got no answer from desktop within 10 minutes.");
 	assert.deepEqual(app.events("host_tool_cancel"), [{ callId: "call-1" }]);
+});
+
+test("host_tool_progress restarts the 10-minute deadline as often as it comes; without it the call still fails", async (t) => {
+	const app = harness(t);
+	const tool = await registerOne(app);
+	const pending = tool.execute("m", { region: "x" }, undefined, undefined, {});
+	const [first] = [...app.timers.keys()];
+	for (let beat = 1; beat <= 3; beat += 1) {
+		app.advance(9 * 60 * 1000);
+		const progress = await app.invoke("host_tool_progress", { callId: "call-1", ...(beat === 2 ? { message: "waiting for review" } : {}) });
+		assert.deepEqual(progress.data, { extended: true, deadlineMs: 1_000_000 + beat * 9 * 60 * 1000 + 10 * 60 * 1000 });
+		assert.equal(app.timers.size, 1, "one deadline armed at a time");
+		assert.equal([...app.timers.values()][0].ms, 10 * 60 * 1000);
+	}
+	assert.equal(app.timers.has(first), false, "the original deadline was cleared");
+	const [timer] = [...app.timers.values()];
+	timer.callback();
+	const result = await pending;
+	assert.equal(result.content[0].text, "desktop_shot got no answer from desktop within 10 minutes.");
+	assert.deepEqual(app.events("host_tool_cancel"), [{ callId: "call-1" }]);
+	assert.deepEqual((await app.invoke("host_tool_progress", { callId: "call-1" })).error, ALREADY_ANSWERED);
+	assert.deepEqual((await app.invoke("host_tool_progress", { callId: "nope" })).error, UNKNOWN_CALL);
+	assert.equal(app.timers.size, 0, "progress on a settled call arms nothing");
+});
+
+test("host_tool_progress validates callId and an optional message up to 512 characters; it keeps 64 KiB", async (t) => {
+	assert.equal(parseHostToolProgress({ callId: "c" }).ok, true);
+	assert.equal(parseHostToolProgress({ callId: "c", message: "x".repeat(512) }).ok, true);
+	for (const params of [{}, { callId: "" }, { callId: 1 }, { callId: "x".repeat(129) }, { callId: "c", message: "x".repeat(513) }, { callId: "c", message: 1 }, { callId: "c", extra: true }]) {
+		assert.deepEqual(errorOf(parseHostToolProgress(params as Record<string, unknown>)), INVALID_HOST_TOOL_PROGRESS);
+	}
+	const app = harness(t);
+	const before = app.widgets.length;
+	await app.raw(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "big-progress", method: "host_tool_progress", params: { callId: "c", pad: "x".repeat(70 * 1024) } }));
+	assert.equal(JSON.parse(app.widgets[before]).requestId, null, "over 64 KiB the request is refused before parsing");
 });
 
 test("session shutdown fails waiting calls and hides every host tool; a stale definition answers offline", async (t) => {

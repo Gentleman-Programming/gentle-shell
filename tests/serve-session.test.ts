@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
-import { JsonlDecoder, KeeperLink, ReplayRing, SERVE_SESSION_LIMITS, ServeSession, type ServeSessionLimits, type SessionLaunch, type StreamSink } from "../lib/serve-session.ts";
+import { DESKTOP_RPC_WIDGET, JsonlDecoder, KeeperLink, ReplayRing, SERVE_SESSION_LIMITS, ServeSession, SessionLog, type ServeSessionLimits, type SessionLaunch, type StreamSink } from "../lib/serve-session.ts";
 import { keeperEndpoint, SessionKeeper } from "../lib/serve-session-keeper.ts";
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
@@ -116,6 +116,30 @@ test("ReplayRing evicts by count and bytes and answers snapshot-required outside
 	assert.equal(huge.length, 1, "the newest record is always kept");
 	const empty = new ReplayRing(10, 100);
 	assert.deepEqual(empty.since(0, 0), { records: [] });
+});
+
+test("SessionLog: host_tool_progress keeps a call tracked past the tracking window; without it the call is forgotten", () => {
+	let clock = 0;
+	const log = new SessionLog({ ringRecords: 100, ringBytes: 1024 * 1024, hostToolTrackMs: 11 * 60 * 1000 }, () => clock);
+	let seq = 0;
+	const call = (callId: string) => {
+		const line = JSON.stringify({ kind: "event", event: "host_tool_call", data: { callId, provider: "phone", tool: "gentle_ui", args: {} } });
+		const record = { type: "extension_ui_request", id: `w${seq}`, method: "setWidget", widgetKey: DESKTOP_RPC_WIDGET, widgetLines: [line] };
+		seq += 1;
+		log.push(seq, JSON.stringify(record), record);
+	};
+	call("kept");
+	call("dropped");
+	for (let beat = 0; beat < 3; beat += 1) {
+		clock += 9 * 60 * 1000;
+		log.progress("kept");
+	}
+	clock += 60_000;
+	call("next");
+	assert.equal(log.hostCall("kept")?.provider, "phone", "heartbeats keep the call's owner known");
+	assert.equal(log.hostCall("dropped"), undefined, "a call without heartbeats is pruned after the window");
+	log.progress("dropped");
+	assert.equal(log.hostCall("dropped"), undefined, "progress never revives a forgotten call");
 });
 
 test("a session numbers every record, restores the caller's id and survives framing edge cases", async (t) => {

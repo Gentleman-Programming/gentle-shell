@@ -13,7 +13,7 @@
 // `pi.sendMessage`), and `set_host_context` keeps a hidden custom message that
 // is added before every agent run while it is set.
 
-export const DESKTOP_HOST_TOOLS_METHODS = ["set_host_tools", "host_tool_result", "host_message", "set_host_context", "set_host_activity"] as const;
+export const DESKTOP_HOST_TOOLS_METHODS = ["set_host_tools", "host_tool_result", "host_tool_progress", "host_message", "set_host_context", "set_host_activity"] as const;
 export const DESKTOP_HOST_TOOLS_EVENTS = ["host_tool_call", "host_tool_cancel"] as const;
 
 export const DESKTOP_HOST_TOOLS_LIMITS = {
@@ -38,8 +38,10 @@ export const DESKTOP_HOST_TOOLS_LIMITS = {
 	contextProviders: 16,
 	/** Providers one `set_host_activity` may list. */
 	activeProviders: 64,
-	/** A call no client answered fails after this long. */
+	/** A call no client answered fails after this long; each `host_tool_progress` restarts it. */
 	callTimeoutMs: 10 * 60 * 1000,
+	/** Characters of a `host_tool_progress` message (reserved, ignored for now). */
+	progressMessage: 512,
 	/** Settled call ids remembered so a late answer is `already_answered`, not `unknown_call`. */
 	settledMemory: 256,
 } as const;
@@ -54,6 +56,7 @@ export const DESKTOP_HOST_TOOLS_REQUEST_BYTES: Readonly<Record<string, number>> 
 
 export const INVALID_SET_HOST_TOOLS = { code: "invalid_request", message: "Invalid set_host_tools parameters" } as const;
 export const INVALID_HOST_TOOL_RESULT = { code: "invalid_request", message: "Invalid host_tool_result parameters" } as const;
+export const INVALID_HOST_TOOL_PROGRESS = { code: "invalid_request", message: "Invalid host_tool_progress parameters" } as const;
 export const INVALID_HOST_MESSAGE = { code: "invalid_request", message: "Invalid host_message parameters" } as const;
 export const INVALID_SET_HOST_CONTEXT = { code: "invalid_request", message: "Invalid set_host_context parameters" } as const;
 export const INVALID_SET_HOST_ACTIVITY = { code: "invalid_request", message: "Invalid set_host_activity parameters" } as const;
@@ -204,6 +207,15 @@ export function parseHostToolResult(params: Record<string, unknown>): Parsed<Hos
 		if (bytes > DESKTOP_HOST_TOOLS_LIMITS.contentBytes) return { ok: false, error: HOST_TOOL_RESULT_TOO_LARGE };
 	}
 	return { ok: true, value: { callId: params.callId, content, isError: params.isError === true, ...(details === "ok" ? { details: params.details as Record<string, unknown> } : {}) } };
+}
+
+/** `{ callId, message? }`; the message is reserved for showing progress and ignored for now. */
+export function parseHostToolProgress(params: Record<string, unknown>): Parsed<{ callId: string }> {
+	const bad = { ok: false as const, error: INVALID_HOST_TOOL_PROGRESS };
+	if (!onlyKeys(params, ["callId", "message"])) return bad;
+	if (typeof params.callId !== "string" || params.callId.length === 0 || params.callId.length > DESKTOP_HOST_TOOLS_LIMITS.callId) return bad;
+	if (params.message !== undefined && (typeof params.message !== "string" || params.message.length > DESKTOP_HOST_TOOLS_LIMITS.progressMessage)) return bad;
+	return { ok: true, value: { callId: params.callId } };
 }
 
 /** `{ customType, content, display, details?, deliver, triggerTurn? }`. */

@@ -652,6 +652,7 @@ test("the Desktop transport advertises the design method and event", async (t) =
 		"reload_credentials",
 		"set_host_tools",
 		"host_tool_result",
+		"host_tool_progress",
 		"host_message",
 		"set_host_context",
 		"set_host_activity",

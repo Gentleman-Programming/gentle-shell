@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse, relative } from "node:path";
 import test from "node:test";
@@ -15,7 +15,7 @@ const outside = join(parse(process.cwd()).root, "__gentle_path_consent_fixture__
 const declined = { block: true, reason: "Gentle AI safety policy blocked the path access because it was not confirmed." };
 const headless = (path: string) => ({ block: true, reason: `Gentle AI safety policy requires interactive confirmation before accessing paths outside the session worktree: ${path}. Ask the user for an explicit safer plan.` });
 
-function fixture(t: test.TestContext, options: { mode?: PermissionMode; hasUI?: boolean; approve?: boolean; skills?: boolean } = {}) {
+function fixture(t: test.TestContext, options: { mode?: PermissionMode; hasUI?: boolean; approve?: boolean; skills?: boolean; classify?: () => "allow" | "deny" } = {}) {
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), "path-consent-")));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const repo = join(dir, "repo"), config = join(dir, "config");
@@ -46,7 +46,7 @@ function fixture(t: test.TestContext, options: { mode?: PermissionMode; hasUI?: 
 		processEnv: { GENTLE_PI_AGENTS_CHILD: "0", GENTLE_PI_CONFIG_HOME: config, TMPDIR: temp },
 		nativeReviewCli: null,
 		resolveTelemetryTriggerBinary: () => { throw new Error("No native telemetry in fixture"); },
-		autoPermissionClassifier: { run: async () => { classifications++; return { status: "available", decision: "deny", reason: "Fixture restriction" }; }, cancel() {} },
+		autoPermissionClassifier: { run: async () => { classifications++; return { status: "available", decision: options.classify?.() ?? "deny", reason: "Fixture restriction" }; }, cancel() {} },
 	})(pi as unknown as ExtensionAPI);
 	if (options.skills) skillRegistry(pi as unknown as ExtensionAPI);
 	const ctx = {
@@ -208,6 +208,22 @@ test("Auto still classifies after outside consent, and its denial still wins", a
 	assert.deepEqual(await f.call("read", { path: outside }), { block: true, reason: "Auto denied this action: Fixture restriction. Find a materially safer alternative within the request, or ask the user; do not pursue the same effect through another tool." });
 	assert.deepEqual(f.prompts, [[title, outside]]);
 	assert.equal(f.classifications(), 1);
+});
+
+test("Auto blocks a target retargeted during classification without granting either path", { skip: process.platform === "win32" }, async t => {
+	let retarget: (() => void) | undefined;
+	const f = fixture(t, { mode: "auto", approve: true, classify: () => { retarget?.(); return "allow"; } });
+	const alias = join(f.repo, "alias"), replacement = join(f.repo, "replacement"), other = `${outside}.other`;
+	symlinkSync(outside, alias, "file");
+	symlinkSync(other, replacement, "file");
+	retarget = () => { renameSync(replacement, alias); retarget = undefined; };
+	assert.deepEqual(await f.call("read", { path: "alias" }), {
+		block: true, reason: "Gentle AI safety policy blocked the path access because its target changed during Auto classification. Retry to request fresh consent.",
+	});
+	assert.deepEqual(f.prompts, [[title, outside]]);
+	assert.equal(f.classifications(), 1);
+	for (const path of [outside, other]) assert.equal(await f.call("read", { path }), undefined);
+	assert.deepEqual(f.prompts, [[title, outside], [title, outside], [title, other]]);
 });
 
 test("YOLO allows non-sensitive outside reads and listings but not outside mutations", async t => {

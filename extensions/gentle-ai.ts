@@ -13334,7 +13334,7 @@ function createGentleAiExtensionForTesting(
 		return withNotice(undefined);
 	});
 
-	async function confirmOutsidePath(toolName: string, input: Record<string, unknown>, path: string, ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
+	async function confirmOutsidePath(toolName: string, input: Record<string, unknown>, path: string, ctx: ExtensionContext, gate: () => Promise<ToolCallEventResult | undefined>, checkAfterAuto: boolean): Promise<ToolCallEventResult | undefined> {
 		const manager = ctx.sessionManager;
 		const cwd = ctx.cwd;
 		const sessionCwd = manager?.getCwd?.() ?? cwd;
@@ -13349,12 +13349,22 @@ function createGentleAiExtensionForTesting(
 			try { root = realpathSync.native(root); }
 			catch { /* A missing bootstrap directory has no symlink destination. */ }
 		}
-		if (isWithinPath(root, target) || isTempTarget(target, permissionEnvironment)) return undefined;
-		if (toolName === "read" && isIndexedSkillTarget(ctx, target)) return undefined;
+		if (isWithinPath(root, target) || isTempTarget(target, permissionEnvironment)) return gate();
+		if (toolName === "read" && isIndexedSkillTarget(ctx, target)) return gate();
 		if (worktree && sessionId && typeof manager.getEntries === "function"
-			&& new SessionWorktreeRegistry(pi, manager, sessionCwd).roots().some(root => isWithinPath(root, target))) return undefined;
+			&& new SessionWorktreeRegistry(pi, manager, sessionCwd).roots().some(root => isWithinPath(root, target))) return gate();
+		const sameTarget = () => {
+			const current = toolWorktreePath(toolName, input);
+			return current !== undefined && canonicalizeTarget(current, cwd, toolName) === target;
+		};
+		const checkApprovedPath = async () => {
+			const denied = await gate();
+			if (denied || !checkAfterAuto) return denied;
+			try { if (ctx.cwd === cwd && sameTarget()) return undefined; } catch { /* Fail closed below. */ }
+			return { block: true, reason: "Gentle AI safety policy blocked the path access because its target changed during Auto classification. Retry to request fresh consent." };
+		};
 		const grant = manager && pathTargetGrants.get(manager);
-		if (grant && grant.sessionId === sessionId && grant.targets.has(target)) return undefined;
+		if (grant && grant.sessionId === sessionId && grant.targets.has(target)) return checkApprovedPath();
 		const displayedTarget = sanitizeTerminalText(target);
 		if (!ctx.hasUI || typeof ctx.ui?.confirm !== "function") return { block: true, reason: `Gentle AI safety policy requires interactive confirmation before accessing paths outside the session worktree: ${displayedTarget}. Ask the user for an explicit safer plan.` };
 		if (!sessionId || !manager) return { block: true, reason: "Session identity is unavailable; access outside the session worktree is blocked." };
@@ -13363,17 +13373,17 @@ function createGentleAiExtensionForTesting(
 		const approved = await requestToolConfirmation(pi.events, herdrLifecycle, toolName, async () => {
 			if ((await ctx.ui.confirm("Allow access outside the session worktree?", displayedTarget)) !== true) return false;
 			try {
-				const current = toolWorktreePath(toolName, input);
 				changed = ctx.signal?.aborted === true || epoch !== reminderEpoch || modeEpoch !== yolo.epoch()
 					|| ctx.sessionManager !== manager || ctx.cwd !== cwd
-					|| manager.getSessionId() !== sessionId || (manager.getCwd?.() ?? cwd) !== sessionCwd
-					|| current === undefined || canonicalizeTarget(current, cwd, toolName) !== target;
+					|| manager.getSessionId() !== sessionId || (manager.getCwd?.() ?? cwd) !== sessionCwd || !sameTarget();
 			} catch { changed = true; }
 			return !changed;
 		});
 		if (!approved) return { block: true, reason: changed
 			? "Gentle AI safety policy blocked the path access because its target or session changed during confirmation. Retry to request fresh consent."
 			: "Gentle AI safety policy blocked the path access because it was not confirmed." };
+		const denied = await checkApprovedPath();
+		if (denied) return denied;
 		const latest = pathTargetGrants.get(manager);
 		const targets = latest?.sessionId === sessionId ? latest.targets : new Set<string>();
 		targets.add(target);
@@ -13444,17 +13454,14 @@ function createGentleAiExtensionForTesting(
 		}
 		const modeConfigDenied = auto.guard(event, ctx);
 		if (modeConfigDenied) return modeConfigDenied;
-		if (!superYoloActive && (!yoloActive || event.toolName === "write" || event.toolName === "edit") && isRecord(event.input)) {
-			const path = toolWorktreePath(event.toolName, event.input);
-			if (path !== undefined) {
-				const denied = await confirmOutsidePath(event.toolName, event.input, path, ctx);
-				if (denied) return denied;
-			}
-		}
 		const gate = async (): Promise<ToolCallEventResult | undefined> => {
 			try { return await auto.check(event, ctx, primaryToolCall); }
 			catch { return { block: true, reason: "Auto permission checking failed. This action was not run; do not bypass the check." }; }
 		};
+		if (!superYoloActive && (!yoloActive || event.toolName === "write" || event.toolName === "edit") && isRecord(event.input)) {
+			const path = toolWorktreePath(event.toolName, event.input);
+			if (path !== undefined) return confirmOutsidePath(event.toolName, event.input, path, ctx, gate, settledMode === "auto");
+		}
 		if (!SHELL_COMMAND_TOOLS.has(event.toolName) || !isRecord(event.input)) return gate();
 		const command = (event.input as { command?: unknown }).command;
 		if (typeof command !== "string") return gate();

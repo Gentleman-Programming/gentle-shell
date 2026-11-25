@@ -220,6 +220,7 @@ export const requiredPaths = [
   "skills/judgment-day/references/prompts-and-formats.md",
   "skills/provider-defect-report/SKILL.md",
   "skills/rdd-defect-workflow/SKILL.md",
+  "skills/security-audit",
   "skills/skill-creator/SKILL.md",
   "skills/skill-improver/SKILL.md",
   "skills/skill-registry/SKILL.md",

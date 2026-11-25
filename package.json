@@ -84,8 +84,8 @@
 		"@heyhuynhgiabuu/pi-pretty": "0.6.27"
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": ">=1.2.0",
 		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": ">=1.2.0",
 		"@earendil-works/pi-tui": "*",
 		"typebox": "*"
 	},
@@ -101,8 +101,8 @@
 		}
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": ">=1.2.0",
 		"@earendil-works/pi-ai": ">=1.2.0",
+		"@earendil-works/pi-coding-agent": ">=1.2.0",
 		"@earendil-works/pi-tui": ">=1.2.0",
 		"@types/node": "^24.13.3",
 		"typescript": "^5.9.3"
@@ -110,5 +110,5 @@
 	"engines": {
 		"node": "^22.19.0 || >=23.6.0"
 	},
-	"packageManager": "pnpm@11.1.1"
+	"packageManager": "pnpm@12.18.0"
 }

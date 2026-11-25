@@ -494,6 +494,38 @@ NaN defaults Hy4 to `low` only if the API request omits `reasoning_effort`; an e
   <img src="docs/assets/brand/terminal-divider.svg" width="480" alt="">
 </p>
 
+<a id="standard-compute-model-provider"></a>
+
+### Standard Compute model provider — Smart routing, no extra package
+
+The first-party Standard Compute provider is included; no third-party provider package is required. Standard Compute exposes one OpenAI- and Anthropic-compatible API for AI coding agents that routes each request to the cheapest capable model. Set `STANDARDCOMPUTE_API_KEY` before starting Pi, or use native `/login` → Standard Compute (also `/login standardcompute`), then use `/model` to select a model.
+
+<details>
+<summary><kbd>More</kbd> <strong>Login, model discovery, smart routing, pinning, and thinking levels</strong> — API keys, available models, and per-model levels</summary>
+
+<br>
+
+- **Login:** Both login routes await explicit API-key input; blank or whitespace-only entries fail without saving a credential, and surrounding whitespace is trimmed. Cancellation leaves the stored key unchanged. Stored keys take precedence over `STANDARDCOMPUTE_API_KEY`.
+- **Streaming:** Pi streams chat completions through its OpenAI-compatible provider, `https://api.stdcmpt.com/v1/chat/completions`; Anthropic clients use `https://api.stdcmpt.com` with the Messages API and the `x-api-key` header.
+- **Smart routing:** The default model is the `standardcompute` router: send `model: "standardcompute"`, or omit the field where the client allows. The router picks from the models enabled on the Standard Compute dashboard (Models page), using your quality preference: harder tasks go to stronger models, simple ones to faster, cheaper models, stretching your budget. With smart routing, the response's `model` field is `StandardCompute`; the dashboard's Request Logs show which model actually answered. For Claude clients, `anthropic/claude-standardcompute` is the equivalent smart-routing alias on the Messages API.
+- **Pinning:** Send an exact model id (`anthropic/claude-sonnet-5.5`) or a short id (`claude-sonnet-5.5`) to pin a model; a pinned request overrides your dashboard model selection for that request, and the gateway fails over only within the same model, never switching to a different model. An unknown id returns `400` with code `model_not_found`; an image sent to a text-only model returns `400` with code `unsupported_model_input`.
+- **Model discovery:** Pi refreshes the catalog through the authenticated `GET /v1/models` endpoint and keeps the smart-routing model as the offline fallback; a successful empty list is authoritative, and failed or cancelled discovery keeps the fallback. The supported parameters are `tools`, `tool_choice`, `response_format`, `reasoning`, and `reasoning_effort`. Embeddings, image generation and audio endpoints are not available.
+- **Reasoning and thinking levels:** The smart-routing model declares reasoning support, so Pi exposes its thinking levels (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`). Pi's `off` level omits `reasoning_effort`; explicit efforts pass through as `reasoning_effort`.
+- **Context and pricing:** Context windows go up to about 1M tokens. Standard Compute does not publish per-token prices; Pi requires numeric costs, so the smart-routing row carries zero placeholder rates.
+- **Errors:** Standard Compute uses standard status codes with OpenAI-style bodies on the OpenAI endpoints and Anthropic-style bodies on the Messages API. A missing or invalid key returns `401`; a spent budget returns `402` (`budget_exhausted`, `free_quota_exhausted`, or `payment_required`); a disabled company key returns `403`; rate limits return `429`; temporary unavailability returns `503`. Retry `429` and `503` after the `retry-after` delay with exponential backoff; do not retry `400`, `401`, `402` or `403` without changing the request or the account. Standard Compute already retries provider errors before responding.
+- **Usage:** `/gentle:usage` shows no subscription windows for this API-key provider; Standard Compute exposes no usage endpoint over the API key, so the panel has no built-in Standard Compute rows.
+- **Not included:** Standard Compute's embeddings, image generation and audio endpoints are not available to Pi; the company-managed Claude sign-in through Microsoft tokens (`eu.stdcmpt.com/entra/…`) is not available on the normal API-key endpoints.
+
+Thinking levels for the smart-routing model: `off` omits `reasoning_effort` (the provider default); `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` are sent as `reasoning_effort`.
+
+</details>
+
+<p align="right"><a href="#top">Back to top ↑</a></p>
+
+<p align="center">
+  <img src="docs/assets/brand/terminal-divider.svg" width="480" alt="">
+</p>
+
 <a id="get-started"></a>
 
 ## Get started

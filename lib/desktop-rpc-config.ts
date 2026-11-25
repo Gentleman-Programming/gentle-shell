@@ -999,6 +999,9 @@ export class DesktopConfigBridge {
 		if (!host || !emit) return;
 		const root = withRoots(host, this.overrides);
 		if (!root) return;
+		// The trust answer these revisions were read with is the new baseline, so a
+		// later revert seen by the next Desktop command still re-reads the trust-gated stores.
+		if (this.watchedCwd !== undefined) this.watchedTrust = root.projectTrusted === true;
 		for (const store of stores) {
 			let current: StoreRevision;
 			try {

@@ -417,3 +417,42 @@ test("a project trust change seen on the next Desktop command re-reads the trust
 	assert.equal(events.length, 1, "the new trust answer is the baseline");
 	assertNoLeak(events, root);
 });
+
+test("a trust answer read by a recompute becomes the baseline, so reverting it is still reported", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "desktop-config-readonly-trust-recompute-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const agentHome = join(root, "agent");
+	const workspace = join(root, "workspace");
+	writeJson(join(workspace, ".pi", "mcp.json"), { mcpServers: { local: { command: "x" } } });
+	mkdirSync(agentHome, { recursive: true });
+	const changes: Array<() => void> = [];
+	const timers: Array<() => void> = [];
+	const bridge = new DesktopConfigBridge(
+		{ configHome: join(root, "config"), agentHome },
+		{
+			watch: (_dir: string, onChange: (filename: string | undefined) => void) => {
+				changes.push(() => onChange(undefined));
+				return () => {};
+			},
+			timers: { set: (fn: () => void) => timers.push(fn), clear: () => {} },
+			exists: () => true,
+		},
+	);
+	t.after(() => bridge.reset());
+	let trusted = false;
+	const context = { cwd: workspace, isProjectTrusted: () => trusted } as unknown as ExtensionContext;
+	const events: Array<Record<string, unknown>> = [];
+	bridge.attach(context);
+	bridge.wire((_event, data) => events.push(data));
+
+	// Trust changes with no Desktop command; a file change then recomputes with the new answer.
+	trusted = true;
+	changes[0]?.();
+	timers.splice(0).forEach((fn) => fn());
+	assert.deepEqual(events.map((event) => event.store), ["mcp"], "the recompute reports the trusted project layer");
+
+	// Trust reverts before the next Desktop command: that command must still re-read.
+	trusted = false;
+	bridge.attach(context);
+	assert.deepEqual(events.map((event) => event.store), ["mcp", "mcp"], "the reverted trust answer is reported");
+});

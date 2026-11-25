@@ -62,7 +62,7 @@ export class PrintService {
 		const model = body.model;
 		if (model !== undefined && (typeof model !== "string" || !MODEL.test(model))) throw new HttpError(400, "invalid_model", "model must be a model name such as provider/id");
 		if (this.running.size >= this.limits.maxRunning) throw new HttpError(429, "too_many_prints", `At most ${this.limits.maxRunning} one-shot prompts run at once`);
-		const launch = launchPrint({ cwd, ...(model === undefined ? {} : { model }) });
+		const launch = launchPrint({ cwd, ...(typeof model === "string" ? { model } : {}) });
 		const outcome = await this.run(launch, prompt, res);
 		if ("text" in outcome) return sendJson(res, 200, { text: outcome.text });
 		const { error, exitCode } = outcome;

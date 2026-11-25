@@ -1,4 +1,4 @@
-import { matchesSensitivePathPattern } from "../lib/sensitive-paths.ts";
+import { isEnvFilePath, matchesSensitivePathPattern } from "../lib/sensitive-paths.ts";
 import { emptyFallbacksFile, fallbacksFilePath, followProfileRename, readFallbacksFile, setChain, writeFallbacksFile, type FallbackStep } from "../lib/model-fallback-store.ts";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { PROFILE_TIER_EVENT, supportsOpenAIFast } from "../lib/openai-fast-tier.ts";
@@ -2456,8 +2456,8 @@ function isSensitivePath(value: string, env: NodeJS.ProcessEnv = process.env, cw
 // A shell word can carry a path after `=`: `--target-directory=$HOME/...` or
 // `VAR=~/...` (quotes are already stripped by shellCommandWords). Only the
 // desktop guard reads these values; the pattern list keeps its word-level reach.
-function isSensitiveCommandWord(word: string, env: NodeJS.ProcessEnv, cwd?: string): boolean {
-	if (isSensitivePath(word, env, cwd)) return true;
+function isDesktopCommandWord(word: string, env: NodeJS.ProcessEnv, cwd?: string): boolean {
+	if (isDesktopActionPath(word, env, cwd)) return true;
 	let index = word.indexOf("=");
 	while (index >= 0) {
 		if (isDesktopActionPath(word.slice(index + 1), env, cwd)) return true;
@@ -2533,16 +2533,81 @@ function hasWritableEngramTool(pi: ExtensionAPI): boolean {
 // Over-denial is accepted where it protects the deny: a word that matches is
 // denied even inside a heredoc body, and prose that spells a path after a `/`
 // such as `git commit -m "add ./.env.example"` is denied too.
+//
+// A program may load a secret file the agent never reads (odd/tasks/
+// sensitive-path-program-arguments.md S1): `docker compose --env-file .env`,
+// `ssh -i key host`. The guard looks at the whole command line, not at its
+// parts, because following bash grammar is what a lexical guard cannot do
+// (`cat $(true) -- .env`, `env xargs cat`, `builtin . key`). A word that matches
+// the pattern list is denied when any word of the line is an exposing command
+// (matched on the last path component, ignoring case, so `/bin/cat`, `sudo cat`
+// and `CAT` count); when any word is `.` or `source` and the path is not an env
+// file; or when the word is a redirection target or the first word of its
+// segment, as before. So a line that uses a secret file and holds a reader
+// anywhere (`docker compose --env-file .env logs app | tail -50`) is denied as a
+// whole. An unlisted program that prints or sends a file passes, and so does
+// whatever a program prints. The desktop-folder check still applies to every
+// word.
 const SHELL_WORD_SEPARATOR_CHARACTERS = new Set([";", "|", "&", "(", ")", "<", ">", "\n", "\r"]);
+const EXPOSING_COMMANDS = new Set([
+	// show
+	"cat", "tac", "nl", "head", "tail", "less", "more", "bat", "strings", "xxd", "hexdump", "od", "base64",
+	"grep", "egrep", "fgrep", "rg", "ag", "sed", "awk", "cut", "sort", "uniq", "paste", "column", "diff", "cmp",
+	"jq", "yq", "wc", "sha256sum", "shasum", "sha1sum", "md5sum", "md5", "zcat", "zless", "gsed", "gawk", "ggrep",
+	"openssl", "find", "fd", "xargs", "parallel", "gpg", "sops", "age", "ansible-vault",
+	// enter: the next command reads the file by a name the guard cannot see
+	"cd", "pushd",
+	// copy
+	"cp", "mv", "ln", "dd", "tee", "tar", "zip", "unzip", "gzip", "bzip2", "xz", "zstd", "7z", "ditto",
+	"rsync", "pbcopy", "xclip", "wl-copy",
+	// send
+	"scp", "sftp", "curl", "wget", "http", "xh", "nc", "ncat", "socat", "ftp", "rclone", "aws", "gsutil", "gh", "git",
+	"kubectl",
+	// open in a viewer or editor
+	"vi", "vim", "nvim", "view", "vimdiff", "nano", "emacs", "code", "cursor", "subl", "zed", "hx", "micro", "open",
+	"xdg-open",
+	// destroy
+	"rm", "shred", "truncate", "unlink",
+]);
+// A word that still holds whitespace or shell syntax after quote removal is a
+// script (`bash -c "true;cat key"`), not a path: the guard cannot tell what the
+// script does with a sensitive path in it, so that path is denied on any line.
+// One leading `$NAME` or `${NAME}` is a path prefix (`"$HOME/key"`), not syntax.
+const SHELL_SCRIPT_SYNTAX = /[\s;|&<>(){}$`'"\\]/;
+const LEADING_VARIABLE_REFERENCE = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/;
+
+const commandName = (word: string): string => word.slice(word.lastIndexOf("/") + 1).toLowerCase();
+
+// The command names a line contains. A line continuation inside a name is
+// removed, and every word is also split at spaces, `$`, `(`, `)` and backticks,
+// so a reader inside a quoted or glued word (`"$(cat key)"`, `x`cat key``,
+// `bash -c "cat key"`) still counts. Only this check splits; the words the guard
+// tests and reports stay as shellCommandWords gives them.
+function commandLineNames(command: string): string[] {
+	return shellCommandWords(command.replace(/\\\r?\n/g, ""))
+		.flatMap((word) => word.split(/[\s$()`]+/))
+		.filter((piece) => piece.length > 0)
+		.map(commandName);
+}
 
 function shellCommandWords(command: string): string[] {
-	const words: string[] = [];
+	return shellCommandSegments(command).flat();
+}
+
+function shellCommandSegments(command: string): string[][] {
+	const segments: string[][] = [];
+	let words: string[] = [];
 	let word = "";
 	let started = false;
 	const flush = (): void => {
 		if (started) words.push(word);
 		word = "";
 		started = false;
+	};
+	const endSegment = (): void => {
+		flush();
+		if (words.length > 0) segments.push(words);
+		words = [];
 	};
 	for (let index = 0; index < command.length; index += 1) {
 		const character = command[index] as string;
@@ -2570,19 +2635,37 @@ function shellCommandWords(command: string): string[] {
 			started = true;
 			continue;
 		}
-		if (SHELL_WORD_SEPARATOR_CHARACTERS.has(character) || /\s/.test(character)) {
+		if (SHELL_WORD_SEPARATOR_CHARACTERS.has(character)) {
+			endSegment();
+			continue;
+		}
+		if (/\s/.test(character)) {
 			flush();
 			continue;
 		}
 		word += character;
 		started = true;
 	}
-	flush();
-	return words;
+	endSegment();
+	return segments;
 }
 
 function findSensitiveCommandPath(command: string, env: NodeJS.ProcessEnv = process.env, cwd?: string): string | undefined {
-	return shellCommandWords(command).find((word) => isSensitiveCommandWord(word, env, cwd));
+	const segments = shellCommandSegments(command);
+	const names = commandLineNames(command);
+	const exposed = names.some((name) => EXPOSING_COMMANDS.has(name));
+	const sourced = names.some((name) => name === "." || name === "source");
+	for (const words of segments) {
+		for (const [index, word] of words.entries()) {
+			if (isDesktopCommandWord(word, env, cwd)) return word;
+			// A backtick opens or closes a substitution, never a path: ``echo `cat .env` ``.
+			const path = word.replaceAll("`", "");
+			const normalized = normalizePolicyPath(path);
+			if (matchesSensitivePathPattern(normalized) &&
+				(index === 0 || exposed || SHELL_SCRIPT_SYNTAX.test(word.replace(LEADING_VARIABLE_REFERENCE, "")) || (sourced && !isEnvFilePath(normalized)))) return path;
+		}
+	}
+	return undefined;
 }
 
 function sensitivePathBlock(sensitivePath: string): ToolCallEventResult {

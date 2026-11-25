@@ -1,6 +1,14 @@
 # Choose how permission questions are handled
 
-Use **Normal**, **Auto**, **YOLO**, or **Super Yolo** for the current primary session. Optionally save any of them as the user-global default for future sessions. These modes do not redesign Gentle Shell delegation, expand the task you authorized, or replace independent safety and consent. One always-on exception: reading the task's exact resolved skill files (the selected `SKILL.md` plus its referenced instruction files, by registry, catalog or parent-supplied paths) needs no per-file permission question in any mode; secrets, sensitive paths, unrelated personal files and explicit user prohibitions still apply.
+Use **Normal**, **Auto**, **YOLO**, or **Super Yolo** for the current primary session. Optionally save any of them as the user-global default for future sessions. These modes do not redesign Gentle Shell delegation, expand the task you authorized, or replace independent safety and consent. One always-on exception: reading the task's exact resolved skill files (for example, the selected `SKILL.md` plus its referenced instruction files, by registry, catalog or parent-supplied paths) needs no per-file permission question in any mode when those exact files are indexed by the session; secrets, sensitive paths, unrelated personal files and explicit user prohibitions still apply.
+
+## File tools outside the session worktree
+
+`read`, `write`, `edit`, `grep`, `find`, and `ls` ask before using a target outside the session's Git worktree (or session directory outside Git) and its registered same-clone worktrees. The dialog names the resolved, absolute target. A yes grants access to that target for the rest of the live session, not its children or neighbors. Without an interactive UI, an ungranted outside target is blocked.
+
+The OS temp directory (session `TMPDIR`, `/tmp`, or `/var/tmp`) does not need this consent. Neither does `read` of an exact skill file indexed by Pi or Gentle Shell; nearby files and writes to outside skill files are not exempt. Sensitive paths still deny first. In Auto, a confirmed access still goes through the classifier. YOLO already covers non-sensitive reads and listings, and Super Yolo waives permission prompts; neither mode overrides hard denials.
+
+This is a consent check, not a filesystem sandbox. It does not inspect every file inside a search target, and it does not cover `bash` or custom tools.
 
 ## Tool context in Auto
 

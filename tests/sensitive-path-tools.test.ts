@@ -144,7 +144,7 @@ for (const mode of ["yolo", "super-yolo"] as const) {
 // Only the real folders are guarded: `<agent home>/desktop` for the resolved
 // Gentle Pi agent home and the two standard homes, on the normalized absolute
 // path. A project folder that happens to be named `agent/desktop` is not one.
-const CUSTOM_AGENT_HOME = "/tmp/customhome";
+const CUSTOM_AGENT_HOME = join(tmpdir(), "customhome").replace(/\\/g, "/");
 // Bash drops unquoted backslashes, so a Windows home spelled with `\` would no
 // longer name the desktop folder inside a shell command. Forward slashes keep
 // these tests about the guard, not about shell quoting, on every platform.
@@ -182,8 +182,9 @@ test("a custom agent home's desktop folder is guarded only while that home is th
 	const path = `${CUSTOM_AGENT_HOME}/desktop/sessions/a.json`;
 	assert.equal(await call("write", { path, content: "x" }), undefined, path);
 	assert.equal(await call("bash", { command: `mkdir -p ${CUSTOM_AGENT_HOME}/desktop/inbox` }), undefined);
-	// A `..` that leaves the desktop folder leaves the guard too.
-	assert.equal(await call("read", { path: "~/.gentle-shell/agent/desktop/../notes.md" }), undefined);
+	// A `..` that leaves the configured desktop folder leaves the guard too.
+	const configured = toolCall({ agentHome: CUSTOM_AGENT_HOME });
+	assert.equal(await configured("read", { path: `${CUSTOM_AGENT_HOME}/desktop/../notes.md` }), undefined);
 });
 
 test("ordinary project folders named agent/desktop/... stay readable and writable (T7 FP)", async () => {
@@ -262,7 +263,7 @@ test("adding the desktop folders keeps every earlier deny and the ordinary allow
 			assert.deepEqual(await call("read", { path }), { block: true, reason: reason(path) }, `${mode ?? "normal"} read ${path}`);
 		}
 		assert.deepEqual(await call("bash", { command: "cat ~/.aws/credentials" }), { block: true, reason: reason("~/.aws/credentials") });
-		for (const path of ["src/desktop/inbox.ts", "docs/desktop-feed.md", "lib/desktop-feed-actions.ts", "desktop/inbox/readme.md", "/opt/custom/agent/desktop/inbox/a.json"]) {
+		for (const path of ["src/desktop/inbox.ts", "docs/desktop-feed.md", "lib/desktop-feed-actions.ts", "desktop/inbox/readme.md", `${CUSTOM_AGENT_HOME}-other/desktop/inbox/a.json`]) {
 			assert.equal(await call("read", { path }), undefined, path);
 			assert.equal(await call("write", { path, content: "x" }), undefined, path);
 		}

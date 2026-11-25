@@ -11,6 +11,7 @@ import {
 	INVALID_GET_AUTH_STATUS,
 	INVALID_RELOAD_CREDENTIALS,
 	RELOAD_FAILED,
+	loginKinds,
 	projectAuthStatus,
 } from "../lib/desktop-rpc-auth.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
@@ -38,6 +39,8 @@ function fakeRegistry(options: { configured?: Record<string, { source: string; o
 			return entry ? { configured: true, source: entry.source, label: entry.label ?? `~/.secret/${provider}` } : { configured: false };
 		},
 		getProviderDisplayName: (provider: string) => ({ "openai-codex": "OpenAI Codex", anthropic: "Anthropic" })[provider] ?? provider,
+		// Provider definitions: which sign-ins each has (a browser sign-in and a key; Codex adds a device code).
+		getProvider: (provider: string) => ({ anthropic: { auth: { oauth: {}, apiKey: { login: async () => ({}) } } }, "openai-codex": { auth: { oauth: {} } } })[provider],
 		isUsingOAuth: (model: { provider: string }) => configured[model.provider]?.oauth === true,
 		async refresh(refreshOptions: unknown) {
 			calls.refresh.push(refreshOptions);
@@ -112,8 +115,8 @@ test("get_auth_status lists providers with configured, type, and source, and nev
 		ok: true,
 		data: {
 			providers: [
-				{ provider: "anthropic", displayName: "Anthropic", configured: true, type: "oauth", source: "stored" },
-				{ provider: "openai-codex", displayName: "OpenAI Codex", configured: true, type: "api_key", source: "models_json" },
+				{ provider: "anthropic", displayName: "Anthropic", configured: true, type: "oauth", source: "stored", loginKinds: ["oauth", "api_key"] },
+				{ provider: "openai-codex", displayName: "OpenAI Codex", configured: true, type: "api_key", source: "models_json", loginKinds: ["oauth", "device"] },
 			],
 			truncated: false,
 		},
@@ -127,7 +130,7 @@ test("get_auth_status lists providers with configured, type, and source, and nev
 test("an unconfigured provider has no type and no source", async (t) => {
 	const app = harness(t, fakeRegistry().registry);
 	await app.invoke("auth-2", "get_auth_status");
-	assert.deepEqual(app.last().data.providers[0], { provider: "anthropic", displayName: "Anthropic", configured: false, type: null, source: null });
+	assert.deepEqual(app.last().data.providers[0], { provider: "anthropic", displayName: "Anthropic", configured: false, type: null, source: null, loginKinds: ["oauth", "api_key"] });
 });
 
 test("get_auth_status rejects params and answers auth_unavailable without a registry", async (t) => {
@@ -155,7 +158,7 @@ test("reload_credentials refreshes the registry offline and answers the new stat
 	assert.equal(response.data.reloaded, true);
 	assert.equal(response.data.aborted, false);
 	assert.deepEqual(response.data.failedProviders, ["openai-codex"]);
-	assert.deepEqual(response.data.providers.find((row: { provider: string }) => row.provider === "anthropic"), { provider: "anthropic", displayName: "Anthropic", configured: true, type: "oauth", source: "stored" });
+	assert.deepEqual(response.data.providers.find((row: { provider: string }) => row.provider === "anthropic"), { provider: "anthropic", displayName: "Anthropic", configured: true, type: "oauth", source: "stored", loginKinds: ["oauth", "api_key"] });
 	assert.equal(app.widgets.at(-1)!.includes("example.invalid"), false, "refresh error text never crosses");
 	assert.equal(fake.calls.secretReads, 0);
 });
@@ -223,12 +226,25 @@ test("an environment label never crosses and repeated reads never refresh", asyn
 	for (let i = 0; i < 3; i++) await app.invoke(`g${i}`, "get_auth_status");
 	assert.deepEqual(fake.calls.refresh, []);
 	assert.equal(app.widgets.some((line) => line.includes("ANTHROPIC_API_KEY")), false);
-	assert.deepEqual(app.last().data.providers[0], { provider: "anthropic", displayName: "Anthropic", configured: true, type: "api_key", source: "environment" });
+	assert.deepEqual(app.last().data.providers[0], { provider: "anthropic", displayName: "Anthropic", configured: true, type: "api_key", source: "environment", loginKinds: ["oauth", "api_key"] });
 });
 
 test("an unknown source is null and a throwing display name falls back to the id", () => {
 	const result = projectAuthStatus({ getAll: () => [{ provider: "x" }], getProviderAuthStatus: () => ({ configured: true, source: "configured provider" }), getProviderDisplayName: () => { throw new Error("boom"); }, isUsingOAuth: () => false, refresh: async () => ({ aborted: false, errors: new Map() }) });
-	assert.deepEqual(result.providers, [{ provider: "x", displayName: "x", configured: true, type: "api_key", source: null }]);
+	assert.deepEqual(result.providers, [{ provider: "x", displayName: "x", configured: true, type: "api_key", source: null, loginKinds: [] }]);
+});
+
+test("loginKinds says which sign-ins a provider definition offers, never reading a credential", () => {
+	const apiKey = { login: async () => ({}) };
+	assert.deepEqual(loginKinds("anthropic", { auth: { oauth: {}, apiKey } }), ["oauth", "api_key"]);
+	assert.deepEqual(loginKinds("github-copilot", { auth: { oauth: {} } }), ["device"]);
+	assert.deepEqual(loginKinds("openai-codex", { auth: { oauth: {}, apiKey } }), ["oauth", "device", "api_key"]);
+	// Ambient-only providers (no key setup) and unknown ones offer nothing.
+	assert.deepEqual(loginKinds("amazon-bedrock", { auth: { apiKey: {} } }), []);
+	assert.deepEqual(loginKinds("gone", undefined), []);
+	// A throwing definition read is no sign-in, not a failed answer.
+	const result = projectAuthStatus({ getAll: () => [{ provider: "x" }], getProviderAuthStatus: () => ({ configured: false }), getProvider: () => { throw new Error("boom"); }, isUsingOAuth: () => false, refresh: async () => ({ aborted: false, errors: new Map() }) });
+	assert.deepEqual(result.providers[0]!.loginKinds, []);
 });
 
 // ---- Native review advisories (review-00bf531659b82903) ----

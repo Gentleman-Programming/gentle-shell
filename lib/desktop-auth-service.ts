@@ -25,8 +25,9 @@ import {
 
 /**
  * The Desktop domain slice for credential status. No event and no write: the
- * credential store is Pi's, and sign-in and sign-out stay out of scope. A reset
- * drops the bound context and the answer of any call that started before it.
+ * credential store is Pi's, and sign-in, API keys and sign-out are the login
+ * slice's (`lib/desktop-login-service.ts`). A reset drops the bound context and
+ * the answer of any call that started before it.
  */
 export class DesktopAuthBridge {
 	private host: ExtensionContext | undefined;

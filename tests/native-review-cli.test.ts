@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -1152,6 +1152,53 @@ if (!process.argv.includes("--lineage")) {
 		await delay(10);
 	}
 	assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "timed-out child must not be left running");
+});
+
+test("POSIX review STATUS settles as timed out after the native child exits with inherited pipes open", { skip: process.platform === "win32" }, async (t) => {
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-native-status-pipes-")));
+	const invocation = join(cwd, "invocation.json");
+	const binary = join(cwd, "gentle-ai.cjs");
+	const readInvocation = (): { pid: number; descendantPid: number; argv: string[] } => JSON.parse(readFileSync(invocation, "utf8"));
+	t.after(() => {
+		try { process.kill(readInvocation().descendantPid, "SIGKILL"); } catch { /* Not started, or already gone. */ }
+		rmSync(cwd, { recursive: true, force: true });
+	});
+	execFileSync("git", ["init", "-q"], { cwd });
+	writeFileSync(binary, `#!${process.execPath}
+const { spawn } = require("node:child_process");
+const { renameSync, writeFileSync } = require("node:fs");
+const descendant = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { detached: true, stdio: "inherit" });
+const invocation = ${JSON.stringify(invocation)};
+writeFileSync(invocation + ".tmp", JSON.stringify({ pid: process.pid, descendantPid: descendant.pid, argv: process.argv.slice(2) }));
+renameSync(invocation + ".tmp", invocation);
+process.exit(0);
+`, { mode: 0o700 });
+	let review: { execute(id: string, parameters: Record<string, unknown>, signal: undefined, onUpdate: undefined, context: unknown): Promise<{ details: Record<string, unknown> }> };
+	createGentleAiExtension({ nativeReviewCli: new NativeReviewCliV216(createNodeExecFileAdapter(), binary, 500), candidateViews: null, processEnv: { GENTLE_AI_TELEMETRY: "0" } })(
+		{ on() {}, registerCommand() {}, registerTool(tool: typeof review & { name: string }) { if (tool.name === "gentle_review") review = tool; } } as never);
+	const lineageId = "exited-native-status";
+	const pending = review!.execute("status-open-pipes", { operation: "status", lineageId }, undefined, undefined, { cwd, hasUI: false, sessionManager: { getSessionId: () => cwd } });
+	const limit = delay(1_500, "still pending", { ref: false });
+	const reaped = async () => {
+		while (!existsSync(invocation)) await delay(10, undefined, { ref: false, signal: t.signal });
+		const record = readInvocation();
+		for (;;) {
+			try { process.kill(record.pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return record; throw error; }
+			await delay(10, undefined, { ref: false, signal: t.signal });
+		}
+	};
+	const first = await Promise.race([reaped(), pending, limit]);
+	assert.ok(typeof first === "object" && "descendantPid" in first, "the native child must exit before STATUS settles");
+	assert.deepEqual(first.argv, ["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", cwd, "--projection", "workspace", "--lineage", lineageId, "--agent", "pi", "--next-transition"]);
+
+	const result = await Promise.race([pending, limit]);
+	assert.ok(typeof result !== "string", "STATUS must settle without waiting for the descendant to close the pipes");
+	assert.equal(result.details.status, "blocked");
+	assert.equal(result.details.outcome, "native-status-timed-out");
+	assert.equal(result.details.mutation_performed, false);
+	assert.equal(result.details.mutation_outcome, "none");
+	assert.deepEqual(result.details.diagnostics, { operation: "review/status", error_code: "timeout", exit_code: 1, timed_out: true, output_limit_exceeded: false });
+	assert.doesNotThrow(() => process.kill(first.descendantPid, 0), "the descendant is still alive when STATUS settles");
 });
 
 test("POSIX non-STATUS adapter calls retain Node's ordinary timeout handling", { skip: process.platform === "win32" }, async () => {

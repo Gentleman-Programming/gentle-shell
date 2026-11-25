@@ -602,6 +602,17 @@ export class TerminalService {
 		}
 	}
 
+	/** A device paired again replaces its earlier pairing `from`: the terminals `from` opened are `to`'s now. */
+	adopt(from        , to        )       {
+		let moved = false;
+		for (const [term, owner] of Object.entries(this.owners)) {
+			if (owner !== from) continue;
+			this.owners[term] = to;
+			moved = true;
+		}
+		if (moved) this.saveOwners();
+	}
+
 	/** The server is stopping: streams and connections close; the host and its terminals keep running. */
 	closeAll()       {
 		this.closed = true;

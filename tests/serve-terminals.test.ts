@@ -187,6 +187,30 @@ test("terminals belong to the device that opened them; an admin sees all; revoki
 	assert.equal((await call(server.url, "GET", "/api/terminals", { token: ADMIN })).body.terminals.some((t: { id: string }) => t.id === id), false);
 });
 
+test("a device paired again takes its earlier pairing's place: its terminals, then that device is revoked", async () => {
+	const before = await pairDevice(server.url, ADMIN, ["terminal"], "tablet");
+	const id = await openTerm(before.token);
+	const live = await stream(server.url, `/api/terminals/${id}/stream`, before.token);
+	await live.waitFor("event: attached");
+	const again = await pairDevice(server.url, ADMIN, ["terminal"], "tablet");
+	assert.equal((await call(server.url, "POST", "/api/devices/self/replace", { token: again.token, body: { token: "gss_nobody" } })).status, 404);
+	assert.equal((await call(server.url, "POST", "/api/devices/self/replace", { token: again.token, body: { token: again.token } })).status, 400);
+	const replaced = await call(server.url, "POST", "/api/devices/self/replace", { token: again.token, body: { token: before.token } });
+	assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+	assert.equal(replaced.body.replaced, before.id);
+	await live.closed;
+	assert.equal((await call(server.url, "GET", "/api/terminals", { token: before.token })).status, 401);
+	// Still running, now the new pairing's.
+	const mine = (await call(server.url, "GET", "/api/terminals", { token: again.token })).body.terminals.find((t: { id: string }) => t.id === id);
+	assert.ok(mine, "the terminal is the new pairing's");
+	assert.equal(mine.owner, again.id);
+	assert.equal(JSON.parse(readFileSync(join(serveDir, "terminals.json"), "utf8")).owners[id], again.id);
+	const reattached = await stream(server.url, `/api/terminals/${id}/stream`, again.token);
+	await reattached.waitFor("event: attached");
+	reattached.close();
+	assert.equal((await call(server.url, "DELETE", `/api/terminals/${id}`, { token: again.token })).status, 200);
+});
+
 test("terminals and their owners survive a serve restart; the host keeps running", async () => {
 	const id = await openTerm();
 	const pid = (await call(server.url, "GET", "/api/term-host", { token: phone.token })).body.pid;

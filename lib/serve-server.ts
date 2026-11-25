@@ -623,6 +623,21 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 			log(`device ${principal.deviceId} unpaired itself`);
 			return sendJson(res, 200, { revoked: principal.deviceId });
 		}
+		if (path === "/api/devices/self/replace") {
+			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
+			// A device paired again takes the place of its earlier pairing, whose token it shows: that
+			// device's terminals become this one's, then it is revoked (its streams close).
+			if (!principal) throw new HttpError(401, "unauthorized", "A valid bearer token is required");
+			if (principal.deviceId === "local") throw new HttpError(400, "not_a_device", "The server's own token is no paired device");
+			const body = await readJsonBody(req, limits.smallBodyBytes);
+			const earlier = typeof body.token === "string" && body.token.length <= 256 ? options.auth.authenticate(body.token) : undefined;
+			if (!earlier || earlier.deviceId === "local") throw new HttpError(404, "not_found", "No paired device has that token");
+			if (earlier.deviceId === principal.deviceId) throw new HttpError(400, "same_device", "That token is this device's own");
+			terminals?.adopt(earlier.deviceId, principal.deviceId);
+			options.auth.revoke(earlier.deviceId);
+			log(`device ${principal.deviceId} replaced ${earlier.deviceId}`);
+			return sendJson(res, 200, { replaced: earlier.deviceId });
+		}
 		const device = /^\/api\/devices\/([A-Za-z0-9_]{1,64})$/.exec(path);
 		if (device) {
 			if (method !== "DELETE") throw new HttpError(405, "method_not_allowed", "Use DELETE");

@@ -2539,22 +2539,30 @@ function hasWritableEngramTool(pi: ExtensionAPI): boolean {
 // `ssh -i key host`. The guard looks at the whole command line, not at its
 // parts, because following bash grammar is what a lexical guard cannot do
 // (`cat $(true) -- .env`, `env xargs cat`, `builtin . key`). A word that matches
-// the pattern list is denied when any word of the line is an exposing command
-// (matched on the last path component, ignoring case, so `/bin/cat`, `sudo cat`
-// and `CAT` count); when any word is `.` or `source` and the path is not an env
-// file; or when the word is a redirection target or the first word of its
-// segment, as before. So a line that uses a secret file and holds a reader
-// anywhere (`docker compose --env-file .env logs app | tail -50`) is denied as a
-// whole. An unlisted program that prints or sends a file passes, and so does
-// whatever a program prints. The desktop-folder check still applies to every
-// word.
+// the pattern list is denied when any of these holds:
+//   - reader: any word of the line is an exposing command (last path component,
+//     ignoring case, so `/bin/cat`, `sudo cat` and `CAT` count);
+//   - source: any word is `.` or `source` and the path is not an env file;
+//   - script: the word still holds whitespace or shell syntax after quote
+//     removal (`bash -c "true;cat key"`), so it is not a path;
+//   - .ssh writer: the path is under an `.ssh` directory and the line names a
+//     program that creates files there (`install`, `touch`, `mkdir`, ...);
+//   - command position: the word is the first word of its segment, which also
+//     covers redirection targets because the existing splitting ends a segment
+//     at `<` and `>`.
+// So a line that uses a secret file and holds a reader anywhere
+// (`docker compose --env-file .env logs app | tail -50`) is denied as a whole.
+// Limits: an unlisted program that prints or sends a file passes, so do readers
+// assembled at run time (`x=cat; $x .env`), interpreters given a key as an
+// argument, and whatever a program prints. The desktop-folder check still
+// applies to every word.
 const SHELL_WORD_SEPARATOR_CHARACTERS = new Set([";", "|", "&", "(", ")", "<", ">", "\n", "\r"]);
 const EXPOSING_COMMANDS = new Set([
 	// show
 	"cat", "tac", "nl", "head", "tail", "less", "more", "bat", "strings", "xxd", "hexdump", "od", "base64",
 	"grep", "egrep", "fgrep", "rg", "ag", "sed", "awk", "cut", "sort", "uniq", "paste", "column", "diff", "cmp",
 	"jq", "yq", "wc", "sha256sum", "shasum", "sha1sum", "md5sum", "md5", "zcat", "zless", "gsed", "gawk", "ggrep",
-	"openssl", "find", "fd", "xargs", "parallel", "gpg", "sops", "age", "ansible-vault",
+	"openssl", "find", "fd", "xargs", "parallel", "gpg", "sops", "age", "ansible-vault", "printenv", "env",
 	// enter: the next command reads the file by a name the guard cannot see
 	"cd", "pushd",
 	// copy
@@ -2575,6 +2583,10 @@ const EXPOSING_COMMANDS = new Set([
 // One leading `$NAME` or `${NAME}` is a path prefix (`"$HOME/key"`), not syntax.
 const SHELL_SCRIPT_SYNTAX = /[\s;|&<>(){}$`'"\\]/;
 const LEADING_VARIABLE_REFERENCE = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/;
+// Programs that create or write files, denied next to a path under `.ssh`
+// (`install` alone is allowed elsewhere: `composer install`).
+const SSH_WRITER_COMMANDS = new Set(["install", "touch", "ssh-keygen", "ssh-copy-id", "mkdir"]);
+const SSH_DIRECTORY_PATH = /(^|\/)\.ssh(?:\/|$)/;
 
 const commandName = (word: string): string => word.slice(word.lastIndexOf("/") + 1).toLowerCase();
 
@@ -2655,14 +2667,21 @@ function findSensitiveCommandPath(command: string, env: NodeJS.ProcessEnv = proc
 	const names = commandLineNames(command);
 	const exposed = names.some((name) => EXPOSING_COMMANDS.has(name));
 	const sourced = names.some((name) => name === "." || name === "source");
+	const writesSsh = names.some((name) => SSH_WRITER_COMMANDS.has(name));
 	for (const words of segments) {
 		for (const [index, word] of words.entries()) {
 			if (isDesktopCommandWord(word, env, cwd)) return word;
-			// A backtick opens or closes a substitution, never a path: ``echo `cat .env` ``.
+			// The reported path and the pattern check drop backticks, as in
+			// ``echo x`cat .env` ``. The script check keeps them on the raw word: a
+			// backtick is a substitution, so such a word is a script, not a path.
 			const path = word.replaceAll("`", "");
 			const normalized = normalizePolicyPath(path);
-			if (matchesSensitivePathPattern(normalized) &&
-				(index === 0 || exposed || SHELL_SCRIPT_SYNTAX.test(word.replace(LEADING_VARIABLE_REFERENCE, "")) || (sourced && !isEnvFilePath(normalized)))) return path;
+			if (!matchesSensitivePathPattern(normalized)) continue;
+			const inCommandPosition = index === 0;
+			const isScript = SHELL_SCRIPT_SYNTAX.test(word.replace(LEADING_VARIABLE_REFERENCE, ""));
+			const sourcesNonEnvFile = sourced && !isEnvFilePath(normalized);
+			const isSshWrite = writesSsh && SSH_DIRECTORY_PATH.test(normalized);
+			if (inCommandPosition || exposed || isScript || sourcesNonEnvFile || isSshWrite) return path;
 		}
 	}
 	return undefined;

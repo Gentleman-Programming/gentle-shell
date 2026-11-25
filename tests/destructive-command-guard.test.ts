@@ -211,9 +211,12 @@ test("leaves ordinary commands and prose mentioning a sensitive name unchanged (
 	}
 });
 
-// odd/tasks/sensitive-path-program-arguments.md S1: a sensitive word is denied
-// only after an exposing command (show, copy, send, open, destroy) in its
-// segment, or in command position. Any other command may hand it to a program.
+// odd/tasks/sensitive-path-program-arguments.md S1-S2: the guard reads the whole
+// command line. A sensitive word is denied when the line holds an exposing
+// command, a `.`/`source` (env files excepted), an `.ssh` writer, when the word
+// is a script, or when it is in command position or a redirection target. Any
+// other command may hand the file to a program. tests/sensitive-path-tools.test.ts
+// holds the same cases through the tool-level entry point.
 test("admits a secret file a non-exposing command hands to a program (S1)", () => {
 	for (const command of [
 		"docker compose --env-file .env.local exec php bin/console about",
@@ -296,6 +299,14 @@ test("denies reading, copying, sending, opening or destroying a sensitive file (
 		["cat \"$HOME/.ssh/id_ed25519\"", "$HOME/.ssh/id_ed25519"],
 		["bash -c \"$HOME/x;cat ~/.ssh/id_ed25519\"", "$HOME/x;cat ~/.ssh/id_ed25519"],
 		["ssh -i \"$HOME/.ssh/id_ed25519;cat ~/.ssh/id_ed25519\" host", "$HOME/.ssh/id_ed25519;cat ~/.ssh/id_ed25519"],
+		// L16: programs that create or write files under an .ssh directory; printenv and env print the environment.
+		["install -m 600 /tmp/k ~/.ssh/authorized_keys", "~/.ssh/authorized_keys"],
+		["touch ~/.ssh/authorized_keys", "~/.ssh/authorized_keys"],
+		["ssh-keygen -f ~/.ssh/id_new", "~/.ssh/id_new"],
+		["ssh-copy-id -i ~/.ssh/id_ed25519.pub host", "~/.ssh/id_ed25519.pub"],
+		["mkdir -p ~/.ssh", "~/.ssh"],
+		["set -a; . ./.env; set +a; printenv", "./.env"],
+		["env X=1 ls ~/.ssh", "~/.ssh"],
 		[". .env/id_rsa", ".env/id_rsa"],
 		[". .env.pem", ".env.pem"],
 		[". ~/.ssh/.env", "~/.ssh/.env"],
@@ -332,6 +343,19 @@ test("denies reading, copying, sending, opening or destroying a sensitive file (
 		["open .env", ".env"],
 	]) {
 		assert.equal(findSensitiveCommandPath(command), path, command);
+	}
+});
+
+// ACCEPTED LIMITS (L16, R1-001, R3-001): documented gaps of a lexical guard,
+// not intended behaviour. A reader assembled at run time and an interpreter that
+// receives the key as a positional argument pass today.
+test("documented limits, not intended behaviour: run-time-assembled readers and positional interpreter arguments pass", () => {
+	for (const command of [
+		"x=cat; $x .env",
+		"c${u}at .env",
+		"bash -c 'true;cat \"$0\"' ~/.ssh/id_ed25519",
+	]) {
+		assert.equal(findSensitiveCommandPath(command), undefined, command);
 	}
 });
 

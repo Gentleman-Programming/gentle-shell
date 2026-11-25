@@ -331,9 +331,12 @@ for (const command of shellAllowSurface) {
 	});
 }
 
-// odd/tasks/sensitive-path-program-arguments.md S1-S3: a sensitive word is
-// denied only after an exposing command in its segment or in command position.
-// Any other command may hand the file to a program; the path tools are unchanged.
+// odd/tasks/sensitive-path-program-arguments.md S1-S3: the guard reads the whole
+// command line; a sensitive word is denied for a reader, `.`/`source`, `.ssh`
+// writer or script on the line, or in command position. Any other command may
+// hand the file to a program; the path tools are unchanged.
+// tests/destructive-command-guard.test.ts holds the same cases through the
+// function-level entry point.
 for (const command of [
 	"docker compose --env-file .env.local exec php bin/console about",
 	"docker compose -f docker-compose.dev.yml --env-file .env.local up -d",
@@ -406,6 +409,13 @@ for (const [command, path] of [
 	["cat \"$HOME/.ssh/id_ed25519\"", "$HOME/.ssh/id_ed25519"],
 	["bash -c \"$HOME/x;cat ~/.ssh/id_ed25519\"", "$HOME/x;cat ~/.ssh/id_ed25519"],
 	["ssh -i \"$HOME/.ssh/id_ed25519;cat ~/.ssh/id_ed25519\" host", "$HOME/.ssh/id_ed25519;cat ~/.ssh/id_ed25519"],
+	["install -m 600 /tmp/k ~/.ssh/authorized_keys", "~/.ssh/authorized_keys"],
+	["touch ~/.ssh/authorized_keys", "~/.ssh/authorized_keys"],
+	["ssh-keygen -f ~/.ssh/id_new", "~/.ssh/id_new"],
+	["ssh-copy-id -i ~/.ssh/id_ed25519.pub host", "~/.ssh/id_ed25519.pub"],
+	["mkdir -p ~/.ssh", "~/.ssh"],
+	["set -a; . ./.env; set +a; printenv", "./.env"],
+	["env X=1 ls ~/.ssh", "~/.ssh"],
 	[". .env/id_rsa", ".env/id_rsa"],
 	[". .env.pem", ".env.pem"],
 	[". ~/.ssh/.env", "~/.ssh/.env"],
@@ -451,6 +461,14 @@ test("the path tools keep denying the env file a docker command may load (S3)", 
 	assert.equal(await call("bash", { command: "docker compose --env-file .env.local exec php bin/console about" }), undefined);
 	assert.deepEqual(await call("read", { path: ".env.local" }), { block: true, reason: reason(".env.local") });
 	assert.deepEqual(await call("read", { path: "~/.ssh/id_ed25519" }), { block: true, reason: reason("~/.ssh/id_ed25519") });
+});
+
+// ACCEPTED LIMITS (L16, R1-001, R3-001): documented gaps, not intended behaviour.
+test("documented limits, not intended behaviour: run-time-assembled readers and positional interpreter arguments pass", async () => {
+	const call = toolCall();
+	for (const command of ["x=cat; $x .env", "c${u}at .env", "bash -c 'true;cat \"$0\"' ~/.ssh/id_ed25519"]) {
+		assert.equal(await call("bash", { command }), undefined, command);
+	}
 });
 
 // The documented limits are deliberate, so they are pinned as allowed: globs,

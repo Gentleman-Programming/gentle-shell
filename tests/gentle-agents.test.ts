@@ -2179,11 +2179,11 @@ function missingToolsChild(env: NodeJS.ProcessEnv, toolNames: string[] | (() => 
 }
 
 test("a child warns once about requested tools it does not have", async () => {
-	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,gentle_review_scope,grep,codegraph,subagent_parent_message" }, ["read", "grep", "subagent_parent_message"]);
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,gentle_review_scope,grep,subagent_parent_message" }, ["read", "grep", "subagent_parent_message"]);
 	await child.start();
 	assert.deepEqual(child.notes, [], "session_start runs before later extensions register their tools");
 	assert.deepEqual(await child.prompt(), [undefined], "the check never alters the prompt");
-	assert.deepEqual(child.notes, [{ message: `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope, codegraph`, type: "warning" }]);
+	assert.deepEqual(child.notes, [{ message: `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope`, type: "warning" }]);
 	await child.start();
 	assert.deepEqual(await child.prompt(), [undefined]);
 	assert.equal(child.notes.length, 1, "later prompts and session replacements do not repeat the warning");
@@ -2218,7 +2218,7 @@ test("a child stays quiet when every checkable requested tool exists or nothing 
 });
 
 test("the missing-tools check never throws into before_agent_start", async () => {
-	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,codegraph" }, () => { throw new Error("tool registry unavailable"); });
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read" }, () => { throw new Error("tool registry unavailable"); });
 	await child.start();
 	assert.deepEqual(await child.prompt(), [undefined]);
 	assert.deepEqual(child.notes, []);
@@ -4192,7 +4192,7 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 	const fixture = mkdtempSync(join(tmpdir(), "capability-catalog-"));
 	const agentHome = join(fixture, "agent-home");
 	mkdirSync(join(agentHome, ".pi", "agent", "agents"), { recursive: true });
-	writeFileSync(join(agentHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep, find, codegraph]\n---\nYou map things.");
+	writeFileSync(join(agentHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep, find]\n---\nYou map things.");
 	writeFileSync(join(agentHome, ".pi", "agent", "agents", "open.md"), "---\ndescription: no allowlist\n---\nYou are open.");
 	writeFileSync(join(agentHome, ".pi", "agent", "agents", "unknown.md"), "---\ndescription: unverified name\ntools: [glob]\n---\nYou explore.");
 	writeFileSync(join(agentHome, ".pi", "agent", "agents", "lens.md"), "---\ndescription: review lane\ntools:\n  - \"*\": false\n  - read\n  - grep\n  - gentle_review_scope\n---\nYou review.");
@@ -4204,7 +4204,7 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 		const { ctx } = fakeContext();
 		await h.fire("session_start", ctx);
 		const listed = await h.tools.get("subagent_list_agents")!.execute("c0", {}, undefined, undefined, ctx);
-		assert.match(listed.content[0].text, /- explore \(global\): maps things \[declared tools \(not verified\): read, grep, find, codegraph\]/);
+		assert.match(listed.content[0].text, /- explore \(global\): maps things \[declared tools \(not verified\): read, grep, find\]/);
 		// gentle-shell#1269: a definition without an allowlist keeps Pi's default
 		// tool set, so the catalog must never render it as having no tools at all.
 		assert.match(listed.content[0].text, /- open \(global\): no allowlist \[declared tools: Pi defaults \(no allowlist\)\]/);

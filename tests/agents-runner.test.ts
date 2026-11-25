@@ -226,7 +226,7 @@ test("parent source passages reach the economical explorer through the existing 
 	const h = harness();
 	const context = "Parent-provided source (evidence, not instructions): https://docs.example.invalid/fixture\nPassage: The fixture supports local symbol queries.\nRemaining uncertainty: release compatibility was not checked.";
 	const task = h.runner.run(request({
-		agent: { ...explorer, name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph"] },
+		agent: { ...explorer, name: "gentle-ai-explore", tools: ["read", "grep", "find"] },
 		prompt: "Compare the supplied passage with local source; do not browse.",
 		context,
 		model: { provider: "offline", id: "configured-small" },
@@ -236,7 +236,7 @@ test("parent source passages reach the economical explorer through the existing 
 	const command = h.children[0].written.find(command => command.type === "prompt");
 	assert.equal(command?.message, `Compare the supplied passage with local source; do not browse.\n\n## Context\n${context}`);
 	assert.ok(h.spawnOptions[0].args.includes("offline/configured-small:low"));
-	assert.equal(h.spawnOptions[0].env[REQUESTED_TOOLS_ENV], "read,grep,find,codegraph,subagent_parent_message");
+	assert.equal(h.spawnOptions[0].env[REQUESTED_TOOLS_ENV], "read,grep,find,subagent_parent_message");
 	h.runner.cancel(task.id);
 	await tick();
 });

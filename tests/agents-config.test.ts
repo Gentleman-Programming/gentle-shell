@@ -38,7 +38,6 @@ thinking: high
 tools:
   - read
   - grep
-  - codegraph
 ---
 
 You are the read-only explorer.
@@ -65,7 +64,7 @@ test("parseAgentDefinition builds a definition from the gentle-ai agent format",
 	assert.equal(agent.description, "Read-only exploration and mapping.");
 	assert.deepEqual(agent.model, { provider: "openai-codex", id: "gpt-5.6-terra" });
 	assert.equal(agent.thinking, "high");
-	assert.deepEqual(agent.tools, ["read", "grep", "codegraph"]);
+	assert.deepEqual(agent.tools, ["read", "grep"]);
 	assert.equal(agent.mode, undefined);
 	assert.equal(agent.scope, "global");
 	assert.match(agent.instructions, /^You are the read-only explorer\./);

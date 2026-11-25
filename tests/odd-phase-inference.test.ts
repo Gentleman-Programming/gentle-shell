@@ -6,7 +6,7 @@ import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 // working label. Unknown tools and ambiguous shell commands never change it.
 
 test("read-only file tools infer exploring", () => {
-	for (const tool of ["read", "grep", "find", "ls", "codegraph"]) {
+	for (const tool of ["read", "grep", "find", "ls"]) {
 		assert.equal(inferOddPhase(tool, { path: "src/index.ts" }), "exploring", tool);
 	}
 });
@@ -110,7 +110,7 @@ test("a checking segment wins over an exploring segment in the same command", ()
 // read-only inspection must still read as exploring.
 test("real compound read-only shell commands infer exploring", () => {
 	for (const command of [
-		`cd /repo && git rev-parse --show-toplevel && ls -d .codegraph 2>/dev/null; git log -1 --oneline; grep -rniI "bridge" --include=*.ts -l . 2>/dev/null | grep -v node_modules | head -30`,
+		`cd /repo && git rev-parse --show-toplevel && ls -d lib 2>/dev/null; git log -1 --oneline; grep -rniI "bridge" --include=*.ts -l . 2>/dev/null | grep -v node_modules | head -30`,
 		`ls ~/work | grep -i -E "shell|pi"; for d in ~/work/a ~/dev/b; do [ -d $d ] && echo "== $d" && cd $d && git log -1 --oneline && grep -rniI "bridge" -l . 2>/dev/null | grep -v node_modules | head -20; done`,
 		`cd ~/w && grep -rniI "bridge" src | grep -v test | head -15; echo ===; cat ~/.config/settings.json 2>/dev/null | head -40; cd ~/repo && git branch -a --contains 6776520be 2>/dev/null | head`,
 		`f=~/.local/bin/tool; ls -la $f; file -h $f; readlink -f $f; head -c 1500 "$(readlink -f $f)" | strings | head -40`,

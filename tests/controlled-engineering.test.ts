@@ -14,24 +14,23 @@ import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 // gentle-ai-verify).
 // ---------------------------------------------------------------------------
 
-// The S2 text, copied verbatim from odd/tasks/controlled-engineering.md.
-const SECTION = `## Controlled Engineering
+// The S2 texts, copied verbatim from the three blocks of odd/tasks/controlled-engineering.md.
+const COMMON = `## Controlled Engineering
 
-Build what the request and the evidence need, complete and correct.
+Do what the request and the evidence need, complete and correct.
 Nothing enters without a reason you can point to.
 
 Work the way the project already works:
 - Before you build, test or run anything, find how the project does it
   (AGENTS.md, README, scripts, CI config) and use that command, environment
   and data setup as documented.
-- Do not create a new environment, container, database, test harness or
-  tool path when the project has one. If the documented one fails, report
-  the failure with its output; do not build a replacement.
 - Run a documented project command as written (for example its make
   target). Do not expand it into the commands behind it or change its
   flags.
-
-Before writing:
+- Do not create a new environment, container, database, test harness or
+  tool path when the project has one. If the documented one fails, report
+  the failure with its output; do not build a replacement.`;
+const WRITER_BLOCK = `Before writing:
 - Name the evidence for each thing you will build: the user's words, a
   failing test, an observed failure, or a caller that exists today. A case
   nobody reported and no real producer reaches gets no code.
@@ -55,8 +54,8 @@ Verify in proportion:
   script, a second pass) needs a reason from the request or a named risk.
   Say what you are about to do and why, in one line, before doing it.
 - Where this section and broader verification guidance differ, this section
-  wins for ordinary verification. High-risk changes and review consent keep
-  their own rules.
+  decides how you verify, at every risk level. How much you verify, what a
+  high-risk change requires, and review consent stay as that guidance says.
 
 Always keep: validation at trust boundaries, handling that prevents data
 loss, security checks, everything the user asked for, and the test of each
@@ -66,6 +65,20 @@ look small.
 Before finishing, read your diff and list what it adds beyond the smallest
 change. Remove what has no reason. Close with \`Additions: none\` or one line
 per addition with its reason.`;
+const VERIFIER_BLOCK = `Verify in proportion:
+- Run the project's documented commands for what changed, in your copy of
+  the repository, plus the checks your task names. That is complete
+  verification unless your task asks for more.
+- Never create a container, database, toolchain or environment of your own.
+  If a documented command cannot run from your copy, report that check as
+  not verified, with the reason and the output; do not build a replacement.
+- Anything else needs a reason from your task or a named risk. Say what you
+  are about to do and why, in one line, before doing it.
+- Where this section and broader verification guidance differ, this section
+  decides how you verify, at every risk level. How much you verify, what a
+  high-risk change requires, and review consent stay as that guidance says.`;
+const WRITER = `${COMMON}\n\n${WRITER_BLOCK}`;
+const VERIFIER = `${COMMON}\n\n${VERIFIER_BLOCK}`;
 
 const CHILD_FLAG = "GENTLE_PI_CONTROLLED_ENGINEERING";
 
@@ -143,24 +156,25 @@ async function build(options: { appendSystemPrompt: string }, sessionId: string,
 	return options.appendSystemPrompt;
 }
 
-function occurrences(text: string): number {
-	return text.split(SECTION).length - 1;
+function occurrences(text: string, section: string = WRITER): number {
+	return text.split(section).length - 1;
 }
 
-test("S2/S6: an organic primary with the option on gets the approved section verbatim, once, naming no tool outside the base install", async () => {
+test("S2/S6: an organic primary with the option on gets the writer section verbatim, once, naming no tool outside the base install", async () => {
 	writeProfiles({ orchestratorMode: "organic", controlledEngineering: true });
 	const options = { appendSystemPrompt: "" };
 	const prompt = await build(options, "ce-primary-on");
 	assert.equal(occurrences(prompt), 1);
+	assert.equal(occurrences(prompt, VERIFIER), 0);
 	// A bridge may hand the same options back on the next turn: still once.
 	assert.equal(occurrences(await build(options, "ce-primary-on")), 1);
 	const section = prompt.slice(prompt.indexOf("## Controlled Engineering"));
-	assert.ok(section.startsWith(SECTION));
-	assert.doesNotMatch(SECTION, /codegraph/i);
-	assert.doesNotMatch(section.slice(0, SECTION.length), /codegraph/i);
+	assert.ok(section.startsWith(WRITER));
+	assert.doesNotMatch(WRITER, /codegraph/i);
+	assert.doesNotMatch(VERIFIER, /codegraph/i);
 });
 
-test("S1/S2: turning the option off removes the section and leaves the prompt of a profile that never had it", async () => {
+test("S1/S2: turning the option off removes either section and leaves the prompt of a profile that never had it", async () => {
 	writeProfiles();
 	const today = await build({ appendSystemPrompt: "" }, "ce-primary-toggle");
 	assert.equal(occurrences(today), 0);
@@ -172,13 +186,20 @@ test("S1/S2: turning the option off removes the section and leaves the prompt of
 	const off = await build(options, "ce-primary-toggle");
 	assert.equal(occurrences(off), 0);
 	assert.equal(off, today);
+	// The same on reused options for a verify child: on, then off.
+	const childEnv = { GENTLE_PI_AGENTS_CHILD: "1" };
+	const base = await build({ appendSystemPrompt: "" }, "ce-child-toggle", childEnv);
+	const reused = { appendSystemPrompt: "" };
+	assert.equal(occurrences(await build(reused, "ce-child-toggle", { ...childEnv, [CHILD_FLAG]: "verify" }), VERIFIER), 1);
+	assert.equal(await build(reused, "ce-child-toggle", childEnv), base);
 });
 
-test("S3: a full-delegation primary never gets the section, even with the option on", async () => {
+test("S3: a full-delegation primary never gets a section, even with the option on", async () => {
 	writeProfiles({ orchestratorMode: "full-delegation", controlledEngineering: true });
 	const prompt = await build({ appendSystemPrompt: "" }, "ce-primary-full");
 	assert.match(prompt, /COORDINATOR in full delegation mode/);
 	assert.equal(occurrences(prompt), 0);
+	assert.equal(occurrences(prompt, VERIFIER), 0);
 });
 
 test("S3: the primary gate follows the effective mode, so the GENTLE_PI_ORCHESTRATOR_MODE override decides it", async () => {
@@ -193,12 +214,27 @@ test("S3: the primary gate follows the effective mode, so the GENTLE_PI_ORCHESTR
 	assert.equal(occurrences(overriddenOrganic), 1);
 });
 
-test("S3: a child the launcher marked gets the section; an unmarked child does not", async () => {
+test("S2/S3: a writer child gets the writer section; a verify child gets the verifier section without the writer-only parts", async () => {
 	// The child's own profile is irrelevant: only the launcher's mark decides.
 	writeProfiles();
-	const marked = await build({ appendSystemPrompt: "" }, "ce-child-marked", { GENTLE_PI_AGENTS_CHILD: "1", [CHILD_FLAG]: "1" });
-	assert.equal(occurrences(marked), 1);
+	const child = { GENTLE_PI_AGENTS_CHILD: "1" };
+	const writer = await build({ appendSystemPrompt: "" }, "ce-child-writer", { ...child, [CHILD_FLAG]: "writer" });
+	assert.equal(occurrences(writer), 1);
+	assert.equal(occurrences(writer, VERIFIER), 0);
+	const verify = await build({ appendSystemPrompt: "" }, "ce-child-verify", { ...child, [CHILD_FLAG]: "verify" });
+	assert.equal(occurrences(verify, VERIFIER), 1);
+	assert.equal(occurrences(verify), 0);
+	assert.doesNotMatch(verify, /Before writing:/);
+	assert.doesNotMatch(verify, /Additions:/);
+	assert.match(verify, /Verify in proportion:/);
+});
+
+test("S3: a child with any other mark value, the old 1 included, or no mark gets nothing", async () => {
 	writeProfiles({ orchestratorMode: "organic", controlledEngineering: true });
-	const unmarked = await build({ appendSystemPrompt: "" }, "ce-child-unmarked", { GENTLE_PI_AGENTS_CHILD: "1" });
-	assert.equal(occurrences(unmarked), 0);
+	for (const value of [undefined, "1", "true", "both", ""]) {
+		const prompt = await build({ appendSystemPrompt: "" }, "ce-child-other", { GENTLE_PI_AGENTS_CHILD: "1", ...(value === undefined ? {} : { [CHILD_FLAG]: value }) });
+		assert.equal(occurrences(prompt), 0, `value=${String(value)}`);
+		assert.equal(occurrences(prompt, VERIFIER), 0, `value=${String(value)}`);
+		assert.doesNotMatch(prompt, /## Controlled Engineering/, `value=${String(value)}`);
+	}
 });

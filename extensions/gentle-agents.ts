@@ -2806,9 +2806,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// the launching session's profile enables the option; read live per launch.
 		const sessionProfileName = sessionProfile.kind === "explicit" ? sessionProfile.name : sessionProfile.profile?.name;
 		delete childEnv[CONTROLLED_ENGINEERING_ENV];
-		if (["gentle-ai-worker", "jd-fix-agent", "gentle-ai-verify"].includes(agent.name) && sessionProfileName !== undefined
+		const controlledRole = agent.name === "gentle-ai-verify" ? "verify" : agent.name === "gentle-ai-worker" || agent.name === "jd-fix-agent" ? "writer" : undefined;
+		if (controlledRole !== undefined && sessionProfileName !== undefined
 			&& workflowFromProfile(profileConfigHome, sessionProfileName).controlledEngineering === true) {
-			childEnv[CONTROLLED_ENGINEERING_ENV] = "1";
+			childEnv[CONTROLLED_ENGINEERING_ENV] = controlledRole;
 		}
 		if (foreign) for (const key of inheritedUnsafeGitEnvironmentKeys(childEnv)) delete childEnv[key];
 		const extensions = childExtensionRequest(deps.env, deps.childExtensionPaths);

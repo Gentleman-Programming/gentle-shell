@@ -1801,23 +1801,25 @@ function resolveSessionWorkflow(
 	}
 }
 
-// controlled-engineering S2, approved text. A separate section, never part of
-// the cached orchestrator prompt, so the option does not change its cache key.
-const CONTROLLED_ENGINEERING_PROMPT = `## Controlled Engineering
+// controlled-engineering S2, approved text by role. A common part and one block
+// per role; separate sections, never part of the cached orchestrator prompt, so
+// the option does not change its cache key.
+const CONTROLLED_ENGINEERING_COMMON = `## Controlled Engineering
 
-Build what the request and the evidence need, complete and correct.
+Do what the request and the evidence need, complete and correct.
 Nothing enters without a reason you can point to.
 
 Work the way the project already works:
 - Before you build, test or run anything, find how the project does it
   (AGENTS.md, README, scripts, CI config) and use that command, environment
   and data setup as documented.
-- Do not create a new environment, container, database, test harness or
-  tool path when the project has one. If the documented one fails, report
-  the failure with its output; do not build a replacement.
 - Run a documented project command as written (for example its make
   target). Do not expand it into the commands behind it or change its
   flags.
+- Do not create a new environment, container, database, test harness or
+  tool path when the project has one. If the documented one fails, report
+  the failure with its output; do not build a replacement.`;
+const CONTROLLED_ENGINEERING_WRITER_PROMPT = `${CONTROLLED_ENGINEERING_COMMON}
 
 Before writing:
 - Name the evidence for each thing you will build: the user's words, a
@@ -1843,8 +1845,8 @@ Verify in proportion:
   script, a second pass) needs a reason from the request or a named risk.
   Say what you are about to do and why, in one line, before doing it.
 - Where this section and broader verification guidance differ, this section
-  wins for ordinary verification. High-risk changes and review consent keep
-  their own rules.
+  decides how you verify, at every risk level. How much you verify, what a
+  high-risk change requires, and review consent stay as that guidance says.
 
 Always keep: validation at trust boundaries, handling that prevents data
 loss, security checks, everything the user asked for, and the test of each
@@ -1854,13 +1856,33 @@ look small.
 Before finishing, read your diff and list what it adds beyond the smallest
 change. Remove what has no reason. Close with \`Additions: none\` or one line
 per addition with its reason.`;
+const CONTROLLED_ENGINEERING_VERIFIER_PROMPT = `${CONTROLLED_ENGINEERING_COMMON}
 
-/** Adds or removes the section; bridge options can be reused across turns. */
-function updateControlledEngineeringPrompt(options: AppendableSystemPromptOptions | null | undefined, active: boolean): void {
+Verify in proportion:
+- Run the project's documented commands for what changed, in your copy of
+  the repository, plus the checks your task names. That is complete
+  verification unless your task asks for more.
+- Never create a container, database, toolchain or environment of your own.
+  If a documented command cannot run from your copy, report that check as
+  not verified, with the reason and the output; do not build a replacement.
+- Anything else needs a reason from your task or a named risk. Say what you
+  are about to do and why, in one line, before doing it.
+- Where this section and broader verification guidance differ, this section
+  decides how you verify, at every risk level. How much you verify, what a
+  high-risk change requires, and review consent stay as that guidance says.`;
+type ControlledEngineeringRole = "writer" | "verify";
+const CONTROLLED_ENGINEERING_PROMPTS: Record<ControlledEngineeringRole, string> = {
+	writer: CONTROLLED_ENGINEERING_WRITER_PROMPT,
+	verify: CONTROLLED_ENGINEERING_VERIFIER_PROMPT,
+};
+
+/** Adds the role's section, or none; removes either text first, since bridge options can be reused across turns. */
+function updateControlledEngineeringPrompt(options: AppendableSystemPromptOptions | null | undefined, role: ControlledEngineeringRole | undefined): void {
 	if (!options) return;
-	options.appendSystemPrompt = (options.appendSystemPrompt ?? "")
-		.replace(`\n\n${CONTROLLED_ENGINEERING_PROMPT}`, "").replace(CONTROLLED_ENGINEERING_PROMPT, "");
-	if (active) appendSystemPromptOnce(options, CONTROLLED_ENGINEERING_PROMPT);
+	let text = options.appendSystemPrompt ?? "";
+	for (const prompt of Object.values(CONTROLLED_ENGINEERING_PROMPTS)) text = text.replace(`\n\n${prompt}`, "").replace(prompt, "");
+	options.appendSystemPrompt = text;
+	if (role !== undefined) appendSystemPromptOnce(options, CONTROLLED_ENGINEERING_PROMPTS[role]);
 }
 
 const TEST_FIRST_PRINCIPLE = "- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a `mktemp -d` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.";
@@ -13288,7 +13310,7 @@ function createGentleAiExtensionForTesting(
 		if (!currentPrompt()) {
 			updateYoloPrompt(event.systemPromptOptions, false, false);
 			updateAutoPrompt(event.systemPromptOptions, false);
-			updateControlledEngineeringPrompt(event.systemPromptOptions, false);
+			updateControlledEngineeringPrompt(event.systemPromptOptions, undefined);
 			return undefined;
 		}
 		const promptGeneration = rddStatusGeneration(promptCwd);
@@ -13298,7 +13320,7 @@ function createGentleAiExtensionForTesting(
 		if (!currentPrompt()) {
 			updateYoloPrompt(event.systemPromptOptions, false, false);
 			updateAutoPrompt(event.systemPromptOptions, false);
-			updateControlledEngineeringPrompt(event.systemPromptOptions, false);
+			updateControlledEngineeringPrompt(event.systemPromptOptions, undefined);
 			return undefined;
 		}
 		const staleRead = rddStatusGeneration(promptCwd) !== promptGeneration;
@@ -13356,10 +13378,12 @@ function createGentleAiExtensionForTesting(
 		// through the mutable appendSystemPrompt section instead of a replacement.
 		appendSystemPromptOnce(event.systemPromptOptions, `${gentlePrompt}${reviewContractPrompt}`);
 		// controlled-engineering S3: an organic primary whose profile enables the
-		// option, or a writer or verify child the launcher marked; nobody else.
+		// option gets the writer section; a child gets the section its launcher
+		// marked ("writer" or "verify"); any other value and nobody else get none.
+		const childMark = permissionEnvironment[CONTROLLED_ENGINEERING_ENV];
 		updateControlledEngineeringPrompt(event.systemPromptOptions, sessionWorkflow !== undefined
-			? sessionWorkflow.orchestratorMode === "organic" && sessionWorkflow.controlledEngineering === true
-			: isChildSession && permissionEnvironment[CONTROLLED_ENGINEERING_ENV] === "1");
+			? (sessionWorkflow.orchestratorMode === "organic" && sessionWorkflow.controlledEngineering === true ? "writer" : undefined)
+			: isChildSession && (childMark === "writer" || childMark === "verify") ? childMark : undefined);
 		const promptMode = isPrimarySession ? await yolo.mode(ctx) : "normal";
 		updateYoloPrompt(event.systemPromptOptions, promptMode === "yolo", promptMode === "super-yolo");
 		updateAutoPrompt(event.systemPromptOptions, promptMode === "auto");

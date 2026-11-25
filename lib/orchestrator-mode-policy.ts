@@ -26,8 +26,9 @@ import { resolveSessionProfile } from "./session-profile-freeze.ts";
 
 export const ORCHESTRATOR_MODE_ENV = "GENTLE_PI_ORCHESTRATOR_MODE";
 /**
- * Set to "1" by the launcher on a writer or verify child whose launching session's
- * profile enables Controlled Engineering (controlled-engineering S3).
+ * Set by the launcher on a writer or verify child whose launching session's
+ * profile enables Controlled Engineering: "writer" or "verify" names the section
+ * the child gets; any other value gives none (controlled-engineering S3).
  */
 export const CONTROLLED_ENGINEERING_ENV = "GENTLE_PI_CONTROLLED_ENGINEERING";
 

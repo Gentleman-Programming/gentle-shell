@@ -109,16 +109,16 @@ async function launch(agents: string[], parentEnv: NodeJS.ProcessEnv = {}): Prom
 test("S3: writer and verify children of a profile with the option on are marked; an explore child is not", async () => {
 	writeProfiles({ orchestratorMode: "organic", controlledEngineering: true });
 	const [worker, fixer, verify, explore] = await launch(["gentle-ai-worker", "jd-fix-agent", "gentle-ai-verify", "gentle-ai-explore"]);
-	assert.equal(worker![CHILD_FLAG], "1");
-	assert.equal(fixer![CHILD_FLAG], "1");
-	assert.equal(verify![CHILD_FLAG], "1");
+	assert.equal(worker![CHILD_FLAG], "writer");
+	assert.equal(fixer![CHILD_FLAG], "writer");
+	assert.equal(verify![CHILD_FLAG], "verify");
 	assert.equal(explore![CHILD_FLAG], undefined);
 });
 
 test("S3: the mark follows the launching profile's option, not its orchestrator mode", async () => {
 	writeProfiles({ orchestratorMode: "full-delegation", controlledEngineering: true });
 	const [worker] = await launch(["gentle-ai-worker"]);
-	assert.equal(worker![CHILD_FLAG], "1");
+	assert.equal(worker![CHILD_FLAG], "writer");
 });
 
 test("S3: with the option off no child is marked, and an inherited mark is never passed on", async () => {

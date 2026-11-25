@@ -85,14 +85,23 @@ export function commandExists(command: string, env: NodeJS.ProcessEnv): boolean 
 	return dirs.some((dir) => dir !== "" && isAbsolute(dir) && existsSync(join(dir, command)));
 }
 
+/** Inclusive listen ports for forwarded pages. */
+export interface PortRange {
+	from: number;
+	to: number;
+}
+
+/** The ports `share` gives forwarded pages, so one firewall rule covers them all. */
+export const SHARE_FORWARD_PORTS: PortRange = { from: 8800, to: 8899 };
+
 /**
- * The command that opens `port` in the local firewall for TCP (HTTP) and UDP (LAN discovery), on Linux with ufw
- * or firewalld; never run for the user.
+ * The command that opens `port` in the local firewall for TCP (HTTP) and UDP (LAN discovery), plus the
+ * forwarded pages' TCP range when the server has one, on Linux with ufw or firewalld; never run for the user.
  */
-export function firewallHint(platform: NodeJS.Platform, port: number, has: (command: string) => boolean): string | undefined {
+export function firewallHint(platform: NodeJS.Platform, port: number, has: (command: string) => boolean, forwardPorts?: PortRange): string | undefined {
 	if (platform !== "linux") return undefined;
-	if (has("ufw")) return `sudo ufw allow ${port}`;
-	if (has("firewall-cmd")) return `sudo firewall-cmd --permanent --add-port=${port}/tcp --add-port=${port}/udp && sudo firewall-cmd --reload`;
+	if (has("ufw")) return `sudo ufw allow ${port}${forwardPorts ? ` && sudo ufw allow ${forwardPorts.from}:${forwardPorts.to}/tcp` : ""}`;
+	if (has("firewall-cmd")) return `sudo firewall-cmd --permanent --add-port=${port}/tcp --add-port=${port}/udp${forwardPorts ? ` --add-port=${forwardPorts.from}-${forwardPorts.to}/tcp` : ""} && sudo firewall-cmd --reload`;
 	return undefined;
 }
 
@@ -112,7 +121,7 @@ export interface AutostartCommand {
 }
 
 /** The same launcher, home flags and kept environment as this invocation, serving the network in the foreground. */
-export function autostartCommand(input: { nodePath: string; launcher: string; homeFlags: readonly string[]; port: number; allowHosts: readonly string[]; env: NodeJS.ProcessEnv; logFile: string }): AutostartCommand {
+export function autostartCommand(input: { nodePath: string; launcher: string; homeFlags: readonly string[]; port: number; allowHosts: readonly string[]; forwardPorts?: PortRange; env: NodeJS.ProcessEnv; logFile: string }): AutostartCommand {
 	const env: Record<string, string> = {};
 	for (const key of AUTOSTART_ENV) {
 		const value = input.env[key];
@@ -120,7 +129,8 @@ export function autostartCommand(input: { nodePath: string; launcher: string; ho
 	}
 	return {
 		command: input.nodePath,
-		args: [input.launcher, ...input.homeFlags, "serve", "--foreground", "--listen", `0.0.0.0:${input.port}`, ...input.allowHosts.flatMap((name) => ["--allow-host", name])],
+		args: [input.launcher, ...input.homeFlags, "serve", "--foreground", "--listen", `0.0.0.0:${input.port}`, ...input.allowHosts.flatMap((name) => ["--allow-host", name]),
+			...(input.forwardPorts ? ["--forward-ports", `${input.forwardPorts.from}-${input.forwardPorts.to}`] : [])],
 		env,
 		logFile: input.logFile,
 	};

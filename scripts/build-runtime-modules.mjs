@@ -40,6 +40,7 @@ const sources = [
 	"serve-session",
 	"serve-auth",
 	"serve-discovery",
+	"serve-forward",
 	"serve-server",
 	"serve-share",
 	"serve-cli",

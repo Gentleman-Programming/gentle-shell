@@ -15,7 +15,7 @@ import { DEFAULT_PAIR_SCOPES, parseScopes, readDevicesFile, ServeAuth, writeDevi
 import { isLoopbackHost, isUnspecified, SERVE_PROTOCOL, startServeServer, type ServeServer } from "./serve-server.ts";
 import type { SessionLaunch } from "./serve-session.ts";
 import { autostartCommand, autostartFile, autostartInstalled, defaultShareSystem, encodeConnectionCode, firewallHint, HOST_NAME, installAutostart, ownHostNames,
-	removeAutostart, SHARE_DEFAULT_PORT, SHARE_PORT_ATTEMPTS, shareAddresses, type ShareSystem } from "./serve-share.ts";
+	removeAutostart, SHARE_DEFAULT_PORT, SHARE_FORWARD_PORTS, SHARE_PORT_ATTEMPTS, shareAddresses, type PortRange, type ShareSystem } from "./serve-share.ts";
 
 export const SERVE_SERVER_FILE_SCHEMA = "gentle-shell.serve.server/v1";
 const DEFAULT_LISTEN = { host: "127.0.0.1", port: 0 };
@@ -25,7 +25,7 @@ const STOP_TIMEOUT_MS = 15_000;
 // --- arguments -----------------------------------------------------------------
 
 export type ServeArgs =
-	| { action: "start"; host: string; port: number; foreground: boolean; json: boolean; allowHosts?: string[] }
+	| { action: "start"; host: string; port: number; foreground: boolean; json: boolean; allowHosts?: string[]; forwardPorts?: PortRange }
 	| { action: "status"; json: boolean }
 	| { action: "stop" }
 	| { action: "pair"; scopes: ServeScope[]; json: boolean }
@@ -54,6 +54,7 @@ export function parseServeArgs(args: readonly string[]): ServeArgs | { error: st
 	let sharePort: number | undefined;
 	let always = false;
 	let off = false;
+	let forwardPorts: PortRange | undefined;
 	const scopeValues: string[] = [];
 	const allowHosts: string[] = [];
 	for (let i = 0; i < rest.length; i += 1) {
@@ -77,6 +78,13 @@ export function parseServeArgs(args: readonly string[]): ServeArgs | { error: st
 			const v = value("--allow-host")?.toLowerCase();
 			if (v === undefined || !HOST_NAME.test(v)) return { error: `--allow-host needs a DNS name without a port (got "${v ?? ""}")` };
 			if (!allowHosts.includes(v)) allowHosts.push(v);
+			continue;
+		}
+		if (sub === undefined && (arg === "--forward-ports" || arg.startsWith("--forward-ports="))) {
+			const v = value("--forward-ports");
+			const parsed = v === undefined ? undefined : parsePortRange(v);
+			if (!parsed) return { error: `--forward-ports needs a port range like 8800-8899 (got "${v ?? ""}")` };
+			forwardPorts = parsed;
 			continue;
 		}
 		if (sub === "pair" && (arg === "--scope" || arg.startsWith("--scope="))) {
@@ -113,13 +121,22 @@ export function parseServeArgs(args: readonly string[]): ServeArgs | { error: st
 		const parsed = parseScopes(scopeValues);
 		return "error" in parsed ? parsed : { action: "pair", scopes: parsed.scopes, json };
 	}
-	return { action: "start", host: listen.host, port: listen.port, foreground, json, ...(allowHosts.length === 0 ? {} : { allowHosts }) };
+	return { action: "start", host: listen.host, port: listen.port, foreground, json, ...(allowHosts.length === 0 ? {} : { allowHosts }), ...(forwardPorts ? { forwardPorts } : {}) };
+}
+
+/** `<from>-<to>`, both 1-65535, from ≤ to, at most 1000 ports. */
+export function parsePortRange(value: string): PortRange | undefined {
+	const m = /^(\d{1,5})-(\d{1,5})$/.exec(value);
+	if (!m) return undefined;
+	const from = Number(m[1]);
+	const to = Number(m[2]);
+	return from >= 1 && to <= 65535 && from <= to && to - from < 1000 ? { from, to } : undefined;
 }
 
 export const SERVE_HELP = [
 	"Usage: gentle-shell [home selectors] serve share [--port <n>] [--always] [--json]",
 	"       gentle-shell [home selectors] serve share --off",
-	"       gentle-shell [home selectors] serve [--listen <host>:<port>] [--allow-host <name>]... [--foreground] [--json]",
+	"       gentle-shell [home selectors] serve [--listen <host>:<port>] [--allow-host <name>]... [--forward-ports <from>-<to>] [--foreground] [--json]",
 	"       gentle-shell [home selectors] serve status [--json]",
 	"       gentle-shell [home selectors] serve stop",
 	"       gentle-shell [home selectors] serve pair [--scope <scope,...>] [--json]",
@@ -139,7 +156,8 @@ export const SERVE_HELP = [
 	"                   (UDP broadcast on the same port); where it cannot (another subnet, a tailnet,",
 	"                   client isolation), paste the long gsc1. code printed under it. Reuses a server",
 	"                   already on the network; one on this computer only is reopened when it runs no",
-	"                   sessions.",
+	"                   sessions. Pages it forwards to the app (dev servers, the design canvas, Gentle",
+	"                   Tower) take ports 8800-8899.",
 	"    --always       Also start that server at every login (systemd user unit on Linux, a",
 	"                   LaunchAgent on macOS). 'serve share --off' turns it off and stops it.",
 	"  serve            Start the server in the background (--foreground keeps it in this terminal).",
@@ -151,6 +169,8 @@ export const SERVE_HELP = [
 	"",
 	"  --allow-host     One more name clients may use in the Host header, for example a tailnet",
 	"                   MagicDNS name (repeatable). Names not allowed are refused (DNS rebinding).",
+	"  --forward-ports  Listen ports for forwarded pages (for example 8800-8899), so a firewall can",
+	"                   open one range; without it each forward takes a random port.",
 	"",
 	"Protocol, endpoints and security model: docs/serve.md.",
 ].join("\n");
@@ -170,6 +190,8 @@ export interface ServerFile {
 	adminToken: string;
 	/** Whether it answers LAN discovery; absent in files written before discovery existed. */
 	discovery?: boolean;
+	/** Listen ports forwarded pages take; absent when the OS assigns them. */
+	forwardPorts?: PortRange;
 }
 
 export function serveDir(agentHome: string): string {
@@ -301,7 +323,9 @@ function plainHttpWarning(host: string): string {
 	return `gentle-shell serve: warning: listening on ${host} over plain HTTP. Device tokens and session traffic cross the network unencrypted; use it only on a network you trust, or keep the default loopback and reach it through ssh -L or a tunnel.\n`;
 }
 
-async function runForeground(ctx: ServeCommandContext, args: { host: string; port: number; json: boolean; allowHosts?: readonly string[] }): Promise<number> {
+type StartArgs = { host: string; port: number; allowHosts?: readonly string[]; forwardPorts?: PortRange };
+
+async function runForeground(ctx: ServeCommandContext, args: StartArgs & { json: boolean }): Promise<number> {
 	const files = serveFiles(ctx.agentHome);
 	privateDir(files.dir);
 	const lock = acquireServeLock(files.lock);
@@ -321,6 +345,7 @@ async function runForeground(ctx: ServeCommandContext, args: { host: string; por
 			host: args.host,
 			port: args.port,
 			allowHosts: args.allowHosts ?? [],
+			...(args.forwardPorts ? { forwardPorts: args.forwardPorts } : {}),
 			auth,
 			version: ctx.version,
 			launchSession: (input) => sessionLaunch(ctx, input),
@@ -338,6 +363,7 @@ async function runForeground(ctx: ServeCommandContext, args: { host: string; por
 			version: ctx.version,
 			adminToken,
 			discovery: server.discovery,
+			...(args.forwardPorts ? { forwardPorts: args.forwardPorts } : {}),
 		};
 		writeServerFile(files.server, file);
 		ctx.stdout(args.json
@@ -356,7 +382,7 @@ async function runForeground(ctx: ServeCommandContext, args: { host: string; por
 	}
 }
 
-async function startDaemon(ctx: ServeCommandContext, args: { host: string; port: number; json: boolean; allowHosts?: readonly string[] }): Promise<number> {
+async function startDaemon(ctx: ServeCommandContext, args: StartArgs & { json: boolean }): Promise<number> {
 	const files = serveFiles(ctx.agentHome);
 	const running = liveServer(ctx.agentHome);
 	if (running) {
@@ -376,13 +402,14 @@ async function startDaemon(ctx: ServeCommandContext, args: { host: string; port:
 }
 
 /** Starts `serve --foreground` detached, logging to `server.log`; on failure, the log's tail. */
-async function spawnDaemon(ctx: ServeCommandContext, args: { host: string; port: number; allowHosts?: readonly string[] }): Promise<{ file: ServerFile } | { log: string }> {
+async function spawnDaemon(ctx: ServeCommandContext, args: StartArgs): Promise<{ file: ServerFile } | { log: string }> {
 	const files = serveFiles(ctx.agentHome);
 	privateDir(files.dir);
 	const logFd = openSync(files.log, "w", 0o600);
 	const listen = `${args.host.includes(":") ? `[${args.host}]` : args.host}:${args.port}`;
 	const allow = (args.allowHosts ?? []).flatMap((name) => ["--allow-host", name]);
-	const child = spawn(ctx.nodePath, [ctx.launcher, ...ctx.homeFlags, "serve", "--foreground", "--listen", listen, ...allow], {
+	const ports = args.forwardPorts ? ["--forward-ports", `${args.forwardPorts.from}-${args.forwardPorts.to}`] : [];
+	const child = spawn(ctx.nodePath, [ctx.launcher, ...ctx.homeFlags, "serve", "--foreground", "--listen", listen, ...allow, ...ports], {
 		detached: true,
 		stdio: ["ignore", logFd, logFd],
 		env: ctx.env,
@@ -508,7 +535,7 @@ async function runShare(ctx: ServeCommandContext, args: { port: number; always: 
 	const fail = (message: string): number => { ctx.stderr(`gentle-shell serve share: ${message}\n`); return 1; };
 	if (args.always && !autostartFile(system)) return fail(`--always (start at login) is not supported on ${system.platform === "win32" ? "Windows" : system.platform} yet; run 'gentle-shell serve share' without it.`);
 	const allowHosts = ownHostNames(system.hostname());
-	const autostartFor = (port: number) => autostartCommand({ nodePath: ctx.nodePath, launcher: ctx.launcher, homeFlags: ctx.homeFlags, port, allowHosts, env: ctx.env, logFile: files.log });
+	const autostartFor = (port: number) => autostartCommand({ nodePath: ctx.nodePath, launcher: ctx.launcher, homeFlags: ctx.homeFlags, port, allowHosts, forwardPorts: SHARE_FORWARD_PORTS, env: ctx.env, logFile: files.log });
 	let server = liveServer(ctx.agentHome);
 	let opened: "started" | "reopened" | "reused" = "started";
 	let atLogin = false;
@@ -546,7 +573,7 @@ async function runShare(ctx: ServeCommandContext, args: { port: number; always: 
 			} else {
 				for (const port of ports) {
 					if (!(await portFree(port))) continue;
-					const started = await spawnDaemon(ctx, { host: LAN_HOST, port, allowHosts });
+					const started = await spawnDaemon(ctx, { host: LAN_HOST, port, allowHosts, forwardPorts: SHARE_FORWARD_PORTS });
 					if ("file" in started) { server = started.file; break; }
 					// Taken between the probe and the bind: try the next one.
 					if (!started.log.includes("EADDRINUSE")) return fail(`the server did not start.${started.log ? `\n${started.log}` : ""}`);
@@ -568,7 +595,7 @@ async function runShare(ctx: ServeCommandContext, args: { port: number; always: 
 			ctx.stdout(`${JSON.stringify({ code, pairingCode, port, addresses, expiresAt: minted.data.expiresAt, serverId: server.serverId, discovery })}\n`);
 			return 0;
 		}
-		const firewall = firewallHint(system.platform, port, system.has);
+		const firewall = firewallHint(system.platform, port, system.has, server.forwardPorts);
 		ctx.stdout([
 			opened === "reused" ? `The Gentle Shell server is already open to your network on port ${port}.`
 			: opened === "reopened" ? `Opened the Gentle Shell server to your network on port ${port} (it was reachable from this computer only).`
@@ -582,7 +609,8 @@ async function runShare(ctx: ServeCommandContext, args: { port: number; always: 
 			"",
 			...(discovery ? [] : [`Discovery is off on this server (UDP port ${port} could not be opened), so the app cannot find this computer by itself: paste the long code.`]),
 			"It uses plain HTTP on your network: share only on a network you trust, such as your home network.",
-			...(firewall ? [`If the app cannot find or reach this computer, open the port in the firewall: ${firewall}`] : []),
+			...(firewall ? [`If the app cannot find or reach this computer, or a page it opens from here, open the ports in the firewall: ${firewall}`] : []),
+			...(firewall && !server.forwardPorts ? ["This server gives forwarded pages random ports; to keep them in one range (8800-8899), run 'gentle-shell serve stop' and then 'gentle-shell serve share'."] : []),
 			...(atLogin ? ["It starts at every login; turn that off with 'gentle-shell serve share --off'."] : []),
 			...(atLogin && system.platform === "linux" ? [`To start it at boot, before anyone logs in: sudo loginctl enable-linger ${system.user}`] : []),
 			"",

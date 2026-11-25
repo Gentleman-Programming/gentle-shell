@@ -52,6 +52,10 @@ test("parseServeArgs reads each subcommand and rejects what it does not know", (
 	assert.deepEqual(parseServeArgs(["--allow-host"]), { error: '--allow-host needs a DNS name without a port (got "")' });
 	assert.deepEqual(parseServeArgs(["--allow-host", "box.lan:8787"]), { error: '--allow-host needs a DNS name without a port (got "box.lan:8787")' });
 	assert.deepEqual(parseServeArgs(["--allow-host", "*.ts.net"]), { error: '--allow-host needs a DNS name without a port (got "*.ts.net")' });
+	assert.deepEqual(parseServeArgs(["--forward-ports", "8800-8899"]), { action: "start", host: "127.0.0.1", port: 0, foreground: false, json: false, forwardPorts: { from: 8800, to: 8899 } });
+	assert.deepEqual(parseServeArgs(["--forward-ports=9000-9000"]), { action: "start", host: "127.0.0.1", port: 0, foreground: false, json: false, forwardPorts: { from: 9000, to: 9000 } });
+	for (const bad of ["8899-8800", "0-10", "1-70000", "8800", "1-2000"]) assert.deepEqual(parseServeArgs(["--forward-ports", bad]), { error: `--forward-ports needs a port range like 8800-8899 (got "${bad}")` });
+	assert.deepEqual(parseServeArgs(["share", "--forward-ports", "1-2"]), { error: 'unknown serve share argument "--forward-ports"' });
 	assert.deepEqual(parseServeArgs(["status", "--allow-host", "box.lan"]), { error: 'unknown serve status argument "--allow-host"' });
 });
 

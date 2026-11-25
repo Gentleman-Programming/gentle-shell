@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
 import { liveServer, parseServeArgs, readServerFile, runServeCommand, serveFiles, type ServeCommandContext } from "../lib/serve-cli.ts";
 import { autostartCommand, autostartFile, autostartInstalled, encodeConnectionCode, firewallHint, installAutostart, launchAgentPlist, ownHostNames,
-	removeAutostart, shareAddresses, systemdUnit, type ShareSystem } from "../lib/serve-share.ts";
+	removeAutostart, SHARE_FORWARD_PORTS, shareAddresses, systemdUnit, type ShareSystem } from "../lib/serve-share.ts";
 
 const binPath = fileURLToPath(new URL("../bin/gentle-shell.mjs", import.meta.url));
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
@@ -84,6 +84,10 @@ test("the firewall hint names the exact command, on Linux with ufw or firewalld 
 	assert.equal(firewallHint("linux", 8788, (c) => c === "firewall-cmd"), "sudo firewall-cmd --permanent --add-port=8788/tcp --add-port=8788/udp && sudo firewall-cmd --reload");
 	assert.equal(firewallHint("linux", 8787, () => false), undefined);
 	assert.equal(firewallHint("darwin", 8787, () => true), undefined);
+	// The forwarded pages' range is TCP only.
+	assert.equal(firewallHint("linux", 8787, (c) => c === "ufw", { from: 8800, to: 8899 }), "sudo ufw allow 8787 && sudo ufw allow 8800:8899/tcp");
+	assert.equal(firewallHint("linux", 8787, (c) => c === "firewall-cmd", { from: 8800, to: 8899 }),
+		"sudo firewall-cmd --permanent --add-port=8787/tcp --add-port=8787/udp --add-port=8800-8899/tcp && sudo firewall-cmd --reload");
 });
 
 function fakeSystem(root: string, platform: NodeJS.Platform, run: ShareSystem["run"]): ShareSystem {
@@ -114,6 +118,8 @@ test("autostart runs this same launcher and home on the network, with only the k
 	assert.equal(spec.command, "/usr/bin/node");
 	assert.deepEqual(spec.args, ["/home/me/src/gentle shell/bin/gentle-shell.mjs", "--home", "/home/me/.gs", "serve", "--foreground", "--listen", "0.0.0.0:8787", "--allow-host", "box", "--allow-host", "box.local"]);
 	assert.deepEqual(spec.env, { PATH: "/usr/local/bin:/usr/bin", GENTLE_SHELL_NO_AUTO_SETUP: "1" }, "no secrets, no HOME (the service manager sets it)");
+	assert.deepEqual(autostartCommand({ nodePath: "/n", launcher: "/l", homeFlags: [], port: 8787, allowHosts: [], forwardPorts: SHARE_FORWARD_PORTS, env: {}, logFile: "/log" }).args,
+		["/l", "serve", "--foreground", "--listen", "0.0.0.0:8787", "--forward-ports", "8800-8899"]);
 
 	const unit = systemdUnit(spec);
 	assert.match(unit, /^ExecStart=\/usr\/bin\/node "\/home\/me\/src\/gentle shell\/bin\/gentle-shell\.mjs" --home \/home\/me\/\.gs serve --foreground --listen 0\.0\.0\.0:8787 --allow-host box --allow-host box\.local$/m);
@@ -258,6 +264,7 @@ test("serve share from stopped: starts on the network (next port when taken), th
 
 		const server = readServerFile(serveFiles(home).server)!;
 		assert.deepEqual(server.listen, { host: "0.0.0.0", port: port + 1 });
+		assert.deepEqual(server.forwardPorts, { from: 8800, to: 8899 }, "forwarded pages take one range a firewall can open");
 		assert.equal(server.serverId, info.serverId);
 
 		// What the client does: identity first, then the pairing code, at the same address.

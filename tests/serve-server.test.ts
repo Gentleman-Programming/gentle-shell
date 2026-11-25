@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { request as httpRequest, type IncomingMessage } from "node:http";
-import { hostname, tmpdir } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after, before } from "node:test";
@@ -181,6 +181,9 @@ test("security headers, no token, a bad token and unknown routes", async () => {
 	assert.equal(info.body.protocol, 1);
 	assert.equal(info.body.serverId, server.serverId);
 	assert.deepEqual(info.body.device.scopes, ["sessions:read", "sessions:operate", "admin"]);
+	assert.equal(info.body.home, homedir(), "a token that may start sessions learns the default folder");
+	const reader = await pairDevice(["sessions:read"], "info-reader");
+	assert.equal((await call("GET", "/api/server", { token: reader.token })).body.home, undefined, "a reader does not");
 });
 
 test("bodies are bounded and must be one JSON object", async () => {

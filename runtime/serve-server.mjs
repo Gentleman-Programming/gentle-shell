@@ -9,10 +9,11 @@
 import { randomBytes } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { createServer,                                           } from "node:http";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import { basename, isAbsolute } from "node:path";
 import { hasScope, isServeScope,                                                 } from "./serve-auth.mjs";
 import { startDiscoveryResponder,                         } from "./serve-discovery.mjs";
+import { ForwardError, ForwardManager,                                             } from "./serve-forward.mjs";
 import { HOST_TOOL_METHODS, ServeSession, SessionError,                                             } from "./serve-session.mjs";
 
 export const SERVE_SCHEMA = "gentle-shell.serve/v1";
@@ -20,7 +21,7 @@ export const SERVE_PROTOCOL = 1;
 export const SERVE_IDENTITY_SCHEMA = "gentle-shell.serve.identity/v1";
 /** Public identity path: a client holding a connection code probes it to find the address that reaches this server. */
 export const SERVE_IDENTITY_PATH = "/.well-known/gentle-shell";
-export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices"]         ;
+export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards"]         ;
 
 export const SERVE_SERVER_LIMITS = {
 	heartbeatMs: 20_000,
@@ -77,6 +78,9 @@ const SECURITY_HEADERS = {
 	"Cache-Control": "no-store",
 	"Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
 };
+
+
+
 
 
 
@@ -225,7 +229,21 @@ export function startServeServer(options                    )                   
 	const deviceNames = new Map                ();
 	const deviceLabel = (deviceId        ) => deviceNames.get(deviceId) ?? options.auth.listDevices().find((d) => d.id === deviceId)?.name;
 
-	options.auth.onRevoke((deviceId) => { for (const s of sessions.values()) s.dropDevice(deviceId); });
+	let mainPort = options.port;
+	// Pages on this machine's loopback, opened from a device: one listener each on the same address as this server.
+	const forwards = new ForwardManager({
+		bindHost: options.host,
+		hostCheck: (port) => allowedHosts(options.host, port, options.allowHosts),
+		...(options.forwardPorts === undefined ? {} : { portRange: options.forwardPorts }),
+		now,
+		log,
+		limits: options.forwardLimits,
+	});
+
+	options.auth.onRevoke((deviceId) => {
+		for (const s of sessions.values()) s.dropDevice(deviceId);
+		forwards.closeWhere((f) => f.deviceId === deviceId, "device revoked");
+	});
 
 	const need = (principal                       , scope            )            => {
 		if (!principal) throw new HttpError(401, "unauthorized", "A valid bearer token is required");
@@ -270,7 +288,11 @@ export function startServeServer(options                    )                   
 			limits: options.sessionLimits,
 			now,
 			onStderr: (text) => { for (const line of text.split("\n")) if (line.trim()) log(`[${id}] ${line}`); },
-			onExit: (s) => { log(`[${id}] exited (code ${s.exitCode}, signal ${s.exitSignal})`); forgetExited(); },
+			onExit: (s) => {
+				log(`[${id}] exited (code ${s.exitCode}, signal ${s.exitSignal})`);
+				forwards.closeWhere((f) => f.sessionId === id, "session ended");
+				forgetExited();
+			},
 			deviceLabel,
 		});
 		sessions.set(id, session);
@@ -291,6 +313,53 @@ export function startServeServer(options                    )                   
 		deviceNames.set(principal.deviceId, principal.name);
 		session.subscribe(res, principal.deviceId, after);
 		res.on("close", () => session.unsubscribe(res));
+	};
+
+	const forwardView = (f             ) => ({
+		id: f.id,
+		port: f.port,
+		listenPort: f.listenPort,
+		sessionId: f.sessionId,
+		createdAt: new Date(f.createdAt).toISOString(),
+		lastUsedAt: new Date(f.lastUsedAt).toISOString(),
+	});
+
+	/** A fresh single-use link to the forward, on the host name the client reached this server with. */
+	const forwardLink = (req                 , forward             , path        ) => {
+		const minted = forwards.mintTicket(forward.id);
+		const clientHost = (req.headers.host ?? "127.0.0.1").replace(/:\d+$/, "");
+		return { url: forwards.urlFor(forward.id, clientHost, path, minted.ticket), expiresAt: new Date(minted.expiresAt).toISOString() };
+	};
+
+	/** A device sees and closes its own forwards; an admin token sees every one. */
+	const ownsForward = (principal           , forward             ) => forward.deviceId === principal.deviceId || hasScope(principal, "admin");
+
+	const forwardRoute = async (req                 , res                , method        , principal                       , sessionId        , forwardId                    ) => {
+		const session = findSession(sessionId);
+		if (forwardId !== undefined) {
+			if (method !== "DELETE") throw new HttpError(405, "method_not_allowed", "Use DELETE");
+			const who = need(principal, "sessions:operate");
+			const forward = forwards.get(forwardId);
+			if (!forward || forward.sessionId !== session.id || !ownsForward(who, forward)) throw new HttpError(404, "not_found", "No such forward");
+			forwards.close(forward.id);
+			return sendJson(res, 200, { closed: forward.id });
+		}
+		if (method === "GET") {
+			const who = need(principal, "sessions:read");
+			return sendJson(res, 200, { forwards: forwards.list({ sessionId: session.id }).filter((f) => ownsForward(who, f)).map(forwardView) });
+		}
+		if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use GET or POST");
+		const who = need(principal, "sessions:operate");
+		const body = await readJsonBody(req, limits.smallBodyBytes);
+		const port = body.port;
+		if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, "invalid_port", "port must be a whole number 1-65535");
+		// This server and the forwards themselves are never targets: a forward to a forward loops.
+		if (port === mainPort || forwards.listenPorts().includes(port)) throw new HttpError(400, "invalid_port", "That port is the server's own");
+		const path = body.path ?? "/";
+		if (typeof path !== "string" || path.length > 2048 || !/^\/(?!\/)[\x21-\x7e]*$/.test(path)) throw new HttpError(400, "invalid_path", "path must start with / and hold no spaces or control characters");
+		if (session.state !== "running") throw new HttpError(409, "session_exited", "The session has ended");
+		const opened = await forwards.open({ deviceId: who.deviceId, sessionId: session.id, kind: "session", port });
+		return sendJson(res, opened.created ? 201 : 200, { ...forwardView(opened.forward), ...forwardLink(req, opened.forward, path) });
 	};
 
 	const route = async (req                 , res                , url     )                => {
@@ -330,7 +399,9 @@ export function startServeServer(options                    )                   
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			const who = need(principal, "sessions:read");
 			return sendJson(res, 200, { schema: SERVE_SCHEMA, protocol: SERVE_PROTOCOL, serverId, version: options.version, startedAt: new Date(startedAt).toISOString(),
-				capabilities: SERVE_CAPABILITIES, device: { id: who.deviceId, name: who.name, scopes: who.scopes } });
+				capabilities: SERVE_CAPABILITIES, device: { id: who.deviceId, name: who.name, scopes: who.scopes },
+				// The server user's home folder, a default for new sessions; only for a token that may start them.
+				...(hasScope(who, "sessions:operate") ? { home: homedir() } : {}) });
 		}
 		if (path === "/api/server/stop") {
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
@@ -392,6 +463,8 @@ export function startServeServer(options                    )                   
 			started.noteActivity(who.deviceId);
 			return sendJson(res, 201, { session: sessionView(started, who) });
 		}
+		const forward = /^\/api\/sessions\/([A-Za-z0-9_]{1,64})\/forwards(?:\/([A-Za-z0-9_]{1,64}))?$/.exec(path);
+		if (forward) return forwardRoute(req, res, method, principal, forward[1], forward[2]);
 		const one = /^\/api\/sessions\/([A-Za-z0-9_]{1,64})(\/rpc|\/desktop)?$/.exec(path);
 		if (one) {
 			const session = findSession(one[1]);
@@ -498,6 +571,7 @@ export function startServeServer(options                    )                   
 		route(req, res, url).catch((error         ) => {
 			if (error instanceof HttpError) return sendError(res, error.status, error.code, error.message);
 			if (error instanceof SessionError) return sendError(res, error.code === "session_busy" ? 503 : 409, error.code, error.message);
+			if (error instanceof ForwardError) return sendError(res, error.status, error.code, error.message);
 			log(`internal error: ${error instanceof Error ? error.message : String(error)}`);
 			sendError(res, 500, "internal_error", "Server error");
 		});
@@ -516,6 +590,7 @@ export function startServeServer(options                    )                   
 		const address = server.address();
 		const port = typeof address === "object" && address ? address.port : options.port;
 		hostOk = allowedHosts(options.host, port, options.allowHosts);
+		mainPort = port;
 		const localHost = isUnspecified(options.host) ? "127.0.0.1" : options.host.includes(":") && !options.host.startsWith("[") ? `[${options.host}]` : options.host;
 		const url = `http://${localHost}:${port}`;
 		// On the network, also answer LAN discovery on the same port number (UDP); the HTTP server works without it.
@@ -538,6 +613,7 @@ export function startServeServer(options                    )                   
 				closing = true;
 				clearInterval(heartbeat);
 				await discovery?.close();
+				forwards.closeAll();
 				await Promise.all([...sessions.values()].map((s) => s.stop()));
 				const closed = Promise.withResolvers      ();
 				server.close(() => closed.resolve());

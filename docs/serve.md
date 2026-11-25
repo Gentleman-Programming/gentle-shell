@@ -1,6 +1,6 @@
 # `gentle-shell serve`
 
-`gentle-shell serve` runs one long-lived server per agent home. The server owns Gentle Shell sessions — one `gentle-shell --mode rpc` child each — so they keep running when the client that started them disconnects, and any paired device can follow and drive them over HTTP and Server-Sent Events (SSE).
+`gentle-shell serve` runs one long-lived server per agent home. The server owns Gentle Shell sessions — one `gentle-shell --mode rpc` child each — so they keep running when the client that started them disconnects, and any paired device can follow and drive them over HTTP and Server-Sent Events (SSE). A device can also open web pages that live on the server's own loopback — the design canvas, a dev server the agent started, Gentle Tower — through [authenticated port forwards](#port-forwarding).
 
 This is Phase 1 of [RFC #3527](https://github.com/Gentleman-Programming/gentle-shell/issues/3527), plus the `/.well-known/gentle-shell` identity, LAN discovery and `serve share` codes. Persistent terminals (Phase 2), SSH bootstrap and TLS (Phase 3) and a mobile web client (Phase 4) are not part of it; see [Not done yet](#not-done-yet). To run it from a source checkout on a Linux machine and reach it from another one, see [Try it](#try-it-from-source-on-linux).
 
@@ -53,7 +53,7 @@ gentle-shell serve stop            # stops the server and every session it owns
 | --- | --- |
 | `gentle-shell serve share [--port <n>] [--always] [--json]` | Open the server to the local network (with [LAN discovery](#lan-discovery)) and print the short pairing code plus a [connection code](#connection-code) for Gentle Shell GPUI. See [Share on your network](#share-on-your-network). `--json` prints `{ code, pairingCode, port, addresses, expiresAt, serverId, discovery }` (`code` is the `gsc1.…` connection code, `pairingCode` the short one, `discovery` whether the server answers LAN discovery). |
 | `gentle-shell serve share --off` | Remove the login autostart that `--always` installed (this stops the server it runs). |
-| `gentle-shell serve [--listen <host>:<port>] [--allow-host <name>]... [--foreground] [--json]` | Start the server. In the background by default (log in `serve/server.log`); `--foreground` keeps it in the terminal until Ctrl+C. `--listen` defaults to `127.0.0.1:0` (a random port); `:8787`, `8787` and `[::1]:8787` are accepted. `--allow-host` adds one DNS name clients may use in the `Host` header (repeatable; see [Security model](#security-model)). |
+| `gentle-shell serve [--listen <host>:<port>] [--allow-host <name>]... [--forward-ports <from>-<to>] [--foreground] [--json]` | Start the server. In the background by default (log in `serve/server.log`); `--foreground` keeps it in the terminal until Ctrl+C. `--listen` defaults to `127.0.0.1:0` (a random port); `:8787`, `8787` and `[::1]:8787` are accepted. `--allow-host` adds one DNS name clients may use in the `Host` header (repeatable; see [Security model](#security-model)). `--forward-ports` gives [port forwards](#port-forwarding) their listen ports from one range (at most 1000 ports), so a firewall can open it; without it each forward takes a random port. |
 | `gentle-shell serve status [--json]` | URL, pid, start time, protocol and the session list. Exit 1 when no server runs. |
 | `gentle-shell serve stop` | Asks the server to stop (it stops every session first) and waits for it to exit. |
 | `gentle-shell serve pair [--scope <scope,…>] [--json]` | Mint a pairing code. Scopes default to `sessions:read,sessions:operate`. |
@@ -65,11 +65,11 @@ The home selectors work ahead of `serve` as they do for `setup`: `gentle-shell -
 
 `serve share` is the one command a person runs to connect Gentle Shell GPUI on another computer of the same network:
 
-- **No server yet:** it starts one in the background on every interface (`--listen 0.0.0.0:8787 --allow-host <hostname> --allow-host <hostname>.local`). When the port is taken it tries the next nine; `--port <n>` starts the search elsewhere.
+- **No server yet:** it starts one in the background on every interface (`--listen 0.0.0.0:8787 --allow-host <hostname> --allow-host <hostname>.local --forward-ports 8800-8899`). When the port is taken it tries the next nine; `--port <n>` starts the search elsewhere. [Forwarded pages](#port-forwarding) take ports 8800-8899.
 - **A server on this computer only (loopback):** with no running sessions it is stopped and started again on the network, transparently. With running sessions it is left alone: `share` explains in one line and exits 1 (stop them or run `serve stop` first).
 - **A server already on the network:** reused as it is (on its own port).
 
-Then it mints a pairing code (as `serve pair` does: default scopes, 5 minutes, single use) and prints it, followed by the [connection code](#connection-code) that carries it. The app takes either in the same field: the short code when it can [find the server on the network](#lan-discovery) by itself, the long one where discovery does not reach (another subnet, a tailnet, a Wi-Fi with client isolation). When the server could not open its UDP port, `share` says so in one line (discovery is off; the long code still works). On Linux, when `ufw` or `firewall-cmd` is installed, it also prints the exact command that opens the port for TCP and UDP (it never runs `sudo` itself), for example `sudo ufw allow 8787`.
+Then it mints a pairing code (as `serve pair` does: default scopes, 5 minutes, single use) and prints it, followed by the [connection code](#connection-code) that carries it. The app takes either in the same field: the short code when it can [find the server on the network](#lan-discovery) by itself, the long one where discovery does not reach (another subnet, a tailnet, a Wi-Fi with client isolation). When the server could not open its UDP port, `share` says so in one line (discovery is off; the long code still works). On Linux, when `ufw` or `firewall-cmd` is installed, it also prints the exact command that opens the port for TCP and UDP and the forwarded pages' range for TCP (it never runs `sudo` itself), for example `sudo ufw allow 8787 && sudo ufw allow 8800:8899/tcp`. A server it reuses that was started by hand without `--forward-ports` gives forwarded pages random ports, which a firewall blocks; `share` then says how to restart it with the range.
 
 The network server is plain HTTP, exactly as `--listen 0.0.0.0` (see [Security model](#security-model)): the pairing code, the device token and session traffic cross the network unencrypted. Share only on a network you trust; over the internet use the [SSH tunnel](#4-reach-it-from-the-mac) instead.
 
@@ -121,7 +121,7 @@ Everything lives in `<agent home>/serve/`, a `0700` folder:
 
 | File | Content |
 | --- | --- |
-| `server.json` (`0600`) | `{ schema: "gentle-shell.serve.server/v1", protocol, serverId, url, listen, pid, startedAt, version, adminToken, discovery }`. Local clients discover the server here (`discovery`: whether it answers [LAN discovery](#lan-discovery)). Removed when the server stops. |
+| `server.json` (`0600`) | `{ schema: "gentle-shell.serve.server/v1", protocol, serverId, url, listen, pid, startedAt, version, adminToken, discovery, forwardPorts? }`. Local clients discover the server here (`discovery`: whether it answers [LAN discovery](#lan-discovery); `forwardPorts`: `{ from, to }` when started with `--forward-ports`). Removed when the server stops. |
 | `server.lock` (`0600`) | The pid holding the single-instance lock. A lock whose pid is gone is taken over. |
 | `devices.json` (`0600`) | Paired devices: id, name, scopes, created and last-used times, and the **sha256 of the token** — never the token. |
 | `server.log` (`0600`) | Background server log: lifecycle lines and each session's stderr, prefixed by session id. |
@@ -147,7 +147,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | --- | --- | --- |
 | `GET /.well-known/gentle-shell` | none | `{ schema: "gentle-shell.serve.identity/v1", serverId, name, protocol, version }`: who answers at this address (`name` is the machine's hostname). No secrets; `Host` and `Origin` rules still apply. A client holding a [connection code](#connection-code) probes it before pairing. |
 | `POST /api/pair` | none (the code) | `{ code, name? }` → `201 { id, name, scopes, createdAt, token }`. `403 invalid_code`, `429 rate_limited`, `409 too_many_devices`. |
-| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device }` |
+| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, home? }`. `capabilities` includes `forwards`. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
 | `POST /api/server/stop` | `admin` | `202`; the server stops its sessions and exits. |
 | `POST /api/pairing-codes` | `admin` | `{ scopes? }` → `201 { code, scopes, expiresAt }` |
 | `GET /api/devices` | `admin` | `{ devices: [{ id, name, scopes, createdAt, lastUsedAt? }] }` |
@@ -160,6 +160,9 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | `POST /api/sessions/:id/rpc` | per command | One Pi RPC command object → its Pi `response`. |
 | `POST /api/sessions/:id/desktop` | per method | `{ method, params? }` → the Desktop RPC response object. |
 | `GET /api/sessions/:id/events?after=<seq>` | `sessions:read` | SSE stream (bearer header, or `?ticket=`). |
+| `POST /api/sessions/:id/forwards` | `sessions:operate` | `{ port, path? }` → `201 Forward & { url, expiresAt }` (`200` when the device already had it). See [Port forwarding](#port-forwarding). |
+| `GET /api/sessions/:id/forwards` | `sessions:read` | `{ forwards: [Forward] }`: the calling device's forwards for the session (an admin token sees every device's). |
+| `DELETE /api/sessions/:id/forwards/:fid` | `sessions:operate` | `{ closed }`. Only the device's own (`404` otherwise). |
 
 `Session` is `{ id, name, cwd?, state: "running"|"exited", startedAt, exitedAt?, exitCode?, exitSignal?, seq, subscribers, pendingDialogs, lastActiveDevice }`. `name` is the folder's basename; the absolute `cwd` is included only for a token with `sessions:operate` (which can start sessions in any folder anyway). `lastActiveDevice` is the id of the device that most recently drove the session (started it, or sent any request that needs `sessions:operate`: a prompt, a steer, a follow-up, a dialog answer, a host message, a Desktop write), or `null`.
 
@@ -266,6 +269,48 @@ There is no unauthenticated mode: every endpoint except `GET /.well-known/gentle
 
 Browsers' `EventSource` cannot send headers, and long-lived tokens never go in URLs. A client with a token calls `POST /api/tickets { sessionId }` and opens `GET /api/sessions/:id/events?ticket=<ticket>`. A ticket is valid for 60 s, for one connection, to that one session, with the scopes of the device that minted it. The events endpoint is the only one that accepts `?ticket=`.
 
+## Port forwarding
+
+A page that listens on the server's loopback — the design canvas (`127.0.0.1:<random>`), a dev server the agent started (`127.0.0.1:5173`), Gentle Tower — cannot be opened from another machine. A forward opens it there, for one paired device, without opening the port itself to anyone.
+
+- **One listener per forward,** on the same address as the server (`--listen`): a loopback server makes loopback forwards (reach them through the same `ssh -L` tunnel, one per port), a network server makes network ones. Its own port, not a path prefix, so the page's absolute paths (`/assets/app.js`, `/@vite/client`) keep working. Ports come from `--forward-ports` when set (`share` uses 8800-8899), otherwise the OS picks one.
+- **Only this machine's loopback.** A forward targets `127.0.0.1:<port>`, or `[::1]:<port>` when only IPv6 answers (a dev server bound to `localhost` on macOS). Never another host, never the server's own port or another forward's.
+- **Per device, per session.** `POST /api/sessions/:id/forwards { port, path? }` opens one, or reuses the one the device already has for that session and port (a forward belongs to one session so that it closes with it; another device gets its own). Every call mints a fresh link.
+
+```mermaid
+sequenceDiagram
+    participant App as Client app
+    participant S as serve (API)
+    participant F as Forward listener (:8801)
+    participant P as Page (127.0.0.1:5173)
+    App->>S: POST /api/sessions/:id/forwards {port: 5173, path: "/"}<br/>Authorization: Bearer gss_…
+    S-->>App: 201 {id, listenPort: 8801, url: "http://<host>:8801/?gs_ticket=…", expiresAt}
+    App->>F: GET /?gs_ticket=… (webview or browser)
+    F-->>App: 303 Location: / + Set-Cookie: gs_fwd_<id>=<secret>; HttpOnly; SameSite=Strict; Path=/
+    App->>F: GET / (Cookie: gs_fwd_<id>)
+    F->>P: GET / (Host: 127.0.0.1:5173, no gs_fwd_* cookie)
+    P-->>F: 200 (streamed)
+    F-->>App: 200 (streamed)
+    App->>F: WebSocket upgrade (Cookie) — piped both ways
+```
+
+`Forward` is `{ id, port, listenPort, sessionId, createdAt, lastUsedAt }` (`sessionId` is `null` for Tower's). The answer to `POST` adds `url`, the link to open as it is — `http://<the host name the client used to reach the server>:<listenPort><path>?gs_ticket=<ticket>` (the ticket goes before any `#fragment` of `path`, after any query) — and `expiresAt`, when the ticket expires. `path` defaults to `/`; it must start with `/` (not `//`) and hold printable ASCII without spaces, at most 2048 characters.
+
+Errors: `400 invalid_port` (not 1-65535, or the server's own port or a forward's), `400 invalid_path`, `404 not_found` (session), `409 session_exited`, `429 too_many_forwards`, `503 no_forward_port` (every port in the range is taken). Whether something listens on the port is not checked when the forward opens (the agent may start the server later): until it does, the forward answers `502` with a plain text line.
+
+### Forward security
+
+- **A ticket, then a cookie.** The link's `gs_ticket` is single use, valid 60 s, and bound to that forward and its device. The first request that carries it gets a `303` to the same URL without it and a cookie `gs_fwd_<forwardId>` (a fresh random secret, `HttpOnly; SameSite=Strict; Path=/`). Every later request, WebSockets included, needs that cookie; without it the answer is `401`. A link already used opens again only in a browser that holds the cookie; otherwise ask for a new one (`POST` again). Browsers share cookies across ports of a host, so each forward's cookie has its own name, and the proxy strips the ticket and every `gs_fwd_*` cookie before the page sees the request, and drops any `gs_fwd_*` cookie the page tries to set.
+- **Host and Origin.** The `Host` header follows the [main server's rules](#security-model) for the forward's port (`421` otherwise). A request with an `Origin` other than the forward's own (`http://<Host>`) is refused with `403`: another forwarded page on the same host is the same site for `SameSite`, so it could otherwise send requests that carry the cookie. No CORS headers are added.
+- **What the page sees.** `Host` is `127.0.0.1:<port>` (or `[::1]:<port>`); the forward's own `Origin` and `Referer` are rewritten to the page's own, so pages that check them (Gentle Tower, dev servers) accept the request. Other cookies of the host still reach the page (as they would for any page on that host). Redirects (`Location`) to the page's loopback address are rewritten to the forward. Hop-by-hop headers are dropped both ways.
+- **Streaming.** Requests and responses are piped, never buffered: SSE, downloads and uploads stream. A WebSocket upgrade is handed to the page and the two sockets are piped both ways.
+- **Closing.** A forward closes, with its open connections, when its session stops or is deleted, when its device is revoked, on `DELETE`, when the server stops, and after 12 hours with no request and no open connection.
+- **Same authority as the session.** A forward opens nothing the device could not already reach: `sessions:operate` can run `curl 127.0.0.1:<port>` in the session. It is plain HTTP on a network listen, like the rest of the server.
+
+### Firewall
+
+A network server's forwards listen on their own ports, so a firewall that allows only the server's port blocks them. Start the server with a range (`--forward-ports 8800-8899`; `serve share` does) and open it once: `sudo ufw allow 8800:8899/tcp`, or `sudo firewall-cmd --permanent --add-port=8800-8899/tcp && sudo firewall-cmd --reload`. Over an SSH tunnel, forward each forward's port too (`ssh -L 8800:127.0.0.1:8800 …`), with the same port on both ends.
+
 ## Security model
 
 - **Loopback by default.** Without `--listen` the server binds `127.0.0.1` on a random port. Remote use goes through `ssh -L` (or a tunnel) to that port.
@@ -295,6 +340,11 @@ Browsers' `EventSource` cannot send headers, and long-lived tokens never go in U
 | Stream ticket | 60 s, single use, 256 live |
 | Devices | 64 |
 | LAN discovery replies | 20 per second overall, 4 per second per source address; queries over 512 bytes dropped |
+| Forwards | 32 open at once; 64 connections each |
+| Forward ticket | 60 s, single use, 256 live |
+| Forward browser sessions | 32 cookies per forward (the oldest is dropped) |
+| Forward idle | 12 hours with no request and no open connection |
+| Forward connect to the page | 10 s, then `502` |
 
 ## Try it from source on Linux
 
@@ -439,6 +489,10 @@ The Gentle Shell GPUI desktop app is getting a client for this server: [gentle-s
 | `Connection refused` from the Mac | The server listens on loopback (use the tunnel, or `--listen 0.0.0.0:8787`), the firewall drops the port, or the server is not running. |
 | The app does not find the computer from the short code | The two computers are not on the same network segment (another subnet or VLAN, a guest Wi-Fi with client isolation, a VPN or tailnet), or the firewall drops UDP on the port (`sudo ufw allow 8787` opens TCP and UDP). Paste the long `gsc1.…` code instead, which `share` prints under the short one. `share` notes when the server could not open its UDP port at all. |
 | `gentle-shell serve` opens a chat | That is the installed release, which has no `serve`; use the checkout (`gsdev serve`). |
+| A forwarded page does not load from another computer | The firewall blocks the forward's port: open the range (`sudo ufw allow 8800:8899/tcp`) and start the server with `--forward-ports` (`share` does). On a loopback server, tunnel the forward's port too. |
+| A forward link answers `401` | The link was already used or is older than 60 s, and this browser has no cookie for the forward (another browser or webview, cookies cleared): ask for a new link (`POST …/forwards` again). |
+| A forward answers `502` | Nothing listens on that port of the server's loopback yet, or the page closed: start it, then reload. |
+| A forward answers `403` | The request came from another page (its `Origin` is another port or host); forwards accept only their own pages. |
 
 ## Not done yet
 

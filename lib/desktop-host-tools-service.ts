@@ -12,6 +12,13 @@
 // registered but unreachable, never declared to the model, guidelines left out.
 // Registering the name again later makes it `direct` and active again.
 //
+// Several providers (the Mac app and a phone) may offer the same name. The
+// model sees one tool: the definition of the provider that registered it most
+// recently; when that provider drops it, the next one's definition takes over.
+// A call goes to the most recently active provider that offers the tool and is
+// connected (`set_host_activity`, sent by `gentle-shell serve`); without that
+// list (one client over stdio) to the provider that registered most recently.
+//
 // The tool's `execute` never runs client code: it emits the call, waits for the
 // client's content, and gives up when the turn is aborted or after ten minutes.
 //
@@ -33,6 +40,7 @@ import {
 	modelGuidelines,
 	parseHostMessage,
 	parseHostToolResult,
+	parseSetHostActivity,
 	parseSetHostContext,
 	parseSetHostTools,
 	promptSnippet,
@@ -106,8 +114,10 @@ export class DesktopHostToolsBridge {
 	private readonly callTimeoutMs: number;
 	private readonly newCallId: () => string;
 	private emit: DesktopHostToolsEmit | undefined;
-	/** Active host tools by name. */
-	private readonly tools = new Map<string, { provider: string; spec: HostToolSpec }>();
+	/** Host tools by name: every provider offering it, oldest registration first; the last one's definition is the active one. */
+	private readonly tools = new Map<string, Array<{ provider: string; spec: HostToolSpec }>>();
+	/** Connected providers, most recently active first, when the transport knows them (serve); `undefined` over stdio. */
+	private active: string[] | undefined;
 	/** Every name this bridge registered with Pi, active or hidden: never a collision for a later host. */
 	private readonly owned = new Set<string>();
 	private readonly calls = new Map<string, PendingCall>();
@@ -135,6 +145,7 @@ export class DesktopHostToolsBridge {
 	reset(): void {
 		this.emit = undefined;
 		this.isIdle = () => true;
+		this.active = undefined;
 		for (const [callId, call] of [...this.calls]) call.finish(errorResult(call.provider, `${call.tool} was stopped: the session ended before ${call.provider} answered.`, callId));
 		for (const name of [...this.tools.keys()]) this.hide(name);
 		this.tools.clear();
@@ -146,6 +157,7 @@ export class DesktopHostToolsBridge {
 		if (method === "host_message") return this.message(params);
 		if (method === "set_host_context") return this.setContext(params);
 		if (method === "host_tool_result") return this.answer(params);
+		if (method === "set_host_activity") return this.setActivity(params);
 		return undefined;
 	}
 
@@ -160,19 +172,19 @@ export class DesktopHostToolsBridge {
 			const rejected: Array<{ name: string; reason: string }> = [];
 			const accepted: HostToolSpec[] = [];
 			for (const spec of tools) {
-				const holder = this.tools.get(spec.name);
 				if (taken.has(spec.name)) rejected.push({ name: spec.name, reason: "A built-in or extension tool already has this name" });
-				else if (holder && holder.provider !== provider) rejected.push({ name: spec.name, reason: `${holder.provider} already provides a host tool with this name` });
 				else accepted.push(spec);
 			}
 			const keep = new Set(accepted.map((spec) => spec.name));
-			for (const [name, entry] of [...this.tools]) {
-				if (entry.provider !== provider || keep.has(name)) continue;
-				this.tools.delete(name);
-				this.hide(name);
+			for (const [name, entries] of [...this.tools]) {
+				if (keep.has(name) || !entries.some((entry) => entry.provider === provider)) continue;
+				this.withoutProvider(name, provider);
 			}
 			for (const spec of accepted) {
-				this.register(provider, spec);
+				// The newest registration is the definition the model sees.
+				const others = (this.tools.get(spec.name) ?? []).filter((entry) => entry.provider !== provider);
+				this.tools.set(spec.name, [...others, { provider, spec }]);
+				this.register(spec);
 				registered.push(spec.name);
 			}
 			return { ok: true, data: { registered, rejected } };
@@ -181,10 +193,36 @@ export class DesktopHostToolsBridge {
 		}
 	}
 
-	private register(provider: string, spec: HostToolSpec): void {
+	/** Drops one provider of `name`; the next provider's definition takes over, or the tool is hidden. */
+	private withoutProvider(name: string, provider: string): void {
+		const rest = (this.tools.get(name) ?? []).filter((entry) => entry.provider !== provider);
+		if (rest.length === 0) {
+			this.tools.delete(name);
+			this.hide(name);
+			return;
+		}
+		this.tools.set(name, rest);
+		this.register(rest.at(-1)!.spec);
+	}
+
+	private setActivity(params: Record<string, unknown>): DesktopRpcOutcome {
+		const parsed = parseSetHostActivity(params);
+		if (parsed.ok === false) return { ok: false, error: parsed.error };
+		this.active = parsed.value.providers;
+		return { ok: true, data: { set: true } };
+	}
+
+	/** Who runs a call to `name`: the most recently active connected provider of it, else its newest registration. */
+	private route(name: string): string | undefined {
+		const entries = this.tools.get(name);
+		if (!entries) return undefined;
+		const offering = new Set(entries.map((entry) => entry.provider));
+		return this.active?.find((provider) => offering.has(provider)) ?? entries.at(-1)!.provider;
+	}
+
+	private register(spec: HostToolSpec): void {
 		const guidelines = modelGuidelines(spec);
 		this.owned.add(spec.name);
-		this.tools.set(spec.name, { provider, spec });
 		this.pi.registerTool({
 			name: spec.name,
 			label: spec.label,
@@ -214,9 +252,8 @@ export class DesktopHostToolsBridge {
 	}
 
 	private call(name: string, args: Record<string, unknown>, signal: AbortSignal | undefined): Promise<HostToolCallResult> {
-		const entry = this.tools.get(name);
-		if (!entry) return Promise.resolve(errorResult("none", `${name} is not provided right now.`));
-		const { provider } = entry;
+		const provider = this.route(name);
+		if (provider === undefined) return Promise.resolve(errorResult("none", `${name} is not provided right now.`));
 		const emit = this.emit;
 		if (!emit) return Promise.resolve(errorResult(provider, hostToolOfflineText(name, provider)));
 		if (signal?.aborted) return Promise.resolve(errorResult(provider, `${name} was cancelled.`));

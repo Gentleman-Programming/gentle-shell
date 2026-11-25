@@ -414,3 +414,38 @@ test("host tools over HTTP: the provider is the calling device, only that device
 	phoneStream.close();
 	assert.equal((await call("DELETE", `/api/sessions/${id}`, { token: phone.token })).status, 200);
 });
+
+test("several devices may provide one host tool: the session learns which are connected, most recently active first", async () => {
+	const phone = await pairDevice(["sessions:read", "sessions:operate"], "phone");
+	const laptop = await pairDevice(["sessions:read", "sessions:operate"], "laptop");
+	const id = await startSession(phone.token);
+	const desktop = (token: string, method: string, params: Record<string, unknown>) =>
+		call("POST", `/api/sessions/${id}/desktop`, { token, body: { method, params } });
+	// What the fake child echoes for a set_host_activity the server sent, as it appears inside the stream's widget record.
+	const activity = (providers: string[]) => JSON.stringify(JSON.stringify({ method: "set_host_activity", params: { providers } })).slice(1, -1);
+	const tools = [{ name: "device_screenshot", label: "Screenshot", description: "Takes a screenshot.", parameters: { type: "object" } }];
+
+	const phoneStream = await stream(`/api/sessions/${id}/events`, phone.token);
+	const laptopStream = await stream(`/api/sessions/${id}/events`, laptop.token);
+	assert.equal((await call("GET", `/api/sessions/${id}`, { token: phone.token })).body.session.lastActiveDevice, phone.id, "starting the session drove it");
+	await desktop(phone.token, "set_host_tools", { tools });
+	await laptopStream.waitFor(activity([phone.id]));
+	await desktop(laptop.token, "set_host_tools", { tools });
+	await laptopStream.waitFor(activity([laptop.id, phone.id]));
+	assert.equal((await call("POST", `/api/sessions/${id}/rpc`, { token: phone.token, body: { type: "prompt", message: "take a screenshot" } })).status, 200);
+	await laptopStream.waitFor(activity([phone.id, laptop.id]));
+	const view = await call("GET", `/api/sessions/${id}`, { token: laptop.token });
+	assert.equal(view.body.session.lastActiveDevice, phone.id, "the last device that drove the session");
+	assert.equal((await call("POST", `/api/sessions/${id}/rpc`, { token: laptop.token, body: { type: "get_state" } })).status, 200);
+	assert.equal((await call("GET", `/api/sessions/${id}`, { token: laptop.token })).body.session.lastActiveDevice, phone.id, "a read is not activity");
+
+	phoneStream.close();
+	await laptopStream.waitFor(activity([laptop.id]));
+
+	const forged = await desktop(laptop.token, "set_host_activity", { providers: [laptop.id] });
+	assert.equal(forged.status, 403, "only the server reports activity");
+	const viaRpc = `/gentle:desktop ${JSON.stringify({ schema: "gentle-shell.desktop-rpc/v1", requestId: "r", method: "set_host_activity", params: { providers: [] } })}`;
+	assert.equal((await call("POST", `/api/sessions/${id}/rpc`, { token: laptop.token, body: { type: "prompt", message: viaRpc } })).body.error.code, "use_desktop_endpoint");
+	laptopStream.close();
+	assert.equal((await call("DELETE", `/api/sessions/${id}`, { token: phone.token })).status, 200);
+});

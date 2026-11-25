@@ -47,7 +47,7 @@ export const DIALOG_METHODS                                 = { select: true, co
 export const DESKTOP_RPC_SCHEMA = "gentle-shell.desktop-rpc/v1";
 export const DESKTOP_RPC_WIDGET = "gentle-desktop-rpc";
 /** Desktop RPC methods that only a client's own `/desktop` request may carry (see lib/desktop-rpc-host-tools.ts). */
-export const HOST_TOOL_METHODS                                 = { set_host_tools: true, host_tool_result: true, host_message: true, set_host_context: true };
+export const HOST_TOOL_METHODS                                 = { set_host_tools: true, host_tool_result: true, host_message: true, set_host_context: true, set_host_activity: true };
 
 // --- JSONL framing -------------------------------------------------------------
 
@@ -286,6 +286,13 @@ export class ServeSession {
 	/** Devices whose last stream closed while they owed host tool results, and the timer that fails those calls. */
 	                 graceTimers = new Map                        ();
 	                 deviceLabel                                          ;
+	/** When each device last drove this session (an operate request). */
+	                 activity = new Map                ();
+	        activitySeq = 0;
+	/** Devices that registered host tools in this session: only their order matters to the session. */
+	                 hostProviders = new Set        ();
+	/** The connected-providers order last sent with `set_host_activity`, serialized. */
+	        sentActivity = "[]";
 
 	constructor(options                     ) {
 		this.id = options.id;
@@ -447,8 +454,49 @@ export class ServeSession {
 		this.desktop("host_tool_result", { callId: call.callId, content: [{ type: "text", text }], isError: true }, this.limits.hostToolAnswerMs).catch(() => {});
 	}
 
+	/** A device sent an operate request (a prompt, a steer, a dialog answer, a Desktop write): it becomes the first to run host tool calls. */
+	noteActivity(deviceId        )       {
+		this.activitySeq += 1;
+		this.activity.set(deviceId, this.activitySeq);
+		this.syncActivity();
+	}
+
+	/** A device registered host tools (`tools` > 0) or withdrew them all. */
+	noteHostProvider(deviceId        , tools        )       {
+		if (tools > 0) this.hostProviders.add(deviceId);
+		else this.hostProviders.delete(deviceId);
+		this.syncActivity();
+	}
+
+	/** The device that most recently drove this session, if any did. */
+	lastActiveDevice()                     {
+		let last                    ;
+		let at = 0;
+		for (const [deviceId, seq] of this.activity) if (seq > at) [last, at] = [deviceId, seq];
+		return last;
+	}
+
+	/**
+	 * Tells the session which host tool providers are connected, most recently
+	 * active first (`set_host_activity`), whenever that order changes: a host
+	 * tool several devices provide goes to the first of them. Written to the
+	 * child before any command the same request forwards, so a prompt's tool
+	 * calls see its device. Sessions without host tools never get one.
+	 */
+	        syncActivity()       {
+		if (this.state !== "running") return;
+		const connected = new Set        ();
+		for (const sub of this.subscribers) if (!sub.sink.destroyed && this.hostProviders.has(sub.deviceId)) connected.add(sub.deviceId);
+		const providers = [...connected].sort((a, b) => (this.activity.get(b) ?? 0) - (this.activity.get(a) ?? 0));
+		const serialized = JSON.stringify(providers);
+		if (serialized === this.sentActivity) return;
+		this.sentActivity = serialized;
+		this.desktop("set_host_activity", { providers }, this.limits.hostToolAnswerMs).catch(() => {});
+	}
+
 	/** After a device's last stream closed: its calls fail unless it reconnects within the grace period (at once when revoked). */
 	        deviceLeft(deviceId        , immediately = false)       {
+		this.syncActivity();
 		if (this.state !== "running" || this.hasStream(deviceId) || this.graceTimers.has(deviceId)) return;
 		const owed = () => [...this.hostCalls.values()].filter((call) => call.provider === deviceId);
 		if (owed().length === 0) return;
@@ -564,6 +612,7 @@ export class ServeSession {
 			clearTimeout(grace);
 			this.graceTimers.delete(deviceId);
 		}
+		this.syncActivity();
 	}
 
 	unsubscribe(sink            )       {

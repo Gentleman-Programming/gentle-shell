@@ -13,7 +13,7 @@
 // `pi.sendMessage`), and `set_host_context` keeps a hidden custom message that
 // is added before every agent run while it is set.
 
-export const DESKTOP_HOST_TOOLS_METHODS = ["set_host_tools", "host_tool_result", "host_message", "set_host_context"] as const;
+export const DESKTOP_HOST_TOOLS_METHODS = ["set_host_tools", "host_tool_result", "host_message", "set_host_context", "set_host_activity"] as const;
 export const DESKTOP_HOST_TOOLS_EVENTS = ["host_tool_call", "host_tool_cancel"] as const;
 
 export const DESKTOP_HOST_TOOLS_LIMITS = {
@@ -36,6 +36,8 @@ export const DESKTOP_HOST_TOOLS_LIMITS = {
 	messageBytes: 64 * 1024,
 	/** Providers that may hold a host context at once. */
 	contextProviders: 16,
+	/** Providers one `set_host_activity` may list. */
+	activeProviders: 64,
 	/** A call no client answered fails after this long. */
 	callTimeoutMs: 10 * 60 * 1000,
 	/** Settled call ids remembered so a late answer is `already_answered`, not `unknown_call`. */
@@ -54,6 +56,7 @@ export const INVALID_SET_HOST_TOOLS = { code: "invalid_request", message: "Inval
 export const INVALID_HOST_TOOL_RESULT = { code: "invalid_request", message: "Invalid host_tool_result parameters" } as const;
 export const INVALID_HOST_MESSAGE = { code: "invalid_request", message: "Invalid host_message parameters" } as const;
 export const INVALID_SET_HOST_CONTEXT = { code: "invalid_request", message: "Invalid set_host_context parameters" } as const;
+export const INVALID_SET_HOST_ACTIVITY = { code: "invalid_request", message: "Invalid set_host_activity parameters" } as const;
 export const HOST_TOOL_RESULT_TOO_LARGE = { code: "too_large", message: "host_tool_result content is over 8 MiB" } as const;
 export const DETAILS_TOO_LARGE = { code: "too_large", message: "details is over 1 MiB serialized" } as const;
 export const MESSAGE_TOO_LARGE = { code: "too_large", message: "content is over 64 KiB" } as const;
@@ -238,6 +241,18 @@ export function parseSetHostContext(params: Record<string, unknown>): Parsed<Set
 	if (Buffer.byteLength(params.content, "utf8") > DESKTOP_HOST_TOOLS_LIMITS.messageBytes) return { ok: false, error: MESSAGE_TOO_LARGE };
 	if (details === "too_large") return { ok: false, error: DETAILS_TOO_LARGE };
 	return { ok: true, value: { provider: params.provider, content: params.content, ...(details === "ok" ? { details: params.details as Record<string, unknown> } : {}) } };
+}
+
+/** `{ providers }`: the connected providers, most recently active first (sent by `gentle-shell serve`). */
+export function parseSetHostActivity(params: Record<string, unknown>): Parsed<{ providers: string[] }> {
+	const bad = { ok: false as const, error: INVALID_SET_HOST_ACTIVITY };
+	if (!onlyKeys(params, ["providers"]) || !Array.isArray(params.providers) || params.providers.length > DESKTOP_HOST_TOOLS_LIMITS.activeProviders) return bad;
+	const providers: string[] = [];
+	for (const provider of params.providers) {
+		if (!text(provider, DESKTOP_HOST_TOOLS_LIMITS.provider) || providers.includes(provider)) return bad;
+		providers.push(provider);
+	}
+	return { ok: true, value: { providers } };
 }
 
 /** The hidden custom message type that carries a provider's host context. */

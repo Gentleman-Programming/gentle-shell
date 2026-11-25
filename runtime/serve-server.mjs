@@ -244,6 +244,8 @@ export function startServeServer(options                    )                   
 		seq: s.seq,
 		subscribers: s.subscriberCount,
 		pendingDialogs: s.pendingDialogs().length,
+		// The device that most recently drove the session: host tool calls go to it first.
+		lastActiveDevice: s.lastActiveDevice() ?? null,
 	});
 
 	const findSession = (id        )               => {
@@ -386,7 +388,9 @@ export function startServeServer(options                    )                   
 				if (typeof body.sessionId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.sessionId)) throw new HttpError(400, "invalid_session_id", "sessionId must be a Pi session id");
 				sessionId = body.sessionId;
 			}
-			return sendJson(res, 201, { session: sessionView(startSession(cwd, sessionId), who) });
+			const started = startSession(cwd, sessionId);
+			started.noteActivity(who.deviceId);
+			return sendJson(res, 201, { session: sessionView(started, who) });
 		}
 		const one = /^\/api\/sessions\/([A-Za-z0-9_]{1,64})(\/rpc|\/desktop)?$/.exec(path);
 		if (one) {
@@ -423,7 +427,7 @@ export function startServeServer(options                    )                   
 		if (typeof command.type !== "string" || command.type.length > 64) throw new HttpError(400, "invalid_command", "A Pi RPC command needs a type");
 		if (command.id !== undefined && (typeof command.id !== "string" || command.id.length > 128)) throw new HttpError(400, "invalid_command", "id must be a string up to 128 characters");
 		if (command.type === "extension_ui_response") {
-			need(principal, "sessions:operate");
+			session.noteActivity(need(principal, "sessions:operate").deviceId);
 			const outcome = session.answerDialog(command);
 			if (outcome === "unknown") throw new HttpError(404, "unknown_dialog", "No pending dialog with this id");
 			if (outcome === "answered") throw new HttpError(409, "dialog_answered", "Another client already answered this dialog");
@@ -432,7 +436,9 @@ export function startServeServer(options                    )                   
 		if (typeof command.message === "string" && carriesHostToolRequest(command.message)) {
 			throw new HttpError(400, "use_desktop_endpoint", "Host tool requests (set_host_tools, host_tool_result, host_message, set_host_context) go through POST /api/sessions/:id/desktop");
 		}
-		need(principal, rpcCommandScope(command.type));
+		const scope = rpcCommandScope(command.type);
+		need(principal, scope);
+		if (scope === "sessions:operate") session.noteActivity(principal.deviceId);
 		const outcome = await session.rpc(command, limits.rpcTimeoutMs);
 		if ("timeout" in outcome) return sendJson(res, 202, { pending: true, id: outcome.id });
 		return sendJson(res, 200, outcome.response);
@@ -446,7 +452,10 @@ export function startServeServer(options                    )                   
 		if (!hostTool && Buffer.byteLength(JSON.stringify(body), "utf8") > limits.desktopBodyBytes) throw new HttpError(413, "too_large", `Body over ${limits.desktopBodyBytes} bytes`);
 		const params = body.params ?? {};
 		if (!params || typeof params !== "object" || Array.isArray(params)) throw new HttpError(400, "invalid_request", "params must be an object");
-		need(principal, desktopMethodScope(body.method));
+		if (body.method === "set_host_activity") throw new HttpError(403, "forbidden", "set_host_activity is the server's own: it reports which devices are connected and active");
+		const scope = desktopMethodScope(body.method);
+		need(principal, scope);
+		if (scope === "sessions:operate") session.noteActivity(principal.deviceId);
 		let forwarded = params                           ;
 		if (body.method === "set_host_tools" || body.method === "set_host_context") {
 			// The provider is always the calling device: a client cannot register tools or context as another device.
@@ -465,6 +474,11 @@ export function startServeServer(options                    )                   
 			const error = outcome.answer.error;
 			const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
 			if (outcome.answer.ok === true || code === "unknown_call" || code === "already_answered") session.hostCallSettled(callId);
+		}
+		if (body.method === "set_host_tools" && outcome.answer.ok === true) {
+			const data = outcome.answer.data;
+			const registered = data && typeof data === "object" && "registered" in data && Array.isArray(data.registered) ? data.registered.length : Array.isArray(forwarded.tools) ? forwarded.tools.length : 0;
+			session.noteHostProvider(principal.deviceId, registered);
 		}
 		return sendJson(res, 200, outcome.answer);
 	};

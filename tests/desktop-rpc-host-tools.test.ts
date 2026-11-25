@@ -16,6 +16,7 @@ import {
 	HOST_TOOL_RESULT_TOO_LARGE,
 	hostToolOfflineText,
 	INVALID_HOST_MESSAGE,
+	INVALID_SET_HOST_ACTIVITY,
 	INVALID_SET_HOST_CONTEXT,
 	MESSAGE_TOO_LARGE,
 	modelGuidelines,
@@ -132,7 +133,7 @@ function harness(t: test.TestContext) {
 // ---- Contract ----
 
 test("the Desktop transport advertises the host tool methods and both events once", async (t) => {
-	assert.deepEqual([...DESKTOP_HOST_TOOLS_METHODS], ["set_host_tools", "host_tool_result", "host_message", "set_host_context"]);
+	assert.deepEqual([...DESKTOP_HOST_TOOLS_METHODS], ["set_host_tools", "host_tool_result", "host_message", "set_host_context", "set_host_activity"]);
 	assert.deepEqual([...DESKTOP_HOST_TOOLS_EVENTS], ["host_tool_call", "host_tool_cancel"]);
 	const app = harness(t);
 	const caps = await app.invoke("capabilities");
@@ -209,20 +210,75 @@ test("set_host_tools registers each tool with Pi as a direct tool with its schem
 	assert.deepEqual(modelGuidelines({ name: "x_y", guidelines: ["Use x_y."] }), ["Use x_y."]);
 });
 
-test("names held by a built-in, an extension or another provider are rejected; the rest register", async (t) => {
+test("names held by a built-in or an extension are rejected; another provider's host tool name is shared", async (t) => {
 	const app = harness(t);
-	await app.invoke("set_host_tools", { provider: "phone", tools: [spec("phone_camera")] });
-	const response = await app.invoke("set_host_tools", { provider: "desktop", tools: [spec("read"), spec("gentle_todo"), spec("phone_camera"), spec("desktop_clip")] });
+	await app.invoke("set_host_tools", { provider: "phone", tools: [spec("device_camera")] });
+	const response = await app.invoke("set_host_tools", { provider: "desktop", tools: [spec("read"), spec("gentle_todo"), spec("device_camera"), spec("desktop_clip")] });
 	assert.deepEqual(response.data, {
-		registered: ["desktop_clip"],
+		registered: ["device_camera", "desktop_clip"],
 		rejected: [
 			{ name: "read", reason: "A built-in or extension tool already has this name" },
 			{ name: "gentle_todo", reason: "A built-in or extension tool already has this name" },
-			{ name: "phone_camera", reason: "phone already provides a host tool with this name" },
 		],
 	});
-	assert.equal(app.registry.get("phone_camera").exposure, "direct", "the first provider keeps its tool");
+	assert.equal(app.registry.get("device_camera").exposure, "direct");
 	assert.equal(app.registry.has("read"), false, "a built-in is never overridden");
+});
+
+test("two providers of one name: the newest definition is the one tool the model sees; unregistering falls back", async (t) => {
+	const app = harness(t);
+	await app.invoke("set_host_tools", { provider: "mac", tools: [spec("device_screenshot", { description: "Mac screenshot." })] });
+	await app.invoke("set_host_tools", { provider: "phone", tools: [spec("device_screenshot", { description: "Phone screenshot.", parameters: { type: "object", properties: {} } })] });
+	assert.equal(app.registry.get("device_screenshot").description, "Phone screenshot.", "the most recent registration's definition");
+	assert.deepEqual(app.registry.get("device_screenshot").parameters, { type: "object", properties: {} });
+	await app.invoke("set_host_tools", { provider: "mac", tools: [spec("device_screenshot", { description: "Mac screenshot, again." })] });
+	assert.equal(app.registry.get("device_screenshot").description, "Mac screenshot, again.", "registering again makes it the newest");
+	await app.invoke("set_host_tools", { provider: "mac", tools: [] });
+	assert.equal(app.registry.get("device_screenshot").description, "Phone screenshot.", "the next provider's definition takes over");
+	assert.equal(app.registry.get("device_screenshot").exposure, "direct");
+	const pending = app.registry.get("device_screenshot").execute("m", {}, undefined, undefined, {});
+	assert.equal(app.events("host_tool_call").at(-1).provider, "phone", "calls go to the provider that still offers it");
+	await app.invoke("host_tool_result", { callId: "call-1", content: [{ type: "text", text: "ok" }] });
+	await pending;
+	await app.invoke("set_host_tools", { provider: "phone", tools: [] });
+	assert.equal(app.registry.get("device_screenshot").exposure, "hidden", "the last provider leaving hides it");
+});
+
+test("a call goes to the most recently active connected provider, else the next, else the newest registration", async (t) => {
+	const app = harness(t);
+	await app.invoke("set_host_tools", { provider: "mac", tools: [spec("device_screenshot")] });
+	await app.invoke("set_host_tools", { provider: "phone", tools: [spec("device_screenshot")] });
+	await app.invoke("set_host_tools", { provider: "watch", tools: [spec("watch_face")] });
+	const tool = app.registry.get("device_screenshot");
+	const callTo = async () => {
+		const pending = tool.execute("m", { region: "x" }, undefined, undefined, {});
+		const call = app.events("host_tool_call").at(-1);
+		await app.invoke("host_tool_result", { callId: call.callId, content: [{ type: "text", text: "ok" }] });
+		await pending;
+		return call.provider;
+	};
+	assert.equal(await callTo(), "phone", "over stdio (no activity list): the newest registration");
+	assert.deepEqual((await app.invoke("set_host_activity", { providers: ["mac", "phone"] })).data, { set: true });
+	assert.equal(await callTo(), "mac", "the last active device runs it");
+	await app.invoke("set_host_activity", { providers: ["watch", "phone", "mac"] });
+	assert.equal(await callTo(), "phone", "the most recently active one that offers the tool");
+	await app.invoke("set_host_activity", { providers: ["mac"] });
+	assert.equal(await callTo(), "mac", "the phone went offline: the next active provider that is connected");
+	await app.invoke("set_host_activity", { providers: ["watch"] });
+	assert.equal(await callTo(), "phone", "nobody offering it is connected: the newest registration (serve answers it offline at once)");
+	for (const params of [{}, { providers: "mac" }, { providers: [""] }, { providers: ["a", "a"] }, { providers: Array.from({ length: 65 }, (_, i) => `p${i}`) }, { providers: [], extra: 1 }]) {
+		assert.deepEqual((await app.invoke("set_host_activity", params)).error, INVALID_SET_HOST_ACTIVITY, JSON.stringify(params).slice(0, 80));
+	}
+	await app.invoke("set_host_activity", { providers: ["mac"] });
+	await app.shutdown();
+	await app.start();
+	await app.invoke("set_host_tools", { provider: "mac", tools: [spec("device_screenshot")] });
+	await app.invoke("set_host_tools", { provider: "phone", tools: [spec("device_screenshot")] });
+	const fresh = app.registry.get("device_screenshot");
+	const pending = fresh.execute("m", { region: "x" }, undefined, undefined, {});
+	assert.equal(app.events("host_tool_call").at(-1).provider, "phone", "a session change forgets the activity list");
+	await app.invoke("host_tool_result", { callId: app.events("host_tool_call").at(-1).callId, content: [{ type: "text", text: "ok" }] });
+	await pending;
 });
 
 test("a provider's new set replaces its old one; dropped and unregistered tools become hidden and free", async (t) => {
@@ -237,7 +293,7 @@ test("a provider's new set replaces its old one; dropped and unregistered tools 
 	assert.deepEqual(empty.data, { registered: [], rejected: [] });
 	assert.equal(app.registry.get("desktop_b").exposure, "hidden");
 	const other = await app.invoke("set_host_tools", { provider: "phone", tools: [spec("desktop_a")] });
-	assert.deepEqual(other.data, { registered: ["desktop_a"], rejected: [] }, "a hidden host tool name is not a collision");
+	assert.deepEqual(other.data, { registered: ["desktop_a"], rejected: [] }, "a hidden host tool name is free");
 	assert.equal(app.registry.get("desktop_a").exposure, "direct");
 });
 

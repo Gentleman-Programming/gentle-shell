@@ -358,13 +358,13 @@ test("pairing over HTTP is single use and admin can stop the server", async () =
 
 test("only /desktop carries host tool requests: a /gentle:desktop prompt naming them through /rpc is refused", () => {
 	const prompt = (method: string) => `/gentle:desktop ${JSON.stringify({ schema: "gentle-shell.desktop-rpc/v1", requestId: "r", method, params: {} })}`;
-	assert.equal(carriesHostToolRequest(prompt("set_host_tools")), true);
-	assert.equal(carriesHostToolRequest(prompt("host_tool_result")), true);
+	for (const method of ["set_host_tools", "host_tool_result", "host_message", "set_host_context"]) {
+		assert.equal(carriesHostToolRequest(prompt(method)), true, method);
+		assert.equal(desktopMethodScope(method), "sessions:operate", method);
+	}
 	assert.equal(carriesHostToolRequest(prompt("capabilities")), false);
 	assert.equal(carriesHostToolRequest("/gentle:desktop not json"), false, "the session refuses what it cannot parse anyway");
 	assert.equal(carriesHostToolRequest("set_host_tools"), false);
-	assert.equal(desktopMethodScope("set_host_tools"), "sessions:operate");
-	assert.equal(desktopMethodScope("host_tool_result"), "sessions:operate");
 });
 
 test("host tools over HTTP: the provider is the calling device, only that device answers its calls, an offline device is answered for", async () => {
@@ -379,7 +379,15 @@ test("host tools over HTTP: the provider is the calling device, only that device
 	assert.equal(registered.status, 200);
 	assert.equal(registered.body.data.params.provider, phone.id, "the server overwrites the provider with the calling device");
 	assert.equal((await desktop(reader.token, "set_host_tools", { provider: "x", tools: [] })).status, 403, "registering tools operates");
-	for (const method of ["set_host_tools", "host_tool_result"]) {
+	const context = await desktop(phone.token, "set_host_context", { provider: laptop.id, content: "Simulators: iPhone 16" });
+	assert.equal(context.status, 200);
+	assert.equal(context.body.data.params.provider, phone.id, "host context is always the calling device's");
+	assert.equal((await desktop(reader.token, "set_host_context", { provider: "x", content: "" })).status, 403, "setting host context operates");
+	const message = await desktop(phone.token, "host_message", { customType: "host.genui.event", content: "clicked", display: true, deliver: "auto", details: { pad: "d".repeat(200 * 1024) } });
+	assert.equal(message.status, 200, "a host message's details may exceed the usual Desktop cap");
+	assert.equal(message.body.data.params.customType, "host.genui.event");
+	assert.equal((await desktop(reader.token, "host_message", { customType: "host.x", content: "", display: false, deliver: "auto" })).status, 403, "sending host messages operates");
+	for (const method of ["set_host_tools", "host_tool_result", "host_message", "set_host_context"]) {
 		const message = `/gentle:desktop ${JSON.stringify({ schema: "gentle-shell.desktop-rpc/v1", requestId: "r", method, params: { provider: laptop.id, tools: [] } })}`;
 		const refused = await call("POST", `/api/sessions/${id}/rpc`, { token: phone.token, body: { type: "prompt", message } });
 		assert.equal(refused.status, 400, method);

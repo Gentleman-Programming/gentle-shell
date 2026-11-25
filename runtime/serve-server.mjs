@@ -26,8 +26,8 @@ export const SERVE_SERVER_LIMITS = {
 	heartbeatMs: 20_000,
 	smallBodyBytes: 16 * 1024,
 	desktopBodyBytes: 80 * 1024,
-	/** `set_host_tools` and `host_tool_result` (screenshots); the session caps the result's content at 8 MiB and the request at 9 MiB, envelope included. */
-	hostToolBodyBytes: 9 * 1024 * 1024 - 1024,
+	/** Host tool methods (`host_tool_result` carries screenshots); the session caps the result's content at 8 MiB plus 1 MiB of details and the request at 10 MiB, envelope included. */
+	hostToolBodyBytes: 10 * 1024 * 1024 - 1024,
 	/** Pi RPC commands may carry images. */
 	rpcBodyBytes: 8 * 1024 * 1024,
 	rpcTimeoutMs: 30_000,
@@ -51,11 +51,12 @@ export function rpcCommandScope(type        )             {
 
 /**
  * Whether a Pi RPC message is a `/gentle:desktop` request for a host tool
- * method. Those go only through `/desktop`, where the server sets the provider
- * to the calling device and checks who answers a call; through `/rpc` a client
- * could otherwise register as, or answer for, another device. Pi takes the
- * command's arguments after the first space and the router parses them with
- * `JSON.parse`, exactly as here.
+ * method (`set_host_tools`, `host_tool_result`, `host_message`,
+ * `set_host_context`). Those go only through `/desktop`, where the server sets
+ * the provider to the calling device and checks who answers a call; through
+ * `/rpc` a client could otherwise register as, or answer for, another device.
+ * Pi takes the command's arguments after the first space and the router parses
+ * them with `JSON.parse`, exactly as here.
  */
 export function carriesHostToolRequest(message        )          {
 	if (!message.startsWith("/gentle:desktop")) return false;
@@ -429,7 +430,7 @@ export function startServeServer(options                    )                   
 			return sendJson(res, 202, { accepted: true });
 		}
 		if (typeof command.message === "string" && carriesHostToolRequest(command.message)) {
-			throw new HttpError(400, "use_desktop_endpoint", "set_host_tools and host_tool_result go through POST /api/sessions/:id/desktop");
+			throw new HttpError(400, "use_desktop_endpoint", "Host tool requests (set_host_tools, host_tool_result, host_message, set_host_context) go through POST /api/sessions/:id/desktop");
 		}
 		need(principal, rpcCommandScope(command.type));
 		const outcome = await session.rpc(command, limits.rpcTimeoutMs);
@@ -447,10 +448,10 @@ export function startServeServer(options                    )                   
 		if (!params || typeof params !== "object" || Array.isArray(params)) throw new HttpError(400, "invalid_request", "params must be an object");
 		need(principal, desktopMethodScope(body.method));
 		let forwarded = params                           ;
-		if (body.method === "set_host_tools") {
-			// The provider is always the calling device: a client cannot register tools as another device.
+		if (body.method === "set_host_tools" || body.method === "set_host_context") {
+			// The provider is always the calling device: a client cannot register tools or context as another device.
 			forwarded = { ...forwarded, provider: principal.deviceId };
-			deviceNames.set(principal.deviceId, principal.name);
+			if (body.method === "set_host_tools") deviceNames.set(principal.deviceId, principal.name);
 		}
 		const callId = body.method === "host_tool_result" && typeof forwarded.callId === "string" ? forwarded.callId : undefined;
 		if (callId !== undefined) {

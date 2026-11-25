@@ -12,11 +12,18 @@ import {
 	DESKTOP_HOST_TOOLS_EVENTS,
 	DESKTOP_HOST_TOOLS_LIMITS,
 	DESKTOP_HOST_TOOLS_METHODS,
+	DETAILS_TOO_LARGE,
 	HOST_TOOL_RESULT_TOO_LARGE,
 	hostToolOfflineText,
+	INVALID_HOST_MESSAGE,
+	INVALID_SET_HOST_CONTEXT,
+	MESSAGE_TOO_LARGE,
 	modelGuidelines,
+	parseHostMessage,
 	parseHostToolResult,
+	parseSetHostContext,
 	parseSetHostTools,
+	TOO_MANY_CONTEXTS,
 	UNKNOWN_CALL,
 } from "../lib/desktop-rpc-host-tools.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
@@ -55,15 +62,21 @@ function harness(t: test.TestContext) {
 	const timers = new Map<number, FakeTimer>();
 	let nextTimer = 0;
 	let nextCall = 0;
+	const sent: Array<{ message: any; options: any }> = [];
+	let idle = true;
 	const pi = {
 		registerCommand(name: string, command: any) { commands.set(name, command); },
 		registerShortcut() {},
-		on(name: string, handler: any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+		on(name: string, handler: any) {
+			handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+			return () => handlers.set(name, (handlers.get(name) ?? []).filter((h) => h !== handler));
+		},
 		events: { on() { return () => {}; }, emit() {} },
 		registerTool(definition: any) { registry.set(definition.name, definition); registrations.push(definition); },
 		getAllTools() {
 			return [{ name: "read" }, { name: "bash" }, { name: "gentle_todo" }, ...[...registry.keys()].map((name) => ({ name }))];
 		},
+		sendMessage(message: any, options: any) { sent.push({ message, options }); },
 	} as unknown as ExtensionAPI;
 	desktopRpc(pi, {
 		hostTools: {
@@ -80,6 +93,7 @@ function harness(t: test.TestContext) {
 		cwd: "/x",
 		sessionManager: { getCwd: () => "/x", getSessionId: () => "s", getEntries: () => [] },
 		ui: { setWidget(_key: string, lines: string[]) { widgets.push(...lines); } },
+		isIdle: () => idle,
 	};
 	for (const handler of handlers.get("session_start") ?? []) handler({}, ctx);
 	let request = 0;
@@ -89,6 +103,18 @@ function harness(t: test.TestContext) {
 		registrations,
 		timers,
 		widgets,
+		sent,
+		setIdle(value: boolean) { idle = value; },
+		/** What Pi's `before_agent_start` would collect: one message per handler that returned one. */
+		async beforeAgentStart() {
+			const messages: any[] = [];
+			for (const handler of handlers.get("before_agent_start") ?? []) {
+				const result: any = await handler({ type: "before_agent_start", messageType: "user", prompt: "hi" }, ctx);
+				if (result?.message) messages.push(result.message);
+			}
+			return messages;
+		},
+		async start() { for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx); },
 		raw(text: string) { return commands.get("gentle:desktop")!.handler(text, ctx); },
 		async invoke(method: string, params: Record<string, unknown> = {}) {
 			request += 1;
@@ -105,8 +131,8 @@ function harness(t: test.TestContext) {
 
 // ---- Contract ----
 
-test("the Desktop transport advertises set_host_tools, host_tool_result and both events once", async (t) => {
-	assert.deepEqual([...DESKTOP_HOST_TOOLS_METHODS], ["set_host_tools", "host_tool_result"]);
+test("the Desktop transport advertises the host tool methods and both events once", async (t) => {
+	assert.deepEqual([...DESKTOP_HOST_TOOLS_METHODS], ["set_host_tools", "host_tool_result", "host_message", "set_host_context"]);
 	assert.deepEqual([...DESKTOP_HOST_TOOLS_EVENTS], ["host_tool_call", "host_tool_cancel"]);
 	const app = harness(t);
 	const caps = await app.invoke("capabilities");
@@ -310,13 +336,118 @@ test("host tool requests get larger request caps; every other method keeps 64 Ki
 	await app.raw(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "big-snapshot", method: "get_snapshot", params: { pad: "x".repeat(70 * 1024) } }));
 	assert.deepEqual(JSON.parse(app.widgets[before]).error.code, "invalid_request");
 	assert.equal(JSON.parse(app.widgets[before]).requestId, null);
-	await app.raw(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "huge", method: "host_tool_result", params: { callId: "x", content: [{ type: "text", text: "x".repeat(9 * 1024 * 1024) }] } }));
-	assert.equal(JSON.parse(app.widgets.at(-1)!).requestId, null, "over 9 MiB the request is refused before parsing");
+	await app.raw(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "huge", method: "host_tool_result", params: { callId: "x", content: [{ type: "text", text: "x".repeat(10 * 1024 * 1024) }] } }));
+	assert.equal(JSON.parse(app.widgets.at(-1)!).requestId, null, "over 10 MiB the request is refused before parsing");
+});
+
+// ---- Result details, host messages and host context ----
+
+function errorOf(parsed: { ok: true } | { ok: false; error: unknown }): unknown {
+	return "error" in parsed ? parsed.error : undefined;
+}
+
+test("host_tool_result details: a JSON object up to 1 MiB becomes the Pi tool result's details", async (t) => {
+	assert.equal(parseHostToolResult({ callId: "c", content: [{ type: "text", text: "x" }], details: [] }).ok, false);
+	assert.equal(parseHostToolResult({ callId: "c", content: [{ type: "text", text: "x" }], details: "x" }).ok, false);
+	assert.deepEqual(parseHostToolResult({ callId: "c", content: [{ type: "text", text: "x" }], details: { pad: "x".repeat(1024 * 1024) } }), { ok: false, error: DETAILS_TOO_LARGE });
+	const app = harness(t);
+	const tool = await registerOne(app);
+	const pending = tool.execute("m", { region: "x" }, undefined, undefined, {});
+	const details = { surface: { id: "s1", version: 3 }, rows: [1, 2] };
+	assert.deepEqual((await app.invoke("host_tool_result", { callId: "call-1", content: [{ type: "text", text: "drawn" }], details })).data, { accepted: true });
+	assert.deepEqual(await pending, { content: [{ type: "text", text: "drawn" }], details });
+});
+
+test("host_message validates its type, content, delivery and details", () => {
+	const ok = { customType: "host.genui.event", content: "clicked", display: true, deliver: "auto" };
+	assert.deepEqual(parseHostMessage(ok), { ok: true, value: ok });
+	assert.equal(parseHostMessage({ ...ok, customType: `host.${"a".repeat(64)}` }).ok, true, "64 characters after host. are allowed");
+	for (const params of [
+		{ ...ok, customType: "genui.event" },
+		{ ...ok, customType: "host." },
+		{ ...ok, customType: "host.Upper" },
+		{ ...ok, customType: `host.${"a".repeat(65)}` },
+		{ ...ok, content: 1 },
+		{ ...ok, display: "yes" },
+		{ ...ok, deliver: "now" },
+		{ ...ok, triggerTurn: 1 },
+		{ ...ok, details: [] },
+		{ ...ok, extra: true },
+		{ customType: "host.x", content: "", deliver: "auto" },
+	]) assert.deepEqual(errorOf(parseHostMessage(params)), INVALID_HOST_MESSAGE, JSON.stringify(params).slice(0, 120));
+	assert.equal(parseHostMessage({ ...ok, content: "é".repeat(32 * 1024) }).ok, true, "64 KiB of UTF-8 is allowed");
+	assert.deepEqual(parseHostMessage({ ...ok, content: `${"é".repeat(32 * 1024)}x` }), { ok: false, error: MESSAGE_TOO_LARGE });
+	assert.deepEqual(parseHostMessage({ ...ok, details: { pad: "x".repeat(1024 * 1024) } }), { ok: false, error: DETAILS_TOO_LARGE });
+});
+
+test("host_message calls pi.sendMessage: auto starts a turn when idle and steers while streaming; other modes pass through", async (t) => {
+	const app = harness(t);
+	const base = { customType: "host.genui.event", content: "clicked Save", display: true, details: { surface: "s1" } };
+	assert.deepEqual((await app.invoke("host_message", { ...base, deliver: "auto" })).data, { delivered: true });
+	await app.invoke("host_message", { ...base, deliver: "auto", triggerTurn: false });
+	app.setIdle(false);
+	await app.invoke("host_message", { ...base, deliver: "auto" });
+	await app.invoke("host_message", { ...base, deliver: "auto", triggerTurn: false });
+	await app.invoke("host_message", { ...base, deliver: "followUp" });
+	await app.invoke("host_message", { ...base, deliver: "nextTurn" });
+	await app.invoke("host_message", { ...base, deliver: "steer", triggerTurn: true });
+	assert.deepEqual(app.sent.map((entry) => entry.options), [
+		{ triggerTurn: true },
+		{ triggerTurn: false },
+		{ deliverAs: "steer" },
+		{ deliverAs: "steer" },
+		{ deliverAs: "followUp" },
+		{ deliverAs: "nextTurn" },
+		{ deliverAs: "steer", triggerTurn: true },
+	]);
+	assert.deepEqual(app.sent[0].message, base, "the message reaches Pi as sent");
+	const invalid = await app.invoke("host_message", { ...base, deliver: "later" });
+	assert.deepEqual(invalid.error, INVALID_HOST_MESSAGE);
+	assert.equal(app.sent.length, 7, "an invalid message never reaches Pi");
+});
+
+test("set_host_context injects one hidden message per provider before each run; empty clears; a session change drops all", async (t) => {
+	assert.equal(parseSetHostContext({ provider: "app", content: "" }).ok, true, "empty clears");
+	for (const params of [{ content: "x" }, { provider: "", content: "x" }, { provider: "app", content: 1 }, { provider: "app", content: "x", details: [] }, { provider: "app", content: "x", extra: 1 }]) {
+		assert.deepEqual(errorOf(parseSetHostContext(params)), INVALID_SET_HOST_CONTEXT, JSON.stringify(params));
+	}
+	assert.deepEqual(parseSetHostContext({ provider: "app", content: "x".repeat(64 * 1024 + 1) }), { ok: false, error: MESSAGE_TOO_LARGE });
+	assert.deepEqual(parseSetHostContext({ provider: "app", content: "x", details: { pad: "x".repeat(1024 * 1024) } }), { ok: false, error: DETAILS_TOO_LARGE });
+
+	const app = harness(t);
+	assert.deepEqual(await app.beforeAgentStart(), []);
+	assert.deepEqual((await app.invoke("set_host_context", { provider: "app", content: "Booted: iPhone 16", details: { devices: 1 } })).data, { set: true });
+	await app.invoke("set_host_context", { provider: "phone", content: "Battery low" });
+	assert.deepEqual(await app.beforeAgentStart(), [
+		{ customType: "host.context.app", content: "Booted: iPhone 16", display: false, details: { devices: 1 } },
+		{ customType: "host.context.phone", content: "Battery low", display: false },
+	]);
+	await app.invoke("set_host_context", { provider: "app", content: "Booted: Pixel 9" });
+	assert.deepEqual(await app.beforeAgentStart(), [
+		{ customType: "host.context.app", content: "Booted: Pixel 9", display: false },
+		{ customType: "host.context.phone", content: "Battery low", display: false },
+	], "a new set replaces the provider's context and details");
+	await app.invoke("set_host_context", { provider: "phone", content: "" });
+	assert.deepEqual((await app.beforeAgentStart()).map((m) => m.customType), ["host.context.app"]);
+	await app.shutdown();
+	await app.start();
+	assert.deepEqual(await app.beforeAgentStart(), [], "a session change clears every host context");
+	for (let i = 0; i < 16; i += 1) assert.equal((await app.invoke("set_host_context", { provider: `p${i}`, content: "x" })).ok, true);
+	assert.deepEqual((await app.invoke("set_host_context", { provider: "p16", content: "x" })).error, TOO_MANY_CONTEXTS);
+	assert.equal((await app.invoke("set_host_context", { provider: "p0", content: "y" })).ok, true, "an existing provider may still update");
+});
+
+test("host_message and set_host_context get a 2 MiB request cap", async (t) => {
+	const app = harness(t);
+	const response = await app.invoke("set_host_context", { provider: "app", content: "x", details: { pad: "x".repeat(900 * 1024) } });
+	assert.deepEqual(response.data, { set: true });
+	const message = await app.invoke("host_message", { customType: "host.genui.event", content: "x", display: false, deliver: "nextTurn", details: { pad: "x".repeat(900 * 1024) } });
+	assert.deepEqual(message.data, { delivered: true });
 });
 
 // ---- A real Pi session ----
 
-interface RecordedRequest { systemPrompt: string; tools: string[]; toolResults: Array<{ name: string; isError: boolean; content: unknown[] }> }
+interface RecordedRequest { systemPrompt: string; tools: string[]; toolResults: Array<{ name: string; isError: boolean; content: unknown[] }>; texts: string[] }
 
 async function realSession(t: test.TestContext) {
 	setInteractiveHost(t);
@@ -346,6 +477,8 @@ async function realSession(t: test.TestContext) {
 						systemPrompt: ai.getCurrentSystemPrompt(context.messages) ?? "",
 						tools: (ai.getCurrentTools(context.messages) ?? []).map((tool) => tool.name),
 						toolResults: context.messages.flatMap((message) => message.role === "toolResult" ? [{ name: message.toolName, isError: message.isError, content: message.content }] : []),
+						// Custom messages reach the model as user messages; their text is what the model reads.
+						texts: context.messages.flatMap((message) => message.role === "user" ? (typeof message.content === "string" ? [message.content] : message.content.flatMap((part) => part.type === "text" ? [part.text] : [])) : []),
 					});
 					const request = queue.shift();
 					calls += 1;
@@ -458,4 +591,67 @@ test("real Pi: aborting the turn sends host_tool_cancel and a late result is alr
 	assert.deepEqual(cancel.data, { callId: call.data.callId });
 	const late = await run.desktop("host_tool_result", { callId: call.data.callId, content: [{ type: "text", text: "too late" }] });
 	assert.deepEqual(late.error, ALREADY_ANSWERED);
+});
+
+type RealRun = Awaited<ReturnType<typeof realSession>>;
+
+/** Resolves when the next run Pi starts on its own (a triggered custom message) has ended. */
+function nextRunEnd(run: RealRun): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	const off = run.session.subscribe((event) => {
+		if (event.type !== "agent_end") return;
+		off();
+		resolve();
+	});
+	return promise;
+}
+
+function customEntries(run: RealRun) {
+	return run.session.sessionManager.getEntries().flatMap((entry) => entry.type === "custom_message" ? [{ customType: entry.customType, content: entry.content, display: entry.display, details: entry.details }] : []);
+}
+
+test("real Pi: host_message starts a turn when idle and is persisted; host context is injected hidden before each run until cleared", { timeout: 60_000 }, async (t) => {
+	const run = await realSession(t);
+	assert.deepEqual((await run.desktop("set_host_context", { provider: "app", content: "Simulators: iPhone 16 booted", details: { booted: ["iPhone 16"] } })).data, { set: true });
+	run.queue.push(undefined);
+	const ended = nextRunEnd(run);
+	const sent = await run.desktop("host_message", { customType: "host.genui.event", content: "The user clicked Save on surface s1.", display: true, details: { surface: "s1" }, deliver: "auto" });
+	assert.deepEqual(sent.data, { delivered: true });
+	await ended;
+	await run.session.waitForIdle();
+	assert.deepEqual(run.requests[0].texts, ["The user clicked Save on surface s1.", "Simulators: iPhone 16 booted"], "the message starts the run and the context rides along");
+	assert.deepEqual(customEntries(run), [
+		{ customType: "host.genui.event", content: "The user clicked Save on surface s1.", display: true, details: { surface: "s1" } },
+		{ customType: "host.context.app", content: "Simulators: iPhone 16 booted", display: false, details: { booted: ["iPhone 16"] } },
+	], "both are session entries, so a client rebuilds its state from get_entries");
+
+	await run.desktop("host_message", { customType: "host.genui.state", content: "Surface s1 closed.", display: false, deliver: "auto", triggerTurn: false });
+	await run.session.waitForIdle();
+	assert.equal(run.requests.length, 1, "triggerTurn false only records the message");
+	assert.equal(customEntries(run).at(-1)?.customType, "host.genui.state");
+
+	await run.desktop("set_host_context", { provider: "app", content: "" });
+	run.queue.push(undefined);
+	await run.session.prompt("Anything else?", { source: "rpc" });
+	assert.equal(run.requests.length, 2);
+	assert.equal(run.requests[1].texts.filter((text) => text.startsWith("Simulators:")).length, 1, "a cleared context is not injected again");
+	assert.equal(customEntries(run).filter((entry) => entry.customType === "host.context.app").length, 1);
+	assert.deepEqual(run.errors, []);
+});
+
+test("real Pi: host_message during a running turn steers it; a result's details become the tool result's details", { timeout: 60_000 }, async (t) => {
+	const run = await realSession(t);
+	await run.desktop("set_host_tools", { provider: "gentle-desktop", tools: [spec("desktop_screenshot")] });
+	run.queue.push({ name: "desktop_screenshot", arguments: { region: "main" } }, undefined);
+	const turn = run.session.prompt("Look at my screen.", { source: "rpc" });
+	const call = await run.next((line) => line.kind === "event" && line.event === "host_tool_call");
+	assert.deepEqual((await run.desktop("host_message", { customType: "host.genui.event", content: "The user also opened Settings.", display: true, deliver: "auto" })).data, { delivered: true });
+	const details = { image: { width: 1280, height: 800 }, window: "Terminal" };
+	await run.desktop("host_tool_result", { callId: call.data.callId, content: [{ type: "text", text: "A terminal." }], details });
+	await turn;
+	assert.equal(run.requests.length, 2, "the steered message joins the running turn instead of starting another");
+	assert.equal(run.requests[1].texts.at(-1), "The user also opened Settings.");
+	const result = run.session.messages.find((message) => message.role === "toolResult");
+	assert.deepEqual(result && "details" in result ? result.details : undefined, details);
+	assert.deepEqual(run.errors, []);
 });

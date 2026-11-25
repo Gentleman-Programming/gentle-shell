@@ -14,6 +14,11 @@
 //
 // The tool's `execute` never runs client code: it emits the call, waits for the
 // client's content, and gives up when the turn is aborted or after ten minutes.
+//
+// `host_message` hands a custom message to `pi.sendMessage` (persisted in the
+// session like any extension's custom message). `set_host_context` keeps one
+// hidden custom message per provider that a `before_agent_start` handler adds
+// to every run while it is set; a session change drops them all.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomBytes } from "node:crypto";
@@ -21,12 +26,17 @@ import type { DesktopRpcOutcome } from "./desktop-rpc.ts";
 import {
 	ALREADY_ANSWERED,
 	DESKTOP_HOST_TOOLS_LIMITS,
+	HOST_MESSAGES_UNAVAILABLE,
 	HOST_TOOLS_UNAVAILABLE,
+	hostContextType,
 	hostToolOfflineText,
 	modelGuidelines,
+	parseHostMessage,
 	parseHostToolResult,
+	parseSetHostContext,
 	parseSetHostTools,
 	promptSnippet,
+	TOO_MANY_CONTEXTS,
 	UNKNOWN_CALL,
 	type HostToolContent,
 	type HostToolSpec,
@@ -45,11 +55,22 @@ export interface DesktopHostToolsOptions {
 	newCallId?: () => string;
 }
 
-/** What a host tool call resolves to; Pi shows `content` to the model, as an error when `isError`. */
+/**
+ * What a host tool call resolves to; Pi shows `content` to the model, as an
+ * error when `isError`. `details` is the client's own `details` when it sent
+ * one, otherwise who answered.
+ */
 export interface HostToolCallResult {
 	content: HostToolContent[];
-	details: { provider: string; callId?: string };
+	details: Record<string, unknown>;
 	isError?: boolean;
+}
+
+interface HostContext {
+	content: string;
+	details?: Record<string, unknown>;
+	/** Removes the provider's `before_agent_start` handler. */
+	off: () => void;
 }
 
 interface PendingCall {
@@ -91,6 +112,8 @@ export class DesktopHostToolsBridge {
 	private readonly owned = new Set<string>();
 	private readonly calls = new Map<string, PendingCall>();
 	private readonly settled: string[] = [];
+	private readonly contexts = new Map<string, HostContext>();
+	private isIdle: () => boolean = () => true;
 
 	constructor(pi: ExtensionAPI, options: DesktopHostToolsOptions = {}) {
 		this.pi = pi;
@@ -104,15 +127,24 @@ export class DesktopHostToolsBridge {
 		this.emit = emit;
 	}
 
+	/** Whether the agent is idle, read from the dispatching command's context when `host_message` says `auto`. */
+	attach(ctx: { isIdle(): boolean }): void {
+		this.isIdle = () => ctx.isIdle();
+	}
+
 	reset(): void {
 		this.emit = undefined;
+		this.isIdle = () => true;
 		for (const [callId, call] of [...this.calls]) call.finish(errorResult(call.provider, `${call.tool} was stopped: the session ended before ${call.provider} answered.`, callId));
 		for (const name of [...this.tools.keys()]) this.hide(name);
 		this.tools.clear();
+		for (const provider of [...this.contexts.keys()]) this.clearContext(provider);
 	}
 
 	handle(method: string, params: Record<string, unknown>): DesktopRpcOutcome | undefined {
 		if (method === "set_host_tools") return this.setHostTools(params);
+		if (method === "host_message") return this.message(params);
+		if (method === "set_host_context") return this.setContext(params);
 		if (method === "host_tool_result") return this.answer(params);
 		return undefined;
 	}
@@ -228,10 +260,73 @@ export class DesktopHostToolsBridge {
 	private answer(params: Record<string, unknown>): DesktopRpcOutcome {
 		const parsed = parseHostToolResult(params);
 		if (parsed.ok === false) return { ok: false, error: parsed.error };
-		const { callId, content, isError } = parsed.value;
+		const { callId, content, isError, details } = parsed.value;
 		const call = this.calls.get(callId);
 		if (!call) return { ok: false, error: this.settled.includes(callId) ? ALREADY_ANSWERED : UNKNOWN_CALL };
-		call.finish({ content, details: { provider: call.provider, callId }, ...(isError ? { isError: true } : {}) });
+		call.finish({ content, details: details ?? { provider: call.provider, callId }, ...(isError ? { isError: true } : {}) });
 		return { ok: true, data: { accepted: true } };
+	}
+
+	/**
+	 * `auto` is what a client wants almost always: start a run when the agent is
+	 * idle (unless `triggerTurn` is false), steer the running one otherwise. The
+	 * other modes are Pi's own `deliverAs`, with `triggerTurn` passed as given.
+	 */
+	private message(params: Record<string, unknown>): DesktopRpcOutcome {
+		const parsed = parseHostMessage(params);
+		if (parsed.ok === false) return { ok: false, error: parsed.error };
+		const { customType, content, display, details, deliver, triggerTurn } = parsed.value;
+		if (typeof this.pi.sendMessage !== "function") return { ok: false, error: HOST_MESSAGES_UNAVAILABLE };
+		const options = deliver === "auto"
+			? (this.isIdle() ? { triggerTurn: triggerTurn ?? true } : { deliverAs: "steer" as const })
+			: { deliverAs: deliver, ...(triggerTurn === undefined ? {} : { triggerTurn }) };
+		try {
+			this.pi.sendMessage({ customType, content, display, ...(details === undefined ? {} : { details }) }, options);
+		} catch {
+			return { ok: false, error: HOST_MESSAGES_UNAVAILABLE };
+		}
+		return { ok: true, data: { delivered: true } };
+	}
+
+	private setContext(params: Record<string, unknown>): DesktopRpcOutcome {
+		const parsed = parseSetHostContext(params);
+		if (parsed.ok === false) return { ok: false, error: parsed.error };
+		const { provider, content, details } = parsed.value;
+		if (content.length === 0) {
+			this.clearContext(provider);
+			return { ok: true, data: { set: true } };
+		}
+		const current = this.contexts.get(provider);
+		if (current) {
+			this.contexts.set(provider, { content, ...(details === undefined ? {} : { details }), off: current.off });
+			return { ok: true, data: { set: true } };
+		}
+		if (this.contexts.size >= DESKTOP_HOST_TOOLS_LIMITS.contextProviders) return { ok: false, error: TOO_MANY_CONTEXTS };
+		if (typeof this.pi.on !== "function") return { ok: false, error: HOST_MESSAGES_UNAVAILABLE };
+		const customType = hostContextType(provider);
+		let off: unknown;
+		try {
+			// One handler per provider: a `before_agent_start` result carries one message.
+			off = this.pi.on("before_agent_start", () => {
+				const entry = this.contexts.get(provider);
+				if (!entry) return undefined;
+				return { message: { customType, content: entry.content, display: false, ...(entry.details === undefined ? {} : { details: entry.details }) } };
+			});
+		} catch {
+			return { ok: false, error: HOST_MESSAGES_UNAVAILABLE };
+		}
+		this.contexts.set(provider, { content, ...(details === undefined ? {} : { details }), off: typeof off === "function" ? (off as () => void) : () => {} });
+		return { ok: true, data: { set: true } };
+	}
+
+	private clearContext(provider: string): void {
+		const entry = this.contexts.get(provider);
+		if (!entry) return;
+		this.contexts.delete(provider);
+		try {
+			entry.off();
+		} catch {
+			// A torn-down extension instance took its handlers with it.
+		}
 	}
 }

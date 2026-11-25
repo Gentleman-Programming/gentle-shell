@@ -53,7 +53,7 @@ Registered extension commands are consumed by Pi. The real-runtime maintainer pr
 }
 ```
 
-Requests are limited to 64 KiB, except `set_host_tools` (1 MiB) and `host_tool_result` (9 MiB). Over its limit a request is answered `invalid_request` with `requestId: null`. `requestId` is required and limited to 128 characters. Method names use lowercase snake case and are limited to 64 characters.
+Requests are limited to 64 KiB, except `set_host_tools` (1 MiB), `host_message` and `set_host_context` (2 MiB each) and `host_tool_result` (10 MiB). Over its limit a request is answered `invalid_request` with `requestId: null`. `requestId` is required and limited to 128 characters. Method names use lowercase snake case and are limited to 64 characters.
 
 ### `capabilities`
 
@@ -1627,10 +1627,39 @@ Registrations belong to the session: a new session, a `switch_session`, or a shu
 The client's answer to a `host_tool_call`:
 
 ```json
-{ "callId": "htc_…", "content": [{ "type": "text", "text": "Captured the editor window." }, { "type": "image", "data": "iVBORw0KGgo…", "mimeType": "image/png" }], "isError": false }
+{ "callId": "htc_…", "content": [{ "type": "text", "text": "Captured the editor window." }, { "type": "image", "data": "iVBORw0KGgo…", "mimeType": "image/png" }], "isError": false, "details": { "window": "editor", "width": 1280 } }
 ```
 
-`content` holds 1-64 items, each `{ "type": "text", "text" }` or `{ "type": "image", "data": <base64>, "mimeType": "image/…" }`, at most 8 MiB together (text counted in UTF-8 bytes, images in base64 characters). It is what the model reads as the tool's result; with `isError: true` the model reads it as a failed call. Answers `{ "accepted": true }`. Errors: `invalid_request`, `too_large` (content over 8 MiB), `unknown_call` (no call with this id in this session), `already_answered` (the call is settled: answered, cancelled, or timed out). Only the first answer counts.
+`content` holds 1-64 items, each `{ "type": "text", "text" }` or `{ "type": "image", "data": <base64>, "mimeType": "image/…" }`, at most 8 MiB together (text counted in UTF-8 bytes, images in base64 characters). It is what the model reads as the tool's result; with `isError: true` the model reads it as a failed call. `details` (optional, a JSON object of at most 1 MiB serialized) becomes the Pi tool result's `details` as sent, so a client draws from the tool result in the transcript (`get_messages`, `get_entries`) the way an extension's tool result does; the model never reads it. Without it, `details` is `{ "provider", "callId" }`. Answers `{ "accepted": true }`. Errors: `invalid_request`, `too_large` (content over 8 MiB, or `details` over 1 MiB), `unknown_call` (no call with this id in this session), `already_answered` (the call is settled: answered, cancelled, or timed out). Only the first answer counts.
+
+### `host_message`
+
+Puts a client's custom message into the conversation, the way an extension does with Pi's `pi.sendMessage()` (for example: the user clicked a button in a generated UI):
+
+```json
+{ "customType": "host.genui.event", "content": "The user clicked Save on surface s1.", "display": true, "details": { "surface": "s1" }, "deliver": "auto" }
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `customType` | yes | `^host\.[a-z0-9][a-z0-9_.-]{0,63}$`. The `host.` prefix keeps client messages apart from extensions' own. |
+| `content` | yes | The text the model reads (as a user-role message), at most 64 KiB of UTF-8. May be empty. |
+| `display` | yes | Whether a transcript shows the message; the model reads it either way. |
+| `details` | no | A JSON object of at most 1 MiB serialized, kept with the message for the client; the model never reads it. |
+| `deliver` | yes | `auto`, `steer`, `followUp` or `nextTurn`. |
+| `triggerTurn` | no | Boolean, passed to Pi (see below). |
+
+`auto` is what a client wants almost always: when the agent is idle the message starts a run (`triggerTurn`, default `true`; with `false` it is only recorded), and while a run is going it steers that run (delivered after the current tool calls, before the next model request). `steer`, `followUp` and `nextTurn` are Pi's own `deliverAs` with `triggerTurn` passed as given: while a run is going `steer` and `followUp` queue the message into it; `nextTurn` holds it until the next run starts; when idle, a message without `triggerTurn: true` is only recorded. The message is a session entry (`custom_message`) like any extension's custom message, so a client rebuilds its state from `get_entries` / `get_messages`. Answers `{ "delivered": true }` once Pi has it (the run it starts goes on afterwards). Errors: `invalid_request`, `too_large` (content over 64 KiB or `details` over 1 MiB), `host_messages_unavailable` (the running Pi cannot take messages).
+
+### `set_host_context`
+
+Keeps a hidden context message for one provider, added before every agent run while it is set (for example: which simulators are booted):
+
+```json
+{ "provider": "gentle-desktop", "content": "Booted simulators: iPhone 16 (iOS 18.2).", "details": { "booted": ["iPhone 16"] } }
+```
+
+`provider` is 1-64 characters; `content` at most 64 KiB of UTF-8, and an empty `content` clears the provider's context; `details` is optional, a JSON object of at most 1 MiB serialized. While set, Pi's `before_agent_start` adds a custom message `{ "customType": "host.context.<provider>", "content", "display": false, "details" }` to each run (one per provider, at most 16 providers), exactly as the generative UI extension adds its own context. Each injected message is part of that run's history (so it is in `get_messages`); a cleared context is not added to later runs. A new `set_host_context` for the same provider replaces content and details. Contexts belong to the session: a new session, a `switch_session` or a shutdown clears them all. Answers `{ "set": true }`. Errors: `invalid_request`, `too_large` (content or `details` over their limits, or a 17th provider), `host_messages_unavailable`.
 
 ## Responses
 
@@ -1661,7 +1690,7 @@ Failure:
 }
 ```
 
-Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `sessions_unavailable`, `session_switching`, `review_unavailable`, `review_mode_busy`, `stats_unavailable`, `not_found`, `host_tools_unavailable`, `unknown_call`, `already_answered`, `too_large`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
+Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `sessions_unavailable`, `session_switching`, `review_unavailable`, `review_mode_busy`, `stats_unavailable`, `not_found`, `host_tools_unavailable`, `host_messages_unavailable`, `unknown_call`, `already_answered`, `too_large`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
 
 | Code | Meaning |
 | --- | --- |
@@ -1692,7 +1721,8 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `host_tools_unavailable` | `set_host_tools` could not register with Pi (no tool registration API in the running Pi, or the registration threw). |
 | `unknown_call` | `host_tool_result` named a call id this session never emitted. |
 | `already_answered` | `host_tool_result` named a call that is already settled: answered, cancelled because the turn was aborted, or timed out. |
-| `too_large` | `host_tool_result` content over 8 MiB. |
+| `too_large` | `host_tool_result` content over 8 MiB; a `details` over 1 MiB; `host_message` / `set_host_context` content over 64 KiB; a 17th host context provider. |
+| `host_messages_unavailable` | `host_message` / `set_host_context` could not reach Pi (no `sendMessage` / event API in the running Pi, or the call threw). |
 | `internal_error` | Unexpected failure; message stays generic. |
 
 ## Events
@@ -2219,7 +2249,7 @@ node --experimental-strip-types --test \
 
 The permission tests register the real `registerYoloSessionPolicy` owner with an isolated temporary config home and a stub identity resolver; they never read or write the user's own permission store.
 
-The host tools tests run the real extension over a fake Pi tool registry with fake timers: they cover every `set_host_tools` and `host_tool_result` limit, registration as a `direct` Pi tool with its schema, snippet, and guidelines (and the tool name prefixed where a guideline lacks it), collisions with built-in, extension, and other providers' tools, set replacement and unregistering as `hidden` (whose names are free again), the first answer settling a call with later answers `already_answered` and strangers `unknown_call`, error results, an abort cancelling the call with `host_tool_cancel`, the 10-minute limit, shutdown failing waiting calls and hiding every tool, and the larger request caps for these two methods only. Two more tests run a real Pi SDK session with an offline scripted provider (no model): a registered tool is declared in the next request with its guideline in the system prompt, the scripted tool call round-trips through `host_tool_call` and `host_tool_result` into the tool result the provider receives, unregistering removes the tool and its guideline from the next request, and aborting the turn emits `host_tool_cancel`.
+The host tools tests run the real extension over a fake Pi tool registry with fake timers: they cover every `set_host_tools`, `host_tool_result`, `host_message` and `set_host_context` limit, registration as a `direct` Pi tool with its schema, snippet, and guidelines (and the tool name prefixed where a guideline lacks it), collisions with built-in, extension, and other providers' tools, set replacement and unregistering as `hidden` (whose names are free again), the first answer settling a call with later answers `already_answered` and strangers `unknown_call`, error results, a result's `details` passed through, an abort cancelling the call with `host_tool_cancel`, the 10-minute limit, shutdown failing waiting calls and hiding every tool, every `host_message` delivery mode reaching `pi.sendMessage` (idle and streaming `auto`), host contexts injected per provider before a run, replaced, cleared and dropped on a session change, and the larger request caps for these methods only. Four more tests run a real Pi SDK session with an offline scripted provider (no model): a registered tool is declared in the next request with its guideline in the system prompt, the scripted tool call round-trips through `host_tool_call` and `host_tool_result` into the tool result the provider receives, unregistering removes the tool and its guideline from the next request, aborting the turn emits `host_tool_cancel`, an idle `host_message` starts a run and is persisted as a `custom_message` entry, a host context rides along hidden and stops after clearing, a `host_message` during a call steers the running turn, and a result's `details` lands in the Pi tool result.
 
 The design tests use only injected fake canvas/server/browser factories and a fake owner service: they cover stopped/running/open/refresh/stop state, slug and connected-client counts, default URL omission, explicit `includeUrl` inclusion only after trust, untrusted omission, malformed adapters and params, owner absence (`design_unavailable`, never a fabricated `running: false`), failed and no-op actions emitting nothing, external (agent-driven) transition events, late-reset disposal and stale-outcome drops, and raw-error/token redaction. One test runs the real `gentleDesign` owner seam in-process to prove the stopped canvas state and the design list arrive from the single owner adapter.
 

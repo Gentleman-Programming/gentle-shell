@@ -47,7 +47,7 @@ export const DIALOG_METHODS                                 = { select: true, co
 export const DESKTOP_RPC_SCHEMA = "gentle-shell.desktop-rpc/v1";
 export const DESKTOP_RPC_WIDGET = "gentle-desktop-rpc";
 /** Desktop RPC methods that only a client's own `/desktop` request may carry (see lib/desktop-rpc-host-tools.ts). */
-export const HOST_TOOL_METHODS                                 = { set_host_tools: true, host_tool_result: true };
+export const HOST_TOOL_METHODS                                 = { set_host_tools: true, host_tool_result: true, host_message: true, set_host_context: true };
 
 // --- JSONL framing -------------------------------------------------------------
 

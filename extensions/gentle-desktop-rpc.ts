@@ -328,6 +328,7 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 			backgroundSubagents.attach(ctx);
 			profileBinding.attach(ctx);
 			auth.attach(ctx);
+			hostTools.attach(ctx);
 			dispatchingRequestId = desktopRequestId(args);
 			let pending: void | Promise<void>;
 			try {

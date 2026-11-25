@@ -626,6 +626,8 @@ test("the Desktop transport advertises the jobs methods and event", (t) => {
 		"reload_credentials",
 		"set_host_tools",
 		"host_tool_result",
+		"host_message",
+		"set_host_context",
 	]);
 	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel"]);
 });

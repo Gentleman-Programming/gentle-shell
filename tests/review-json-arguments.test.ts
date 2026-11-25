@@ -265,6 +265,18 @@ test("every controller operation serializes a schema-admitted object input like 
 	}
 });
 
+test("repair names the input it never reads instead of silently ignoring it (#3023)", async () => {
+	let statusCalls = 0;
+	const native = { targetStatus: async () => { statusCalls++; return { targetIdentity: "t1" }; } } as unknown as NativeReviewCli;
+	for (const input of [{ repairAuthorization: "caller-supplied" }, JSON.stringify({ repairAuthorization: "caller-supplied" })]) {
+		await assert.rejects(
+			__testing.executeReviewControllerOperation(validate("gentle_review", { operation: "repair", lineageId: "review-1", input }), process.cwd(), native),
+			/Review repair does not accept input; call it with only lineageId and optional workspaceRoot/,
+		);
+	}
+	assert.equal(statusCalls, 0);
+});
+
 test("facade rejects non-JSON runtime objects without lossy serialization or native execution", async () => {
 	const cyclic: any = {}; cyclic.self = cyclic;
 	const accessor = Object.defineProperty({}, "mode", { enumerable: true, get() { throw new Error("getter must not execute"); } });

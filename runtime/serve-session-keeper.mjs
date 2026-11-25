@@ -13,7 +13,7 @@
 // came back to for 24 hours stops its session.
 
 import { spawn,                   } from "node:child_process";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer,                          } from "node:net";
 import { tmpdir, userInfo } from "node:os";
@@ -72,8 +72,20 @@ export const KEEPER_RECORD_SCHEMA = "gentle-shell.serve.session/v1";
 /** The keeper process's entry point (the runtime build points at the generated `.mjs`). */
 export const KEEPER_ENTRY = fileURLToPath(new URL("./serve-session-keeper-main.mjs", import.meta.url));
 
+/** `sun_path` fits 104 bytes on macOS and 108 on Linux; stay below both. */
+const UNIX_SOCKET_PATH_MAX = 96;
+
 export function keeperEndpoint(dir        , id        )         {
-	if (process.platform !== "win32") return join(dir, `${id}.sock`);
+	if (process.platform !== "win32") {
+		const direct = join(dir, `${id}.sock`);
+		if (Buffer.byteLength(direct) <= UNIX_SOCKET_PATH_MAX) return direct;
+		// A long serve dir (a deep checkout, a macOS temp home) would overflow
+		// sun_path and `listen` would fail with EINVAL: fall back to a short,
+		// stable folder under the temp dir, named after the real one.
+		const short = join(tmpdir(), `gs-keeper-${createHash("sha256").update(dir).digest("hex").slice(0, 12)}`);
+		mkdirSync(short, { recursive: true, mode: 0o700 });
+		return join(short, `${id}.sock`);
+	}
 	const user = userInfo().username.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 64) || "user";
 	return `\\\\.\\pipe\\gentle-shell-serve-${user}-${id}`;
 }

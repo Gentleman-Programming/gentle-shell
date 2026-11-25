@@ -1746,7 +1746,7 @@ The packages Pi's settings name, as `gentle-shell list` prints them. Params must
 { "ok": true, "data": { "packages": [{ "source": "npm:pi-skills", "version": "1.4.0", "scope": "user" }, { "source": "git:github.com/acme/tools", "scope": "project" }] } }
 ```
 
-`scope` is `user` (the agent home's settings) or `project` (the session folder's). `version` is the installed package's `package.json` version, when it is installed and has one. At most 500. Errors: `invalid_request`, `packages_unavailable`.
+`scope` is `user` (the agent home's settings) or `project` (the session folder's). `version` is the installed package's `package.json` version, when it is installed and has one. A local path is listed absolute (settings keep it relative to their own folder, while `remove_package` resolves a path against the session's folder), so every listed `source` can be passed to `remove_package` as it is. At most 500. Errors: `invalid_request`, `packages_unavailable`.
 
 ### `install_package`
 

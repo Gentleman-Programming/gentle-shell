@@ -167,11 +167,13 @@ test("list_packages answers the listing", async (t) => {
 	assert.deepEqual((await app.call("l-1", "list_packages")).data, { packages: [{ source: "npm:a", version: "1.0.0", scope: "user" }, { source: "git:/work/project", scope: "project" }] });
 });
 
-test("the production listing reads Pi's settings in the agent home, with installed versions", (t) => {
+test("the production listing reads Pi's settings in the agent home, with installed versions and local paths made absolute", (t) => {
 	const root = scratch();
 	const agentDir = join(root, "agent");
 	mkdirSync(join(agentDir, "git", "github.com", "u", "r"), { recursive: true });
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: ["npm:not-installed", "git:github.com/u/r"] }));
+	mkdirSync(join(root, "pkg"));
+	writeFileSync(join(root, "pkg", "package.json"), JSON.stringify({ name: "pkg", version: "0.0.1" }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: ["npm:not-installed", "git:github.com/u/r", "../pkg", "../gone"] }));
 	writeFileSync(join(agentDir, "git", "github.com", "u", "r", "package.json"), JSON.stringify({ name: "r", version: "2.3.4" }));
 	const previous = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -179,7 +181,13 @@ test("the production listing reads Pi's settings in the agent home, with install
 		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previous;
 	});
-	assert.deepEqual(settingsPackages(root), [{ source: "npm:not-installed", scope: "user" }, { source: "git:github.com/u/r", version: "2.3.4", scope: "user" }]);
+	// A session in another folder lists (and so removes) the local paths by where they are, not as written.
+	assert.deepEqual(settingsPackages(join(root, "elsewhere")), [
+		{ source: "npm:not-installed", scope: "user" },
+		{ source: "git:github.com/u/r", version: "2.3.4", scope: "user" },
+		{ source: join(root, "pkg"), version: "0.0.1", scope: "user" },
+		{ source: join(root, "gone"), scope: "user" },
+	]);
 });
 
 test("the production runner runs the CLI with the source as one argument, streams clean lines, and reports the CLI's last word", async () => {

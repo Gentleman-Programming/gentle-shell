@@ -10,9 +10,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DefaultPackageManager, getAgentDir, SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, DefaultPackageManager, getAgentDir, SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DesktopRpcOutcome } from "./desktop-rpc.ts";
 import {
 	DESKTOP_PACKAGES_LIMITS,
@@ -150,13 +150,22 @@ function installedVersion(installedPath: string | undefined): string | undefined
 	}
 }
 
-/** Production listing: the packages Pi's user and project settings name (what `gentle-shell list` prints), with the installed version when there is one. */
+/** Prefixes Pi reads as a non-local source; any other source is a path (Pi's `isLocalPath`). */
+const NON_LOCAL_SOURCE = /^(npm|git|github|http|https|ssh|builtin):/;
+
+/**
+ * Production listing: the packages Pi's user and project settings name (what `gentle-shell list` prints), with the installed version when there is one.
+ * A local path is listed absolute: settings keep it relative to their own folder, while `install`/`remove` resolve
+ * a typed path against the session's folder, so the listed source is one `remove_package` accepts as it is.
+ */
 export function settingsPackages(cwd: string): DesktopPackage[] {
 	const agentDir = getAgentDir();
 	const manager = new DefaultPackageManager({ cwd, agentDir, settingsManager: SettingsManager.create(cwd, agentDir) });
 	return manager.listConfiguredPackages().slice(0, DESKTOP_PACKAGES_LIMITS.packages).map((entry) => {
 		const version = installedVersion(entry.installedPath);
-		return { source: entry.source, ...(version === undefined ? {} : { version }), scope: entry.scope };
+		const local = !NON_LOCAL_SOURCE.test(entry.source.trim());
+		const source = local ? (entry.installedPath ?? resolve(entry.scope === "project" ? join(cwd, CONFIG_DIR_NAME) : agentDir, entry.source.trim())) : entry.source;
+		return { source, ...(version === undefined ? {} : { version }), scope: entry.scope };
 	});
 }
 

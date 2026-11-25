@@ -11,6 +11,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { hostname } from "node:os";
 import { basename, isAbsolute } from "node:path";
 import { hasScope, isServeScope, type Principal, type ServeAuth, type ServeScope } from "./serve-auth.ts";
+import { startDiscoveryResponder, type DiscoveryResponder } from "./serve-discovery.ts";
 import { ServeSession, SessionError, type ServeSessionLimits, type SessionLaunch } from "./serve-session.ts";
 
 export const SERVE_SCHEMA = "gentle-shell.serve/v1";
@@ -77,6 +78,8 @@ export interface ServeServer {
 	/** Base URL a local client uses. */
 	url: string;
 	startedAt: number;
+	/** Whether it answers LAN discovery (network listen only, when the UDP port could be bound). */
+	discovery: boolean;
 	close(): Promise<void>;
 }
 
@@ -444,21 +447,32 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 
 	const { promise, resolve, reject } = Promise.withResolvers<ServeServer>();
 	server.once("error", reject);
-	server.listen(options.port, options.host.replace(/^\[|\]$/g, ""), () => {
+	server.listen(options.port, options.host.replace(/^\[|\]$/g, ""), async () => {
 		const address = server.address();
 		const port = typeof address === "object" && address ? address.port : options.port;
 		hostOk = allowedHosts(options.host, port, options.allowHosts);
 		const localHost = isUnspecified(options.host) ? "127.0.0.1" : options.host.includes(":") && !options.host.startsWith("[") ? `[${options.host}]` : options.host;
 		const url = `http://${localHost}:${port}`;
+		// On the network, also answer LAN discovery on the same port number (UDP); the HTTP server works without it.
+		let discovery: DiscoveryResponder | undefined;
+		if (!isLoopbackHost(options.host)) {
+			try {
+				discovery = await startDiscoveryResponder({ port, serverId, httpPort: port, name: hostname, log });
+			} catch (error) {
+				log(`discovery off: could not bind UDP 0.0.0.0:${port}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
 		resolve({
 			serverId,
 			host: options.host,
 			port,
 			url,
 			startedAt,
+			discovery: discovery !== undefined,
 			close: async () => {
 				closing = true;
 				clearInterval(heartbeat);
+				await discovery?.close();
 				await Promise.all([...sessions.values()].map((s) => s.stop()));
 				const closed = Promise.withResolvers<void>();
 				server.close(() => closed.resolve());

@@ -39,6 +39,7 @@ const sources = [
 	"rpc-host",
 	"serve-session",
 	"serve-auth",
+	"serve-discovery",
 	"serve-server",
 	"serve-share",
 	"serve-cli",

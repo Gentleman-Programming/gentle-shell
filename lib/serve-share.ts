@@ -1,5 +1,5 @@
-// `gentle-shell serve share`: the connection code a desktop client pastes to
-// find this server on the local network and pair with it, the addresses that
+// `gentle-shell serve share`: the connection code a desktop client pastes when
+// LAN discovery cannot find this server, the addresses that
 // code advertises, the firewall hint, and the login autostart (a systemd user
 // unit or a macOS LaunchAgent) that keeps the network server running.
 
@@ -85,11 +85,14 @@ export function commandExists(command: string, env: NodeJS.ProcessEnv): boolean 
 	return dirs.some((dir) => dir !== "" && isAbsolute(dir) && existsSync(join(dir, command)));
 }
 
-/** The command that opens `port` in the local firewall, on Linux with ufw or firewalld; never run for the user. */
+/**
+ * The command that opens `port` in the local firewall for TCP (HTTP) and UDP (LAN discovery), on Linux with ufw
+ * or firewalld; never run for the user.
+ */
 export function firewallHint(platform: NodeJS.Platform, port: number, has: (command: string) => boolean): string | undefined {
 	if (platform !== "linux") return undefined;
-	if (has("ufw")) return `sudo ufw allow ${port}/tcp`;
-	if (has("firewall-cmd")) return `sudo firewall-cmd --permanent --add-port=${port}/tcp && sudo firewall-cmd --reload`;
+	if (has("ufw")) return `sudo ufw allow ${port}`;
+	if (has("firewall-cmd")) return `sudo firewall-cmd --permanent --add-port=${port}/tcp --add-port=${port}/udp && sudo firewall-cmd --reload`;
 	return undefined;
 }
 

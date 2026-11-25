@@ -12,6 +12,7 @@ import { createServer,                                           } from "node:ht
 import { hostname } from "node:os";
 import { basename, isAbsolute } from "node:path";
 import { hasScope, isServeScope,                                                 } from "./serve-auth.mjs";
+import { startDiscoveryResponder,                         } from "./serve-discovery.mjs";
 import { ServeSession, SessionError,                                             } from "./serve-session.mjs";
 
 export const SERVE_SCHEMA = "gentle-shell.serve/v1";
@@ -52,6 +53,8 @@ const SECURITY_HEADERS = {
 	"Cache-Control": "no-store",
 	"Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
 };
+
+
 
 
 
@@ -445,21 +448,32 @@ export function startServeServer(options                    )                   
 
 	const { promise, resolve, reject } = Promise.withResolvers             ();
 	server.once("error", reject);
-	server.listen(options.port, options.host.replace(/^\[|\]$/g, ""), () => {
+	server.listen(options.port, options.host.replace(/^\[|\]$/g, ""), async () => {
 		const address = server.address();
 		const port = typeof address === "object" && address ? address.port : options.port;
 		hostOk = allowedHosts(options.host, port, options.allowHosts);
 		const localHost = isUnspecified(options.host) ? "127.0.0.1" : options.host.includes(":") && !options.host.startsWith("[") ? `[${options.host}]` : options.host;
 		const url = `http://${localHost}:${port}`;
+		// On the network, also answer LAN discovery on the same port number (UDP); the HTTP server works without it.
+		let discovery                                ;
+		if (!isLoopbackHost(options.host)) {
+			try {
+				discovery = await startDiscoveryResponder({ port, serverId, httpPort: port, name: hostname, log });
+			} catch (error) {
+				log(`discovery off: could not bind UDP 0.0.0.0:${port}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
 		resolve({
 			serverId,
 			host: options.host,
 			port,
 			url,
 			startedAt,
+			discovery: discovery !== undefined,
 			close: async () => {
 				closing = true;
 				clearInterval(heartbeat);
+				await discovery?.close();
 				await Promise.all([...sessions.values()].map((s) => s.stop()));
 				const closed = Promise.withResolvers      ();
 				server.close(() => closed.resolve());

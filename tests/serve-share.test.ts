@@ -80,8 +80,8 @@ test("advertised addresses: LAN IPv4 first, never loopback or link-local, names 
 });
 
 test("the firewall hint names the exact command, on Linux with ufw or firewalld only", () => {
-	assert.equal(firewallHint("linux", 8787, (c) => c === "ufw"), "sudo ufw allow 8787/tcp");
-	assert.equal(firewallHint("linux", 8788, (c) => c === "firewall-cmd"), "sudo firewall-cmd --permanent --add-port=8788/tcp && sudo firewall-cmd --reload");
+	assert.equal(firewallHint("linux", 8787, (c) => c === "ufw"), "sudo ufw allow 8787", "TCP and UDP (discovery)");
+	assert.equal(firewallHint("linux", 8788, (c) => c === "firewall-cmd"), "sudo firewall-cmd --permanent --add-port=8788/tcp --add-port=8788/udp && sudo firewall-cmd --reload");
 	assert.equal(firewallHint("linux", 8787, () => false), undefined);
 	assert.equal(firewallHint("darwin", 8787, () => true), undefined);
 });
@@ -239,9 +239,11 @@ test("serve share from stopped: starts on the network (next port when taken), th
 	assert.equal(started.status, 0, started.stderr);
 	try {
 		const info = JSON.parse(started.stdout);
-		assert.deepEqual(Object.keys(info), ["code", "port", "addresses", "expiresAt", "serverId"]);
+		assert.deepEqual(Object.keys(info), ["code", "pairingCode", "port", "addresses", "expiresAt", "serverId", "discovery"]);
+		assert.equal(info.discovery, true, "the network server answers LAN discovery");
 		assert.equal(info.port, port + 1, "the taken port is skipped");
 		const code = decode(info.code);
+		assert.equal(info.pairingCode, code.c, "the short code is the one the long code carries");
 		assert.equal(code.v, 1);
 		assert.equal(code.id, info.serverId);
 		assert.equal(code.n, hostname());
@@ -273,11 +275,17 @@ test("serve share from stopped: starts on the network (next port when taken), th
 		const lines = human.stdout.split("\n");
 		assert.equal(lines[0], `The Gentle Shell server is already open to your network on port ${port + 1}.`);
 		assert.equal(lines[1], "");
-		assert.match(lines[2], /^gsc1\.[A-Za-z0-9_-]+$/, "the code alone on its line");
-		assert.equal(decode(lines[2]).id, info.serverId, "the same server");
-		assert.notEqual(decode(lines[2]).c, code.c, "a fresh pairing code");
-		assert.equal(lines[4], "Paste it in Gentle Shell GPUI → Configuration → Where agents run → Gentle Shell server. Valid for 5 minutes, once.");
-		assert.match(lines[5], /plain HTTP on your network/);
+		const short = /^ {2}Code: ([0-9A-Z]{4}-[0-9A-Z]{4})$/.exec(lines[2]);
+		assert.ok(short, lines[2]);
+		assert.equal(lines[3], "");
+		assert.equal(lines[4], "In Gentle Shell GPUI → Configuration → Where agents run → Gentle Shell server, enter this code. Valid for 5 minutes, once.");
+		assert.equal(lines[5], "If the app can't find this computer, paste this instead:");
+		assert.match(lines[6], /^gsc1\.[A-Za-z0-9_-]+$/, "the long code alone on its line");
+		assert.equal(decode(lines[6]).id, info.serverId, "the same server");
+		assert.equal(decode(lines[6]).c, short[1], "the long code carries the short one");
+		assert.notEqual(short[1], code.c, "a fresh pairing code");
+		assert.equal(lines[7], "");
+		assert.match(lines[8], /plain HTTP on your network/, "discovery is on: no note before the warning");
 		assert.equal(readServerFile(serveFiles(home).server)!.pid, server.pid);
 	} finally {
 		assert.equal(cli(root, ["stop"]).status, 0);
@@ -377,9 +385,9 @@ test("serve share --always hands the server to the login service manager, reuses
 	const server = liveServer(ctx.agentHome)!;
 	assert.equal(server.pid, launchd.child()!.pid, "the service manager's process serves");
 	const out = ctx.out.join("");
-	assert.match(out, new RegExp(`^Started the Gentle Shell server for your network on port ${port}\\.\n\ngsc1\\.`));
+	assert.match(out, new RegExp(`^Started the Gentle Shell server for your network on port ${port}\\.\n\n  Code: [0-9A-Z]{4}-[0-9A-Z]{4}\n\n`));
 	assert.match(out, /\nIt starts at every login; turn that off with 'gentle-shell serve share --off'\.\n$/);
-	assert.deepEqual(decode(out.split("\n")[2]).a, ["192.168.1.20", "box", "box.local"]);
+	assert.deepEqual(decode(out.split("\n")[6]).a, ["192.168.1.20", "box", "box.local"]);
 
 	// Already installed and running: reused as is, the service manager untouched.
 	launchd.calls.length = 0;

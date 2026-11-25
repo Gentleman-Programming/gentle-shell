@@ -2,8 +2,8 @@
 // under `<agent home>/serve`, the foreground server, the detached daemon, the
 // local CLI client (`status`, `stop`, `pair`, `devices`) that talks to the
 // running server with the owner-only admin token from the server file, and
-// `share`, which opens the server to the local network and prints one
-// connection code for a desktop client to paste.
+// `share`, which opens the server to the local network (answering LAN
+// discovery) and prints the short pairing code plus a connection code fallback.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -134,9 +134,12 @@ export const SERVE_HELP = [
 	"",
 	"  serve share      The easy way to connect Gentle Shell GPUI from another computer on your",
 	"                   network: opens the server to the network (plain HTTP, port 8787 or the next",
-	"                   free one; --port picks another) and prints one connection code to paste in",
-	"                   the app (valid 5 minutes, once). Reuses a server already on the network; one",
-	"                   on this computer only is reopened when it runs no sessions.",
+	"                   free one; --port picks another) and prints a short code to enter in the app",
+	"                   (valid 5 minutes, once). The app finds this computer on the network by itself",
+	"                   (UDP broadcast on the same port); where it cannot (another subnet, a tailnet,",
+	"                   client isolation), paste the long gsc1. code printed under it. Reuses a server",
+	"                   already on the network; one on this computer only is reopened when it runs no",
+	"                   sessions.",
 	"    --always       Also start that server at every login (systemd user unit on Linux, a",
 	"                   LaunchAgent on macOS). 'serve share --off' turns it off and stops it.",
 	"  serve            Start the server in the background (--foreground keeps it in this terminal).",
@@ -165,6 +168,8 @@ export interface ServerFile {
 	version: string;
 	/** Owner-only local admin token for the CLI. */
 	adminToken: string;
+	/** Whether it answers LAN discovery; absent in files written before discovery existed. */
+	discovery?: boolean;
 }
 
 export function serveDir(agentHome: string): string {
@@ -332,6 +337,7 @@ async function runForeground(ctx: ServeCommandContext, args: { host: string; por
 			startedAt: new Date(server.startedAt).toISOString(),
 			version: ctx.version,
 			adminToken,
+			discovery: server.discovery,
 		};
 		writeServerFile(files.server, file);
 		ctx.stdout(args.json
@@ -554,9 +560,12 @@ async function runShare(ctx: ServeCommandContext, args: { port: number; always: 
 		const port = server.listen.port;
 		const host = server.listen.host;
 		const addresses = isUnspecified(host) ? shareAddresses(system.networkInterfaces(), system.hostname()) : [host.includes(":") ? `[${host}]` : host];
-		const code = encodeConnectionCode({ id: server.serverId, n: system.hostname(), p: port, a: addresses, c: minted.data.code });
+		const pairingCode = minted.data.code;
+		const code = encodeConnectionCode({ id: server.serverId, n: system.hostname(), p: port, a: addresses, c: pairingCode });
+		// A server file from before discovery existed has no flag: that server does not answer it.
+		const discovery = server.discovery === true;
 		if (args.json) {
-			ctx.stdout(`${JSON.stringify({ code, port, addresses, expiresAt: minted.data.expiresAt, serverId: server.serverId })}\n`);
+			ctx.stdout(`${JSON.stringify({ code, pairingCode, port, addresses, expiresAt: minted.data.expiresAt, serverId: server.serverId, discovery })}\n`);
 			return 0;
 		}
 		const firewall = firewallHint(system.platform, port, system.has);
@@ -565,11 +574,15 @@ async function runShare(ctx: ServeCommandContext, args: { port: number; always: 
 			: opened === "reopened" ? `Opened the Gentle Shell server to your network on port ${port} (it was reachable from this computer only).`
 			: `Started the Gentle Shell server for your network on port ${port}.`,
 			"",
+			`  Code: ${pairingCode}`,
+			"",
+			"In Gentle Shell GPUI → Configuration → Where agents run → Gentle Shell server, enter this code. Valid for 5 minutes, once.",
+			"If the app can't find this computer, paste this instead:",
 			code,
 			"",
-			"Paste it in Gentle Shell GPUI → Configuration → Where agents run → Gentle Shell server. Valid for 5 minutes, once.",
+			...(discovery ? [] : [`Discovery is off on this server (UDP port ${port} could not be opened), so the app cannot find this computer by itself: paste the long code.`]),
 			"It uses plain HTTP on your network: share only on a network you trust, such as your home network.",
-			...(firewall ? [`If the app cannot connect, open the port in the firewall: ${firewall}`] : []),
+			...(firewall ? [`If the app cannot find or reach this computer, open the port in the firewall: ${firewall}`] : []),
 			...(atLogin ? ["It starts at every login; turn that off with 'gentle-shell serve share --off'."] : []),
 			...(atLogin && system.platform === "linux" ? [`To start it at boot, before anyone logs in: sudo loginctl enable-linger ${system.user}`] : []),
 			"",

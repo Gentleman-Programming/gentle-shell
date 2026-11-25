@@ -2,7 +2,7 @@
 
 `gentle-shell serve` runs one long-lived server per agent home. The server owns Gentle Shell sessions — one `gentle-shell --mode rpc` child each — so they keep running when the client that started them disconnects, and any paired device can follow and drive them over HTTP and Server-Sent Events (SSE).
 
-This is Phase 1 of [RFC #3527](https://github.com/Gentleman-Programming/gentle-shell/issues/3527), plus the `/.well-known/gentle-shell` identity and `serve share` connection codes. Persistent terminals (Phase 2), SSH bootstrap and TLS (Phase 3) and a mobile web client (Phase 4) are not part of it; see [Not done yet](#not-done-yet). To run it from a source checkout on a Linux machine and reach it from another one, see [Try it](#try-it-from-source-on-linux).
+This is Phase 1 of [RFC #3527](https://github.com/Gentleman-Programming/gentle-shell/issues/3527), plus the `/.well-known/gentle-shell` identity, LAN discovery and `serve share` codes. Persistent terminals (Phase 2), SSH bootstrap and TLS (Phase 3) and a mobile web client (Phase 4) are not part of it; see [Not done yet](#not-done-yet). To run it from a source checkout on a Linux machine and reach it from another one, see [Try it](#try-it-from-source-on-linux).
 
 ## Quick start: connect from Gentle Shell GPUI
 
@@ -12,18 +12,21 @@ On the computer where the agents should run (for example a Linux PC on your home
 gentle-shell serve share
 ```
 
-It prints one connection code:
+It prints a short code, and a long one under it:
 
 ```text
 Started the Gentle Shell server for your network on port 8787.
 
+  Code: 7PH3-DM9V
+
+In Gentle Shell GPUI → Configuration → Where agents run → Gentle Shell server, enter this code. Valid for 5 minutes, once.
+If the app can't find this computer, paste this instead:
 gsc1.eyJ2IjoxLCJpZCI6InNydl8…
 
-Paste it in Gentle Shell GPUI → Configuration → Where agents run → Gentle Shell server. Valid for 5 minutes, once.
 It uses plain HTTP on your network: share only on a network you trust, such as your home network.
 ```
 
-Copy the `gsc1.…` line and paste it in Gentle Shell GPUI on the other computer, in **Configuration → Where agents run → Gentle Shell server**. That is all: no SSH, IP addresses, ports or tunnels. For another device, or when the code expired, run `serve share` again. `gentle-shell serve share --always` also starts the server at every login; `serve share --off` turns that off. Details: [Share on your network](#share-on-your-network). From a source checkout, run the checkout's launcher instead (`gsdev serve share`, see [Try it](#try-it-from-source-on-linux)).
+Type the 8-character code in Gentle Shell GPUI on the other computer, in **Configuration → Where agents run → Gentle Shell server**: the app finds this computer on your network by itself ([LAN discovery](#lan-discovery)) and pairs. That is all: no SSH, IP addresses, ports or tunnels. When the app cannot find it — the computers are on different subnets, on a tailnet, or the Wi-Fi isolates clients — paste the long `gsc1.…` line in the same field instead. On Linux with a firewall, `share` also prints the command that opens the port (for example `sudo ufw allow 8787`, which covers both the HTTP connection and discovery). For another device, or when the code expired, run `serve share` again. `gentle-shell serve share --always` also starts the server at every login; `serve share --off` turns that off. Details: [Share on your network](#share-on-your-network). From a source checkout, run the checkout's launcher instead (`gsdev serve share`, see [Try it](#try-it-from-source-on-linux)).
 
 ## Quick start by hand
 
@@ -48,7 +51,7 @@ gentle-shell serve stop            # stops the server and every session it owns
 
 | Command | Does |
 | --- | --- |
-| `gentle-shell serve share [--port <n>] [--always] [--json]` | Open the server to the local network and print one [connection code](#connection-code) for Gentle Shell GPUI. See [Share on your network](#share-on-your-network). `--json` prints `{ code, port, addresses, expiresAt, serverId }`. |
+| `gentle-shell serve share [--port <n>] [--always] [--json]` | Open the server to the local network (with [LAN discovery](#lan-discovery)) and print the short pairing code plus a [connection code](#connection-code) for Gentle Shell GPUI. See [Share on your network](#share-on-your-network). `--json` prints `{ code, pairingCode, port, addresses, expiresAt, serverId, discovery }` (`code` is the `gsc1.…` connection code, `pairingCode` the short one, `discovery` whether the server answers LAN discovery). |
 | `gentle-shell serve share --off` | Remove the login autostart that `--always` installed (this stops the server it runs). |
 | `gentle-shell serve [--listen <host>:<port>] [--allow-host <name>]... [--foreground] [--json]` | Start the server. In the background by default (log in `serve/server.log`); `--foreground` keeps it in the terminal until Ctrl+C. `--listen` defaults to `127.0.0.1:0` (a random port); `:8787`, `8787` and `[::1]:8787` are accepted. `--allow-host` adds one DNS name clients may use in the `Host` header (repeatable; see [Security model](#security-model)). |
 | `gentle-shell serve status [--json]` | URL, pid, start time, protocol and the session list. Exit 1 when no server runs. |
@@ -66,13 +69,24 @@ The home selectors work ahead of `serve` as they do for `setup`: `gentle-shell -
 - **A server on this computer only (loopback):** with no running sessions it is stopped and started again on the network, transparently. With running sessions it is left alone: `share` explains in one line and exits 1 (stop them or run `serve stop` first).
 - **A server already on the network:** reused as it is (on its own port).
 
-Then it mints a pairing code (as `serve pair` does: default scopes, 5 minutes, single use) and prints the connection code with it. On Linux, when `ufw` or `firewall-cmd` is installed, it also prints the exact command that opens the port (it never runs `sudo` itself), for example `sudo ufw allow 8787/tcp`.
+Then it mints a pairing code (as `serve pair` does: default scopes, 5 minutes, single use) and prints it, followed by the [connection code](#connection-code) that carries it. The app takes either in the same field: the short code when it can [find the server on the network](#lan-discovery) by itself, the long one where discovery does not reach (another subnet, a tailnet, a Wi-Fi with client isolation). When the server could not open its UDP port, `share` says so in one line (discovery is off; the long code still works). On Linux, when `ufw` or `firewall-cmd` is installed, it also prints the exact command that opens the port for TCP and UDP (it never runs `sudo` itself), for example `sudo ufw allow 8787`.
 
 The network server is plain HTTP, exactly as `--listen 0.0.0.0` (see [Security model](#security-model)): the pairing code, the device token and session traffic cross the network unencrypted. Share only on a network you trust; over the internet use the [SSH tunnel](#4-reach-it-from-the-mac) instead.
 
+### LAN discovery
+
+A server listening on a non-loopback address (`share`, or any `--listen` other than loopback) also binds UDP on `0.0.0.0:<its HTTP port>` and answers discovery queries. When that bind fails (the port is taken) the server logs `discovery off: …` and runs without it.
+
+- **Query** (client → broadcast): `{"t":"gentle-shell/discover","v":1}`, sent from one ephemeral UDP socket to `255.255.255.255` and to each interface's directed broadcast address, on ports 8787-8796 (the ports `share` tries).
+- **Reply** (server → unicast to the query's source address and port): `{"t":"gentle-shell/here","v":1,"id":"<serverId>","n":"<hostname>","p":<HTTP port>}`.
+
+Anything else is ignored: datagrams over 512 bytes, other JSON, other `t` or `v`. Replies are rate-limited (20 per second overall, 4 per second per source address). They carry no secrets.
+
+The client collects replies for about 1.5 s and, for each distinct one, checks `GET http://<reply source IP>:<p>/.well-known/gentle-shell` names the same `serverId`. With a short code it then pairs with `POST /api/pair { code, name }` at the only server verified, lets the person pick one (name and IP) when several answered, and when none did asks them to check that both computers are on the same Wi-Fi and the firewall allows the port (`sudo ufw allow 8787` opens TCP and UDP), or to paste the long code instead. The pairing code is never sent to an address whose identity did not match.
+
 ### Connection code
 
-`gsc1.` followed by the base64url (no padding) of one JSON object:
+The fallback for when discovery cannot reach the server: `gsc1.` followed by the base64url (no padding) of one JSON object:
 
 ```json
 {"v":1,"id":"srv_…","n":"linux-box","p":8787,"a":["192.168.1.20","100.101.102.103","linux-box","linux-box.local"],"c":"ABCD-EFGH"}
@@ -107,7 +121,7 @@ Everything lives in `<agent home>/serve/`, a `0700` folder:
 
 | File | Content |
 | --- | --- |
-| `server.json` (`0600`) | `{ schema: "gentle-shell.serve.server/v1", protocol, serverId, url, listen, pid, startedAt, version, adminToken }`. Local clients discover the server here. Removed when the server stops. |
+| `server.json` (`0600`) | `{ schema: "gentle-shell.serve.server/v1", protocol, serverId, url, listen, pid, startedAt, version, adminToken, discovery }`. Local clients discover the server here (`discovery`: whether it answers [LAN discovery](#lan-discovery)). Removed when the server stops. |
 | `server.lock` (`0600`) | The pid holding the single-instance lock. A lock whose pid is gone is taken over. |
 | `devices.json` (`0600`) | Paired devices: id, name, scopes, created and last-used times, and the **sha256 of the token** — never the token. |
 | `server.log` (`0600`) | Background server log: lifecycle lines and each session's stderr, prefixed by session id. |
@@ -240,6 +254,7 @@ Browsers' `EventSource` cannot send headers, and long-lived tokens never go in U
 
 - **Loopback by default.** Without `--listen` the server binds `127.0.0.1` on a random port. Remote use goes through `ssh -L` (or a tunnel) to that port.
 - **Plain HTTP on a network is an explicit choice.** A non-loopback `--listen` (for example `0.0.0.0:8787`) starts only because device auth is always on, and prints a warning: tokens and session traffic then cross the network unencrypted. Use it on a network you trust (a home LAN, a tailnet).
+- **LAN discovery reveals presence only.** A network server answers the UDP [discovery query](#lan-discovery) of anyone on the network with its `serverId`, hostname and port — what `/.well-known/gentle-shell` already tells — and nothing else; replies are rate-limited and go only to the sender (a reply is about the size of the query, so it cannot amplify traffic). A loopback server does not listen for discovery.
 - **Origin and Host.** A request whose `Origin` is not this server's own origin (`http://<Host>`) is refused (`403 forbidden_origin`), before authentication, including `POST /api/pair`. Requests without `Origin` (curl, native clients) are accepted; tokens are never cookies, so a browser cannot attach them on another page's behalf. The `Host` header must name this server and its port (`421 bad_host`): loopback names for a loopback bind, the bound address otherwise, and for `0.0.0.0`/`::` any IP literal or this machine's own hostname (also as `<hostname>.local`) — never another DNS name (DNS rebinding). A name the operator trusts, such as a tailnet MagicDNS name (`box.tail1234.ts.net`), is added with `--allow-host <name>`; it is an exact name, never a pattern. No CORS headers are sent.
 - **Headers.** `Cache-Control: no-store`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
 - **Bounded input.** 16 KiB for small JSON bodies, 80 KiB for Desktop RPC, 8 MiB for Pi RPC commands; 20 s to send headers.
@@ -260,6 +275,7 @@ Browsers' `EventSource` cannot send headers, and long-lived tokens never go in U
 | Pairing code | 5 minutes, single use, 16 live, 10 failures per minute |
 | Stream ticket | 60 s, single use, 256 live |
 | Devices | 64 |
+| LAN discovery replies | 20 per second overall, 4 per second per source address; queries over 512 bytes dropped |
 
 ## Try it from source on Linux
 
@@ -339,7 +355,7 @@ The heredoc writes your current `PATH` and `node` into the unit (a user service 
 
 ### 4. Reach it from the Mac
 
-**Easiest: a connection code.** `gsdev serve share` on the Linux machine, then paste the code in Gentle Shell GPUI on the Mac ([Quick start](#quick-start-connect-from-gentle-shell-gpui)). It is option (b) below, plain HTTP on your network, without typing addresses. The rest of this step is the manual way.
+**Easiest: `serve share`.** `gsdev serve share` on the Linux machine, then enter the short code it prints in Gentle Shell GPUI on the Mac, or paste the long `gsc1.…` code when the app cannot find the Linux machine ([Quick start](#quick-start-connect-from-gentle-shell-gpui)). It is option (b) below, plain HTTP on your network, without typing addresses. The rest of this step is the manual way.
 
 **(a) SSH tunnel (recommended).** The server stays on loopback and SSH encrypts everything. It needs `sshd` on the Linux machine (`sudo systemctl enable --now sshd`). On the Mac:
 
@@ -365,7 +381,7 @@ It prints a warning: device tokens and session traffic cross the network unencry
   gsdev serve --listen 0.0.0.0:8787 --allow-host linux-box.tail1234.ts.net
   ```
 
-Binding a single address (`--listen 100.x.y.z:8787`) accepts only that address in `Host`. If `ufw` is enabled (Omarchy enables it; check `sudo ufw status`), open the port to the network you use, for example `sudo ufw allow in on tailscale0 to any port 8787 proto tcp` or `sudo ufw allow from 192.168.1.0/24 to any port 8787 proto tcp`. The SSH tunnel needs no rule beyond SSH's.
+Binding a single address (`--listen 100.x.y.z:8787`) accepts only that address in `Host`. If `ufw` is enabled (Omarchy enables it; check `sudo ufw status`), open the port to the network you use, for example `sudo ufw allow in on tailscale0 to any port 8787 proto tcp` or `sudo ufw allow from 192.168.1.0/24 to any port 8787` (TCP and UDP: UDP carries [LAN discovery](#lan-discovery)). The SSH tunnel needs no rule beyond SSH's.
 
 ### 5. Pair a client and drive a session
 
@@ -402,6 +418,7 @@ The Gentle Shell GPUI desktop app is getting a client for this server: [gentle-s
 | `could not start: listen EADDRINUSE` | Something else listens on the port: `ss -ltnp 'sport = :8787'`. Pick another port or stop it. `already running at …` means this home's server already runs (`serve status`). |
 | `serve status` says not running but `<home>/serve/server.json` exists | A server that was killed (or a reboot) left it; it is ignored and the next start takes it over. Only if a reused pid makes `status` report a server that does not answer, confirm nothing listens (`ss -ltnp`) and remove `<home>/serve/server.json` and `server.lock`. |
 | `Connection refused` from the Mac | The server listens on loopback (use the tunnel, or `--listen 0.0.0.0:8787`), the firewall drops the port, or the server is not running. |
+| The app does not find the computer from the short code | The two computers are not on the same network segment (another subnet or VLAN, a guest Wi-Fi with client isolation, a VPN or tailnet), or the firewall drops UDP on the port (`sudo ufw allow 8787` opens TCP and UDP). Paste the long `gsc1.…` code instead, which `share` prints under the short one. `share` notes when the server could not open its UDP port at all. |
 | `gentle-shell serve` opens a chat | That is the installed release, which has no `serve`; use the checkout (`gsdev serve`). |
 
 ## Not done yet

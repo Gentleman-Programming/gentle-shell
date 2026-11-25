@@ -396,7 +396,12 @@ test("a quoted reader name written as $'…' or $\"…\" still exposes the line,
 		[`$'cat' ${key}`, key],
 		[`$'CAT' ${envFile}`, envFile],
 		[`$"Cat" ${envFile}`, envFile],
+		[`echo "\\$";cat ${envFile}`, envFile],
+		[`grep "x\\$" app.log;cat ${envFile}`, envFile],
+		[`\\$'x';cat ${envFile}`, envFile],
 	]) assert.equal(findSensitiveCommandPath(command), path, command);
-	for (const command of [`node --env-file ${envFile} app.js --stage $ENV`, `node --env-file ${envFile} app.js --stage \${ENV}`, `node --env-file ${envFile} app.js --stage $env`])
+	for (const command of [`node --env-file ${envFile} app.js --stage $ENV`, `node --env-file ${envFile} app.js --stage \${ENV}`, `node --env-file ${envFile} app.js --stage $env`,
+		// Accepted residual risk (run-time-assembled reader, L18-L19): a reader stored in a variable.
+		`cat=cat; $cat ${envFile}`])
 		assert.equal(findSensitiveCommandPath(command), undefined, command);
 });

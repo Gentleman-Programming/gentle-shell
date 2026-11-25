@@ -2594,14 +2594,15 @@ const commandName = (word: string): string => word.slice(word.lastIndexOf("/") +
 // so a reader inside a quoted or glued word (`"$(cat key)"`, `x`cat key``,
 // `bash -c "cat key"`) still counts. Bash's `$'…'` and `$"…"` quoting is a
 // quoted word, not a variable, so the `$` before such a quote is dropped from
-// the raw line first (`$'CAT'` is the name `CAT`). After quote removal, a
+// the raw line first (`$'CAT'` is the name `CAT`); an escaped `\$` is a
+// literal dollar and stays, so the line's quoting is left as bash reads it. After quote removal, a
 // `$NAME` or `${NAME}` reference is a variable, never a command
 // (`--stage $ENV`), so it becomes a space.
 // Only this check splits; the words the guard tests and reports stay as
 // shellCommandWords gives them.
 const VARIABLE_REFERENCE = /\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/g;
 function commandLineNames(command: string): string[] {
-	return shellCommandWords(command.replace(/\\\r?\n/g, "").replace(/\$(?=['"])/g, ""))
+	return shellCommandWords(command.replace(/\\\r?\n/g, "").replace(/(?<!\\)\$(?=['"])/g, ""))
 		.flatMap((word) => word.replace(VARIABLE_REFERENCE, " ").split(/[\s$()`]+/))
 		.filter((piece) => piece.length > 0)
 		.map(commandName);

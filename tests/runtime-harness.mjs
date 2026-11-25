@@ -12,6 +12,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { domainHashV1 } from "../lib/review-canonical.ts";
 import { canonicalHash } from "../lib/review-transaction.ts";
+import { createExplorationBudget } from "../lib/exploration-budget.ts";
+import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const { createGentleAiExtension } = await import(pathToFileURL(join(ROOT, "extensions/gentle-ai.ts")).href);
@@ -451,6 +453,30 @@ async function run() {
 		discovered.extensions.some((extension) => extension.resolvedPath.endsWith(join("extensions", "nan-provider.ts"))),
 		"declared extension directory must discover the NaN provider",
 	);
+
+	{
+		const toolName = "mcp__codegraph__codegraph_query";
+		const input = { query: "extension registration" };
+		const budget = createExplorationBudget();
+		const session = "optional-mcp";
+		budget.start(session);
+		budget.call(session, "discovery", toolName);
+		const notice = budget.result(session, {
+			toolCallId: "discovery", toolName, input, isError: false,
+			content: [{ type: "text", text: "result" }],
+		});
+		assert.deepEqual({
+			nativeToolRegistered: discovered.extensions.some(extension => extension.tools.has("codegraph")),
+			notice,
+			discovery: budget.facts(session),
+			phase: inferOddPhase(toolName, input),
+		}, {
+			nativeToolRegistered: false,
+			notice: undefined,
+			discovery: { lookups: 1, textBytes: 6 },
+			phase: "exploring",
+		}, "the packaged runtime has no native CodeGraph tool and still recognizes optional MCP discovery");
+	}
 
 	const nativeNan = discovered.runtime.pendingNativeProviderRegistrations
 		.find((entry) => entry.provider.id === "nan")?.provider;

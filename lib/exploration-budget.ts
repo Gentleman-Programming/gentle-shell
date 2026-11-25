@@ -4,22 +4,18 @@ import { inferOddPhase } from "./odd-phase-inference.ts";
 
 // Explicit discovery tools; existing shell inference below is advisory, never authorization.
 const DISCOVERY_TOOLS = new Set([
-	"read", "grep", "find", "ls", "codegraph_query", "codegraph_explore",
+	"read", "grep", "find", "ls",
 	"mem_search", "mem_get_observation", "mem_context",
 	"mcp__codegraph__codegraph_query", "mcp__codegraph__codegraph_explore",
 ]);
 
-type DiscoveryResult = Pick<ToolResultEvent, "toolCallId" | "toolName" | "isError" | "content" | "input" | "details" | "parentToolCallId">;
+type DiscoveryResult = Pick<ToolResultEvent, "toolCallId" | "toolName" | "isError" | "content" | "input" | "parentToolCallId">;
 type PendingCall = { toolName: string; parentToolCallId?: string };
 type RequestBudget = { pending: Map<string, PendingCall>; seen: Set<string>; lookups: number; bytes: number; notified: boolean };
 
 function isDiscovery(event: DiscoveryResult): boolean {
 	if (DISCOVERY_TOOLS.has(event.toolName)) return true;
-	if (event.toolName === "bash" || event.toolName === "powershell") return inferOddPhase(event.toolName, event.input) === "exploring";
-	if (event.toolName !== "codegraph" || (event.input.operation !== "query" && event.input.operation !== "explore")) return false;
-	// This local tool reports unavailable/failed as successful fallback results.
-	const details = event.details;
-	return !(details && typeof details === "object" && "status" in details && (details.status === "failed" || details.status === "unavailable"));
+	return (event.toolName === "bash" || event.toolName === "powershell") && inferOddPhase(event.toolName, event.input) === "exploring";
 }
 
 /** Ephemeral per-request facts. Only calls observed in this request can contribute results. */

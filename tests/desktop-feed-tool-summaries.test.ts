@@ -45,7 +45,7 @@ test("S15: subagents, jobs, web, memory, codemode and review tools say what they
 	assert.equal(summarize("mem_save", { title: "Fixed the feed", content: "**What**: …", type: "bugfix" }), "Fixed the feed");
 	assert.equal(summarize("mem_search", { query: "desktop feed", limit: 5 }), "desktop feed");
 	assert.equal(summarize("mem_get_observation", { id: 42 }), "#42");
-	assert.equal(summarize("codemode", { code: "\n// read the graph\nconst r = await codegraph.search({ q: 'x' });\nreturn r;" }), "const r = await codegraph.search({ q: 'x' });");
+	assert.equal(summarize("codemode", { code: "\n// search the files\nconst r = await files.search({ q: 'x' });\nreturn r;" }), "const r = await files.search({ q: 'x' });");
 	assert.equal(summarize("gentle_review", { operation: "assess" }), "assess");
 	assert.equal(summarize("gentle_review_run", { operation: "start", input: "{\"mode\":\"ordinary\"}" }), "start");
 });

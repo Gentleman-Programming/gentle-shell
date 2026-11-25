@@ -12,10 +12,11 @@ import { createServer as createNetServer } from "node:net";
 import { join } from "node:path";
 import { INTERACTIVE_HOST_ENV } from "./rpc-host.ts";
 import { DEFAULT_PAIR_SCOPES, parseScopes, readDevicesFile, ServeAuth, writeDevicesFile, type PublicDevice, type ServeScope } from "./serve-auth.ts";
-import { isLoopbackHost, isUnspecified, SERVE_PROTOCOL, startServeServer, type ServeServer } from "./serve-server.ts";
+import { isLoopbackHost, isUnspecified, SERVE_PROTOCOL, startServeServer, type ServeServer, type ServeTower } from "./serve-server.ts";
 import type { SessionLaunch } from "./serve-session.ts";
 import { autostartCommand, autostartFile, autostartInstalled, defaultShareSystem, encodeConnectionCode, firewallHint, HOST_NAME, installAutostart, ownHostNames,
 	removeAutostart, SHARE_DEFAULT_PORT, SHARE_FORWARD_PORTS, SHARE_PORT_ATTEMPTS, shareAddresses, type PortRange, type ShareSystem } from "./serve-share.ts";
+import { openTowerServer } from "./tower-open.ts";
 
 export const SERVE_SERVER_FILE_SCHEMA = "gentle-shell.serve.server/v1";
 const DEFAULT_LISTEN = { host: "127.0.0.1", port: 0 };
@@ -325,6 +326,12 @@ function plainHttpWarning(host: string): string {
 
 type StartArgs = { host: string; port: number; allowHosts?: readonly string[]; forwardPorts?: PortRange };
 
+/** Gentle Tower in this process, on 127.0.0.1 with a fresh token: what `gentle-shell tower` runs, never a browser. */
+async function startTower(env: NodeJS.ProcessEnv): Promise<ServeTower> {
+	const tower = await openTowerServer(env);
+	return { port: tower.port, path: new URL(tower.url).pathname, close: () => tower.close() };
+}
+
 async function runForeground(ctx: ServeCommandContext, args: StartArgs & { json: boolean }): Promise<number> {
 	const files = serveFiles(ctx.agentHome);
 	privateDir(files.dir);
@@ -346,6 +353,7 @@ async function runForeground(ctx: ServeCommandContext, args: StartArgs & { json:
 			port: args.port,
 			allowHosts: args.allowHosts ?? [],
 			...(args.forwardPorts ? { forwardPorts: args.forwardPorts } : {}),
+			startTower: () => startTower(ctx.env),
 			auth,
 			version: ctx.version,
 			launchSession: (input) => sessionLaunch(ctx, input),

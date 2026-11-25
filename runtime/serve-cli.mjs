@@ -13,10 +13,11 @@ import { createServer as createNetServer } from "node:net";
 import { join } from "node:path";
 import { INTERACTIVE_HOST_ENV } from "./rpc-host.mjs";
 import { DEFAULT_PAIR_SCOPES, parseScopes, readDevicesFile, ServeAuth, writeDevicesFile,                                    } from "./serve-auth.mjs";
-import { isLoopbackHost, isUnspecified, SERVE_PROTOCOL, startServeServer,                  } from "./serve-server.mjs";
+import { isLoopbackHost, isUnspecified, SERVE_PROTOCOL, startServeServer,                                   } from "./serve-server.mjs";
 
 import { autostartCommand, autostartFile, autostartInstalled, defaultShareSystem, encodeConnectionCode, firewallHint, HOST_NAME, installAutostart, ownHostNames,
 	removeAutostart, SHARE_DEFAULT_PORT, SHARE_FORWARD_PORTS, SHARE_PORT_ATTEMPTS, shareAddresses,                                  } from "./serve-share.mjs";
+import { openTowerServer } from "./tower-open.mjs";
 
 export const SERVE_SERVER_FILE_SCHEMA = "gentle-shell.serve.server/v1";
 const DEFAULT_LISTEN = { host: "127.0.0.1", port: 0 };
@@ -326,6 +327,12 @@ function plainHttpWarning(host        )         {
 
 
 
+/** Gentle Tower in this process, on 127.0.0.1 with a fresh token: what `gentle-shell tower` runs, never a browser. */
+async function startTower(env                   )                      {
+	const tower = await openTowerServer(env);
+	return { port: tower.port, path: new URL(tower.url).pathname, close: () => tower.close() };
+}
+
 async function runForeground(ctx                     , args                               )                  {
 	const files = serveFiles(ctx.agentHome);
 	privateDir(files.dir);
@@ -347,6 +354,7 @@ async function runForeground(ctx                     , args                     
 			port: args.port,
 			allowHosts: args.allowHosts ?? [],
 			...(args.forwardPorts ? { forwardPorts: args.forwardPorts } : {}),
+			startTower: () => startTower(ctx.env),
 			auth,
 			version: ctx.version,
 			launchSession: (input) => sessionLaunch(ctx, input),

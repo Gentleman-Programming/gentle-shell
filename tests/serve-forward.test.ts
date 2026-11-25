@@ -13,12 +13,16 @@ import { allowedHosts, startServeServer, type ServeServer } from "../lib/serve-s
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
 const ADMIN = "gsa_test-admin-token";
+const TOWER_TOKEN = "tower-token-123";
 let root: string;
 let server: ServeServer;
 let auth: ServeAuth;
 let project: string;
 let page: Server;
 let pagePort: number;
+let towerPage: Server;
+let towerStarts = 0;
+let towerCloses = 0;
 /** What the page saw last: the request as it reached the target. */
 let seen: { method?: string; url?: string; headers?: IncomingMessage["headers"]; body?: string } = {};
 let releaseStream: () => void = () => {};
@@ -69,6 +73,15 @@ before(async () => {
 	project = realpathSync(mkdtempSync(join(root, "project-")));
 	page = startPage();
 	pagePort = await listen(page);
+	// A stand-in for Gentle Tower: its token is the first path segment and only its own origin may post.
+	towerPage = createServer((req, res) => {
+		const origin = req.headers.origin;
+		const port = (towerPage.address() as { port: number }).port;
+		if (origin && origin !== `http://127.0.0.1:${port}`) { res.writeHead(403); return res.end("bad origin"); }
+		if (!req.url?.startsWith(`/${TOWER_TOKEN}/`)) { res.writeHead(403); return res.end("no token"); }
+		res.writeHead(200, { "Content-Type": "text/html" });
+		res.end(`tower ${req.method} ${req.url}`);
+	});
 	auth = new ServeAuth({ devicesFile: join(root, "serve", "devices.json"), adminToken: ADMIN });
 	server = await startServeServer({
 		host: "127.0.0.1",
@@ -76,6 +89,18 @@ before(async () => {
 		auth,
 		version: "test",
 		launchSession: (input) => ({ command: process.execPath, args: [FAKE_PI], cwd: input.cwd, env: { ...process.env } }),
+		startTower: async () => {
+			towerStarts += 1;
+			const port = await listen(towerPage);
+			const close = () => {
+				towerCloses += 1;
+				const closed = Promise.withResolvers<void>();
+				towerPage.close(() => closed.resolve());
+				towerPage.closeAllConnections();
+				return closed.promise;
+			};
+			return { port, path: `/${TOWER_TOKEN}/`, close };
+		},
 	});
 });
 after(async () => {
@@ -356,6 +381,35 @@ test("forwards close when their device is revoked or they are deleted", async ()
 	assert.deepEqual(deleted.body, { closed: mine.body.id });
 	assert.ok(await closedPort(mine.body.listenPort));
 	await api("DELETE", `/api/sessions/${id}`, ADMIN);
+});
+
+test("Gentle Tower: started once on request, forwarded with its token path, stopped by DELETE", async () => {
+	const reader = await pairDevice(["sessions:read"], "tower-reader");
+	assert.equal((await api("POST", "/api/tower", reader.token)).status, 403, "Tower acts on sessions: operate scope");
+	assert.deepEqual((await api("GET", "/api/tower", reader.token)).body, { running: false });
+	const opened = await api("POST", "/api/tower", ADMIN);
+	assert.equal(opened.status, 201, JSON.stringify(opened.body));
+	assert.equal(opened.body.started, true);
+	assert.equal(opened.body.sessionId, null);
+	assert.match(opened.body.url, new RegExp(`^http://127\\.0\\.0\\.1:${opened.body.listenPort}/${TOWER_TOKEN}/\\?gs_ticket=`));
+	const { cookie, origin, page: landed } = await openLink(opened.body.url);
+	assert.equal(landed.text, `tower GET /${TOWER_TOKEN}/`);
+	// Tower refuses any Origin but its own; the forward's own reads as Tower's.
+	const posted = await http(`${origin}/${TOWER_TOKEN}/api/action`, { method: "POST", headers: { Cookie: cookie, Origin: origin }, body: "{}" });
+	assert.equal(posted.text, `tower POST /${TOWER_TOKEN}/api/action`);
+
+	const again = await api("POST", "/api/tower", ADMIN);
+	assert.equal(again.status, 200);
+	assert.equal(again.body.started, false);
+	assert.equal(again.body.id, opened.body.id);
+	assert.equal(towerStarts, 1);
+	assert.equal((await api("GET", "/api/tower", reader.token)).body.running, true);
+
+	assert.equal((await api("DELETE", "/api/tower", reader.token)).status, 403);
+	assert.deepEqual((await api("DELETE", "/api/tower", ADMIN)).body, { stopped: true });
+	assert.equal(towerCloses, 1);
+	assert.ok(await closedPort(opened.body.listenPort), "its forwards close with it");
+	assert.deepEqual((await api("DELETE", "/api/tower", ADMIN)).body, { stopped: false });
 });
 
 test("forward manager: tickets expire, idle forwards close, connections are bounded, the port range is used", async () => {

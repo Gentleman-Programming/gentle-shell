@@ -1,6 +1,6 @@
 # `gentle-shell serve`
 
-`gentle-shell serve` runs one long-lived server per agent home. The server owns Gentle Shell sessions — one `gentle-shell --mode rpc` child each — so they keep running when the client that started them disconnects, and any paired device can follow and drive them over HTTP and Server-Sent Events (SSE). A device can also open web pages that live on the server's own loopback — the design canvas, a dev server the agent started, Gentle Tower — through [authenticated port forwards](#port-forwarding).
+`gentle-shell serve` runs one long-lived server per agent home. The server owns Gentle Shell sessions — one `gentle-shell --mode rpc` child each — so they keep running when the client that started them disconnects, and any paired device can follow and drive them over HTTP and Server-Sent Events (SSE). A device can also open web pages that live on the server's own loopback — the design canvas, a dev server the agent started, [Gentle Tower](#gentle-tower) — through [authenticated port forwards](#port-forwarding).
 
 This is Phase 1 of [RFC #3527](https://github.com/Gentleman-Programming/gentle-shell/issues/3527), plus the `/.well-known/gentle-shell` identity, LAN discovery and `serve share` codes. Persistent terminals (Phase 2), SSH bootstrap and TLS (Phase 3) and a mobile web client (Phase 4) are not part of it; see [Not done yet](#not-done-yet). To run it from a source checkout on a Linux machine and reach it from another one, see [Try it](#try-it-from-source-on-linux).
 
@@ -147,7 +147,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | --- | --- | --- |
 | `GET /.well-known/gentle-shell` | none | `{ schema: "gentle-shell.serve.identity/v1", serverId, name, protocol, version }`: who answers at this address (`name` is the machine's hostname). No secrets; `Host` and `Origin` rules still apply. A client holding a [connection code](#connection-code) probes it before pairing. |
 | `POST /api/pair` | none (the code) | `{ code, name? }` → `201 { id, name, scopes, createdAt, token }`. `403 invalid_code`, `429 rate_limited`, `409 too_many_devices`. |
-| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, home? }`. `capabilities` includes `forwards`. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
+| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, home? }`. `capabilities` includes `forwards` and `tower`. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
 | `POST /api/server/stop` | `admin` | `202`; the server stops its sessions and exits. |
 | `POST /api/pairing-codes` | `admin` | `{ scopes? }` → `201 { code, scopes, expiresAt }` |
 | `GET /api/devices` | `admin` | `{ devices: [{ id, name, scopes, createdAt, lastUsedAt? }] }` |
@@ -163,6 +163,9 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | `POST /api/sessions/:id/forwards` | `sessions:operate` | `{ port, path? }` → `201 Forward & { url, expiresAt }` (`200` when the device already had it). See [Port forwarding](#port-forwarding). |
 | `GET /api/sessions/:id/forwards` | `sessions:read` | `{ forwards: [Forward] }`: the calling device's forwards for the session (an admin token sees every device's). |
 | `DELETE /api/sessions/:id/forwards/:fid` | `sessions:operate` | `{ closed }`. Only the device's own (`404` otherwise). |
+| `POST /api/tower` | `sessions:operate` | → `201 Forward & { url, expiresAt, started }`. Starts [Gentle Tower](#gentle-tower) when it is not running and forwards it. |
+| `GET /api/tower` | `sessions:read` | `{ running: false }` or `{ running: true, startedAt }`. |
+| `DELETE /api/tower` | `sessions:operate` | `{ stopped }`. Stops Tower and closes its forwards. |
 
 `Session` is `{ id, name, cwd?, state: "running"|"exited", startedAt, exitedAt?, exitCode?, exitSignal?, seq, subscribers, pendingDialogs, lastActiveDevice }`. `name` is the folder's basename; the absolute `cwd` is included only for a token with `sessions:operate` (which can start sessions in any folder anyway). `lastActiveDevice` is the id of the device that most recently drove the session (started it, or sent any request that needs `sessions:operate`: a prompt, a steer, a follow-up, a dialog answer, a host message, a Desktop write), or `null`.
 
@@ -310,6 +313,13 @@ Errors: `400 invalid_port` (not 1-65535, or the server's own port or a forward's
 ### Firewall
 
 A network server's forwards listen on their own ports, so a firewall that allows only the server's port blocks them. Start the server with a range (`--forward-ports 8800-8899`; `serve share` does) and open it once: `sudo ufw allow 8800:8899/tcp`, or `sudo firewall-cmd --permanent --add-port=8800-8899/tcp && sudo firewall-cmd --reload`. Over an SSH tunnel, forward each forward's port too (`ssh -L 8800:127.0.0.1:8800 …`), with the same port on both ends.
+
+## Gentle Tower
+
+`POST /api/tower` (`sessions:operate`: Tower sends messages to sessions and opens new ones) starts Gentle Tower inside the server process when it is not running — the same server `gentle-shell tower` runs, on `127.0.0.1` with a fresh token, without a browser — and answers with a forward to it like `POST …/forwards` does, plus `started` (whether this call started it). The link's path is Tower's own token path (`/<token>/`), so Tower's own token check still applies behind the forward's. Every device gets its own forward to the one Tower. `GET /api/tower` says whether it runs; `DELETE /api/tower` stops it and closes its forwards; it also stops with the server.
+
+- `503 tower_unavailable` with the reason when Tower cannot start (for example a source checkout whose web app is not built: `pnpm build:tower`).
+- Tower shows the sessions of this machine (its hub is per user, not per agent home). Its "new floor" action opens a terminal window on the server machine, as it does locally.
 
 ## Security model
 

@@ -20,7 +20,7 @@ export const SERVE_PROTOCOL = 1;
 export const SERVE_IDENTITY_SCHEMA = "gentle-shell.serve.identity/v1";
 /** Public identity path: a client holding a connection code probes it to find the address that reaches this server. */
 export const SERVE_IDENTITY_PATH = "/.well-known/gentle-shell";
-export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards"] as const;
+export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards", "tower"] as const;
 
 export const SERVE_SERVER_LIMITS = {
 	heartbeatMs: 20_000,
@@ -97,6 +97,15 @@ export interface ServeServerOptions {
 	/** Listen ports forwards take (inclusive), so a firewall can open them; OS-assigned when absent. */
 	forwardPorts?: { from: number; to: number };
 	forwardLimits?: Partial<typeof SERVE_FORWARD_LIMITS>;
+	/** Starts Gentle Tower on this machine's loopback (`POST /api/tower`); the real CLI runs it in-process. */
+	startTower?: () => Promise<ServeTower>;
+}
+
+/** A running Gentle Tower: its loopback port, the path that carries its token, and how to stop it. */
+export interface ServeTower {
+	port: number;
+	path: string;
+	close(): Promise<void>;
 }
 
 export interface ServeServer {
@@ -238,6 +247,9 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 		log,
 		limits: options.forwardLimits,
 	});
+	// Gentle Tower, when a device asked for it; stopped with the server.
+	let tower: (ServeTower & { startedAt: number }) | undefined;
+	let towerStarting: Promise<ServeTower & { startedAt: number }> | undefined;
 
 	options.auth.onRevoke((deviceId) => {
 		for (const s of sessions.values()) s.dropDevice(deviceId);
@@ -361,6 +373,52 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 		return sendJson(res, opened.created ? 201 : 200, { ...forwardView(opened.forward), ...forwardLink(req, opened.forward, path) });
 	};
 
+	const ensureTower = async (): Promise<{ tower: ServeTower & { startedAt: number }; started: boolean }> => {
+		if (tower) return { tower, started: false };
+		if (!options.startTower) throw new HttpError(501, "not_supported", "This server cannot start Gentle Tower");
+		const start = options.startTower;
+		const pending = towerStarting ??= (async () => ({ ...(await start()), startedAt: now() }))();
+		try {
+			const running = await pending;
+			const started = tower === undefined;
+			tower = running;
+			if (started) log(`tower started on loopback:${running.port}`);
+			return { tower: running, started };
+		} catch (error) {
+			throw new HttpError(503, "tower_unavailable", error instanceof Error ? error.message : String(error));
+		} finally {
+			towerStarting = undefined;
+		}
+	};
+
+	const stopTower = async (): Promise<boolean> => {
+		const running = tower;
+		if (!running) return false;
+		tower = undefined;
+		forwards.closeWhere((f) => f.kind === "tower", "tower stopped");
+		await running.close();
+		log("tower stopped");
+		return true;
+	};
+
+	const towerRoute = async (req: IncomingMessage, res: ServerResponse, method: string, principal: Principal | undefined) => {
+		if (method === "GET") {
+			need(principal, "sessions:read");
+			return sendJson(res, 200, tower ? { running: true, startedAt: new Date(tower.startedAt).toISOString() } : { running: false });
+		}
+		if (method === "DELETE") {
+			need(principal, "sessions:operate");
+			return sendJson(res, 200, { stopped: await stopTower() });
+		}
+		if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use GET, POST or DELETE");
+		// Tower can send messages to sessions and open new ones: operating, not reading.
+		const who = need(principal, "sessions:operate");
+		if (closing) throw new HttpError(503, "shutting_down", "The server is stopping");
+		const { tower: running, started } = await ensureTower();
+		const opened = await forwards.open({ deviceId: who.deviceId, sessionId: null, kind: "tower", port: running.port });
+		return sendJson(res, opened.created ? 201 : 200, { ...forwardView(opened.forward), ...forwardLink(req, opened.forward, running.path), started });
+	};
+
 	const route = async (req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> => {
 		const method = req.method ?? "GET";
 		const path = url.pathname;
@@ -462,6 +520,7 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 			started.noteActivity(who.deviceId);
 			return sendJson(res, 201, { session: sessionView(started, who) });
 		}
+		if (path === "/api/tower") return towerRoute(req, res, method, principal);
 		const forward = /^\/api\/sessions\/([A-Za-z0-9_]{1,64})\/forwards(?:\/([A-Za-z0-9_]{1,64}))?$/.exec(path);
 		if (forward) return forwardRoute(req, res, method, principal, forward[1], forward[2]);
 		const one = /^\/api\/sessions\/([A-Za-z0-9_]{1,64})(\/rpc|\/desktop)?$/.exec(path);
@@ -613,6 +672,8 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 				clearInterval(heartbeat);
 				await discovery?.close();
 				forwards.closeAll();
+				await towerStarting?.catch(() => undefined);
+				await stopTower();
 				await Promise.all([...sessions.values()].map((s) => s.stop()));
 				const closed = Promise.withResolvers<void>();
 				server.close(() => closed.resolve());

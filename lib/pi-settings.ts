@@ -71,11 +71,13 @@ class ReadOnlySettingsStorage implements SettingsStorage {
 const PROVIDER_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 /**
  * A model id or `enabledModels` pattern in Pi's `--models` format: a bare model
- * id or `provider/modelId`, with minimatch wildcards and an optional
- * `:thinking` suffix. At most one `/`, so a relative path such as `a/b/c` is
- * never displayed.
+ * id or `provider/modelId` (the id itself may hold more `/`, as in
+ * `openrouter/anthropic/claude-3.5-sonnet`), with minimatch wildcards and an
+ * optional `:thinking` suffix. Every segment starts with a letter or digit, so
+ * an absolute path (`/home/...`), a `./` or `../` path, and a backslash path
+ * are never displayed.
  */
-const MODEL_SHAPE = /^(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)?[A-Za-z0-9*?[][A-Za-z0-9._*?+@[\]!-]*(?::[A-Za-z]+)?$/;
+const MODEL_SHAPE = /^(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9*?[][A-Za-z0-9._*?+@[\]!-]*(?::[A-Za-z]+)?$/;
 
 /** A short display token of the given shape; too long, credential-shaped, or path-shaped is `null`, never cut. */
 function displayText(value: unknown, shape: RegExp): string | null {

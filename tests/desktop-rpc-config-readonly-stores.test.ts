@@ -265,7 +265,9 @@ test("pi_settings never displays credential-shaped or path-shaped model values, 
 	const e = env(t);
 	for (const [setting, expected] of [
 		[{ defaultProvider: "user:secret@host", defaultModel: "user:secret@host" }, { defaultProvider: null, defaultModel: null }],
-		[{ defaultProvider: "a/b", defaultModel: "a/b/c" }, { defaultProvider: null, defaultModel: null }],
+		[{ defaultProvider: "a/b", defaultModel: "/home/u/model" }, { defaultProvider: null, defaultModel: null }],
+		[{ defaultProvider: "openai", defaultModel: "./rel/model" }, { defaultProvider: "openai", defaultModel: null }],
+		[{ defaultProvider: "openrouter", defaultModel: "openrouter/anthropic/claude-3.5-sonnet" }, { defaultProvider: "openrouter", defaultModel: "openrouter/anthropic/claude-3.5-sonnet" }],
 		[{ defaultProvider: "openai", defaultModel: "..\\x\\y" }, { defaultProvider: "openai", defaultModel: null }],
 		[{ defaultProvider: "openrouter", defaultModel: "anthropic/claude-3.5-sonnet" }, { defaultProvider: "openrouter", defaultModel: "anthropic/claude-3.5-sonnet" }],
 		[{ defaultProvider: "openai", defaultModel: "gpt-5.1-codex" }, { defaultProvider: "openai", defaultModel: "gpt-5.1-codex" }],
@@ -274,10 +276,10 @@ test("pi_settings never displays credential-shaped or path-shaped model values, 
 		const data = await e.read("pi_settings");
 		assert.deepEqual({ defaultProvider: data.value.defaultProvider, defaultModel: data.value.defaultModel }, expected, JSON.stringify(setting));
 	}
-	writeJson(join(e.agentHome, "settings.json"), { enabledModels: ["openai/gpt-5", "anthropic/*:high", "claude-sonnet-4", "user:secret@host", "a/b/c", "./rel/path", "x\\y"] });
+	writeJson(join(e.agentHome, "settings.json"), { enabledModels: ["openai/gpt-5", "anthropic/*:high", "claude-sonnet-4", "openrouter/anthropic/*", "user:secret@host", "/abs/model", "./rel/path", "../up/model", "x\\y"] });
 	const data = await e.read("pi_settings");
-	assert.deepEqual(data.value.enabledModels, ["openai/gpt-5", "anthropic/*:high", "claude-sonnet-4"]);
-	assertNoLeak(data, e.root, ["secret@host", "a/b/c", "rel/path"]);
+	assert.deepEqual(data.value.enabledModels, ["openai/gpt-5", "anthropic/*:high", "claude-sonnet-4", "openrouter/anthropic/*"]);
+	assertNoLeak(data, e.root, ["secret@host", "/abs/model", "rel/path", "up/model"]);
 });
 
 test("a settings value Pi cannot read keeps an absent project layer missing", async (t) => {

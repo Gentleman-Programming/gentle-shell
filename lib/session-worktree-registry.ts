@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export const SESSION_WORKTREE_ENTRY = "gentle-pi.session-worktree/v1";
 export const SESSION_WORKTREE_CHANGED = "gentle-pi:session-worktree-changed";
@@ -177,7 +177,9 @@ export class SessionWorktreeRegistry {
 		for (const entry of this.session.getEntries()) {
 			if (entry.type !== "custom" || entry.customType !== SESSION_WORKTREE_ENTRY || !entry.data || typeof entry.data !== "object") continue;
 			const data = entry.data as Partial<Registration>;
-			if (data.sessionId === this.sessionId && typeof data.root === "string" && typeof data.evidence === "string") this.recorded.add(data.root);
+			// Durable entries store canonical absolute roots, not tool path aliases.
+			if (data.sessionId === this.sessionId && typeof data.root === "string" && isAbsolute(data.root)
+				&& resolve(data.root) === data.root && typeof data.evidence === "string") this.recorded.add(data.root);
 		}
 	}
 
@@ -198,8 +200,9 @@ export class SessionWorktreeRegistry {
 		this.restore();
 		const roots = new Set<string>();
 		for (const recorded of this.recorded) {
-			try { roots.add(this.validate(recorded)); }
-			catch { /* Missing/prunable roots remain durable but cannot be scanned. */ }
+			try {
+				if (this.validate(recorded) === recorded) roots.add(recorded);
+			} catch { /* Missing/prunable roots remain durable but cannot be scanned. */ }
 		}
 		return [...roots];
 	}

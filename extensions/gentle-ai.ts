@@ -33,7 +33,8 @@ import { boundedFindingClaims, parseReviewCoordinatorInput, runReviewCoordinator
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
-import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
+import { resolveSessionWorktree, SessionWorktreeRegistry, toolWorktreePath } from "../lib/session-worktree-registry.ts";
+import { canonicalizeTarget, clearPathConsentSkills, isIndexedSkillTarget, isTempTarget, isWithinPath, setPathConsentSkills } from "../lib/path-consent-fence.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -2905,6 +2906,31 @@ function saveGuardedCommandAllowAlways(
 	return true;
 }
 
+async function requestToolConfirmation(
+	events: ExtensionAPI["events"],
+	herdrLifecycle: HerdrConfirmationLifecycle,
+	toolName: string,
+	confirm: () => Promise<boolean>,
+): Promise<boolean> {
+	const requestId = randomUUID();
+	const emitPermissionRequest = (state: "waiting" | "approved" | "denied"): void => {
+		events.emit("pi-permission-system:permission-request", {
+			requestId, state, source: "tool_call",
+			message: "Gentle AI safety policy requires confirmation for this tool call.", toolName,
+		});
+	};
+	let approved = false;
+	emitPermissionRequest("waiting");
+	herdrLifecycle.begin();
+	try {
+		approved = await confirm();
+		return approved;
+	} finally {
+		try { emitPermissionRequest(approved ? "approved" : "denied"); }
+		finally { herdrLifecycle.settle(); }
+	}
+}
+
 async function confirmCommand(
 	command: string,
 	ctx: ExtensionContext,
@@ -2987,24 +3013,7 @@ async function confirmCommand(
 		? "Allow recognized data-loss command?"
 		: guardedCommandTitle(evaluation.key, evaluation.matches);
 	const preview = guardedCommandPreview(command, evaluation.triggerIndex);
-	const requestId = randomUUID();
-	const emitPermissionRequest = (
-		state: "waiting" | "approved" | "denied",
-	): void => {
-		events.emit("pi-permission-system:permission-request", {
-			requestId,
-			state,
-			source: "tool_call",
-			message: "Gentle AI safety policy requires confirmation for this tool call.",
-			toolName: "bash",
-		});
-	};
-	let approved = false;
-	let confirmationFailed = false;
-	let confirmationError: unknown;
-	emitPermissionRequest("waiting");
-	herdrLifecycle.begin();
-	try {
+	const approved = await requestToolConfirmation(events, herdrLifecycle, "bash", async () => {
 		if (typeof (ctx.ui as { select?: unknown }).select === "function") {
 			// Scoped confirmation: the ask dialog itself carries the allowlist choices.
 			const canAlwaysAllow = !evaluation.dataLoss && typeof evaluation.key === "string"
@@ -3027,21 +3036,10 @@ async function confirmCommand(
 				&& !saveGuardedCommandAllowAlways(evaluation.key as GuardedCommandKey, {}, pushVariant)) {
 				try { ctx.ui.notify?.("Could not save the always-allow preference; the command is approved once only.", "warning"); } catch { /* display only */ }
 			}
-			approved = selection === "Allow once" || selection === "Allow for this session" || (alwaysLabel !== undefined && selection === alwaysLabel);
-		} else {
-			approved = (await ctx.ui.confirm(title, preview)) === true;
+			return selection === "Allow once" || selection === "Allow for this session" || (alwaysLabel !== undefined && selection === alwaysLabel);
 		}
-	} catch (error) {
-		confirmationFailed = true;
-		confirmationError = error;
-	} finally {
-		try {
-			emitPermissionRequest(confirmationFailed || !approved ? "denied" : "approved");
-		} finally {
-			herdrLifecycle.settle();
-		}
-	}
-	if (confirmationFailed) throw confirmationError;
+		return (await ctx.ui.confirm(title, preview)) === true;
+	});
 	if (approved) return undefined;
 	return {
 		block: true,
@@ -12282,6 +12280,7 @@ function createGentleAiExtensionForTesting(
 		cancel: () => classifier?.cancel(),
 	}, { configHome: gentlePiConfigHome(permissionEnvironment) });
 	const auto = autoPermissions;
+	const pathTargetGrants = new WeakMap<object, { sessionId: string; targets: Set<string> }>();
 	const verifierSettleReminders = createVerifierSettleReminders<PendingReviewConsentSessionKey>();
 	const explorationBudget = createExplorationBudget();
 	// Named-agent or child runs started and not yet settled, per session. Such a run never records verifier attempts (its
@@ -12409,6 +12408,8 @@ function createGentleAiExtensionForTesting(
 		invalidateRddStatus(context.cwd);
 		rddOffReviewLoadout = false;
 		auto.reset();
+		pathTargetGrants.delete(context.sessionManager);
+		clearPathConsentSkills(context);
 		yolo.reset(context);
 		reviewSidebar.reset();
 		statusTiming.reset();
@@ -13067,6 +13068,9 @@ function createGentleAiExtensionForTesting(
 	};
 
 	pi.on("before_agent_start", async (event, ctx) => {
+		const skills = event.systemPromptOptions?.skills;
+		setPathConsentSkills(ctx, "pi", Array.isArray(skills) ? skills
+			.filter(skill => skill?.disableModelInvocation !== true && typeof skill?.filePath === "string").map(skill => skill.filePath) : []);
 		const isNamedAgent = isNamedAgentStartEvent(event);
 		const isChildSession = permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1";
 		const isPrimarySession = !isNamedAgent && !isChildSession;
@@ -13330,6 +13334,53 @@ function createGentleAiExtensionForTesting(
 		return withNotice(undefined);
 	});
 
+	async function confirmOutsidePath(toolName: string, input: Record<string, unknown>, path: string, ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
+		const manager = ctx.sessionManager;
+		const cwd = ctx.cwd;
+		const sessionCwd = manager?.getCwd?.() ?? cwd;
+		const sessionId = manager?.getSessionId?.();
+		let target: string;
+		try { target = canonicalizeTarget(path, cwd, toolName); }
+		catch { return { block: true, reason: "Gentle AI safety policy cannot safely resolve the requested path." }; }
+		const worktree = resolveSessionWorktree(sessionCwd, sessionCwd);
+		// Files outside a Git checkout use the session directory as their boundary.
+		let root = worktree?.root ?? sessionCwd;
+		if (!worktree) {
+			try { root = realpathSync.native(root); }
+			catch { /* A missing bootstrap directory has no symlink destination. */ }
+		}
+		if (isWithinPath(root, target) || isTempTarget(target, permissionEnvironment)) return undefined;
+		if (toolName === "read" && isIndexedSkillTarget(ctx, target)) return undefined;
+		if (worktree && sessionId && typeof manager.getEntries === "function"
+			&& new SessionWorktreeRegistry(pi, manager, sessionCwd).roots().some(root => isWithinPath(root, target))) return undefined;
+		const grant = manager && pathTargetGrants.get(manager);
+		if (grant && grant.sessionId === sessionId && grant.targets.has(target)) return undefined;
+		const displayedTarget = sanitizeTerminalText(target);
+		if (!ctx.hasUI || typeof ctx.ui?.confirm !== "function") return { block: true, reason: `Gentle AI safety policy requires interactive confirmation before accessing paths outside the session worktree: ${displayedTarget}. Ask the user for an explicit safer plan.` };
+		if (!sessionId || !manager) return { block: true, reason: "Session identity is unavailable; access outside the session worktree is blocked." };
+		const epoch = reminderEpoch, modeEpoch = yolo.epoch();
+		let changed = false;
+		const approved = await requestToolConfirmation(pi.events, herdrLifecycle, toolName, async () => {
+			if ((await ctx.ui.confirm("Allow access outside the session worktree?", displayedTarget)) !== true) return false;
+			try {
+				const current = toolWorktreePath(toolName, input);
+				changed = ctx.signal?.aborted === true || epoch !== reminderEpoch || modeEpoch !== yolo.epoch()
+					|| ctx.sessionManager !== manager || ctx.cwd !== cwd
+					|| manager.getSessionId() !== sessionId || (manager.getCwd?.() ?? cwd) !== sessionCwd
+					|| current === undefined || canonicalizeTarget(current, cwd, toolName) !== target;
+			} catch { changed = true; }
+			return !changed;
+		});
+		if (!approved) return { block: true, reason: changed
+			? "Gentle AI safety policy blocked the path access because its target or session changed during confirmation. Retry to request fresh consent."
+			: "Gentle AI safety policy blocked the path access because it was not confirmed." };
+		const latest = pathTargetGrants.get(manager);
+		const targets = latest?.sessionId === sessionId ? latest.targets : new Set<string>();
+		targets.add(target);
+		pathTargetGrants.set(manager, { sessionId, targets });
+		return undefined;
+	}
+
 	pi.on("tool_call", async (event, ctx) => {
 		// Native review tools stalled the session when a codemode script called them
 		// (a nested call, which carries parentToolCallId); direct calls return at once.
@@ -13393,6 +13444,13 @@ function createGentleAiExtensionForTesting(
 		}
 		const modeConfigDenied = auto.guard(event, ctx);
 		if (modeConfigDenied) return modeConfigDenied;
+		if (!superYoloActive && (!yoloActive || event.toolName === "write" || event.toolName === "edit") && isRecord(event.input)) {
+			const path = toolWorktreePath(event.toolName, event.input);
+			if (path !== undefined) {
+				const denied = await confirmOutsidePath(event.toolName, event.input, path, ctx);
+				if (denied) return denied;
+			}
+		}
 		const gate = async (): Promise<ToolCallEventResult | undefined> => {
 			try { return await auto.check(event, ctx, primaryToolCall); }
 			catch { return { block: true, reason: "Auto permission checking failed. This action was not run; do not bypass the check." }; }

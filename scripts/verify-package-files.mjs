@@ -163,6 +163,8 @@ export const requiredPaths = [
 	"runtime/telemetry-trigger.mjs",
 	"runtime/tower-open.mjs",
 	"runtime/sensitive-paths.mjs",
+	"runtime/nan-provider.mjs",
+	"runtime/provider-configs.mjs",
 	"runtime/tower-server.mjs",
 	"runtime/tower-hub.mjs",
 	"runtime/tower-presence.mjs",

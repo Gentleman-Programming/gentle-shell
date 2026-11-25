@@ -96,7 +96,7 @@ test("the Desktop transport advertises both methods once and no new event", asyn
 	await app.invoke("cap", "capabilities");
 	const data = app.last().data;
 	for (const method of DESKTOP_AUTH_METHODS) assert.equal(data.methods.filter((name: string) => name === method).length, 1);
-	assert.deepEqual(data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
+	assert.deepEqual(data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel"]);
 });
 
 // ---- get_auth_status ----

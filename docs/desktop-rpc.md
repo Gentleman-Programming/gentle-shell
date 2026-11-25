@@ -10,7 +10,7 @@ Start Pi in RPC mode with the interactive-host marker:
 GENTLE_SHELL_INTERACTIVE_HOST=1 pi --mode rpc
 ```
 
-The channel is inactive in the TUI and in headless RPC children. It does not register an agent-callable tool.
+The channel is inactive in the TUI and in headless RPC children. It registers no agent-callable tool of its own; the only tools it adds are the ones a connected client provides with [`set_host_tools`](#set_host_tools), and those run on the client.
 
 A Desktop that shows the design canvas itself also sets `GENTLE_DESIGN_OPEN_BROWSER=0`, so `gentle_design {action: "open"}` never launches the system browser. The canvas still starts, the `open` transition still reaches the `design_canvas` event, and the tool answers `opened: false, browserDisabled: true` with the URL.
 
@@ -53,7 +53,7 @@ Registered extension commands are consumed by Pi. The real-runtime maintainer pr
 }
 ```
 
-Requests are limited to 64 KiB. `requestId` is required and limited to 128 characters. Method names use lowercase snake case and are limited to 64 characters.
+Requests are limited to 64 KiB, except `set_host_tools` (1 MiB) and `host_tool_result` (9 MiB). Over its limit a request is answered `invalid_request` with `requestId: null`. `requestId` is required and limited to 128 characters. Method names use lowercase snake case and are limited to 64 characters.
 
 ### `capabilities`
 
@@ -1583,6 +1583,55 @@ Makes this session pick up credentials added or removed elsewhere (another termi
 
 `failedProviders` lists the ids whose refresh reported an error; the error text never crosses. Errors: `invalid_request`, `auth_unavailable` (no registry in this session, or the session was replaced during the reload), and `reload_failed` (the refresh itself failed).
 
+### `set_host_tools`
+
+Registers the tools a client provides and runs itself (*host tools*): the desktop app today, a phone later. The agent sees each one as an ordinary tool; when it calls one, this channel emits [`host_tool_call`](#host_tool_call), the client runs the tool on its own device, and answers with [`host_tool_result`](#host_tool_result). How to use a tool is told to the model by the tool's `description` and `guidelines`, so a client needs no extension or instructions file on the machine the agent runs on.
+
+```json
+{
+  "provider": "gentle-desktop",
+  "tools": [
+    {
+      "name": "desktop_screenshot",
+      "label": "Screenshot",
+      "description": "Capture the user's screen or one window and return it as an image.",
+      "parameters": { "type": "object", "properties": { "window": { "type": "string" } } },
+      "guidelines": ["Use desktop_screenshot when the user refers to what is on their screen."]
+    }
+  ]
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `provider` | 1-64 characters, no control characters. Names the client. Through `gentle-shell serve` the server replaces it with the calling device's id, so a client cannot register as another device. |
+| `tools` | At most 32. The list is the provider's whole set: it replaces what that provider registered before, and an empty list unregisters it. |
+| `name` | `^[a-z][a-z0-9_]{0,63}$`, unique in the list. |
+| `label` | 1-64 characters; shown in UIs. |
+| `description` | 1-4096 characters; what the model reads about the tool. Its first line is also the tool's entry in the system prompt's tool list. |
+| `parameters` | A JSON Schema object with `type: "object"`, at most 16 KiB serialized. Pi validates the model's arguments against it before a call goes out. |
+| `guidelines` | Optional, at most 16 single-line strings of up to 512 characters. Each becomes a bullet in the system prompt's rules while the tool is registered. A bullet that does not contain the tool's name gets `name: ` in front, so the model knows which tool it means. |
+
+Unknown fields are rejected. The answer lists what registered and what did not:
+
+```json
+{ "ok": true, "data": { "registered": ["desktop_screenshot"], "rejected": [{ "name": "bash", "reason": "A built-in or extension tool already has this name" }] } }
+```
+
+A name is rejected when a built-in or extension tool already has it, or when another provider's host tool has it; the rest of the set still registers. Each tool is registered with Pi's `pi.registerTool()` after startup, which refreshes Pi's tool registry and system prompt at once, so the change applies from the next model request. Pi cannot remove a tool, so an unregistered host tool is registered again as `hidden`: never declared to the model, never callable, its guidelines out of the prompt. Its name is free for any provider afterwards.
+
+Registrations belong to the session: a new session, a `switch_session`, or a shutdown unregisters every host tool and fails every call still waiting, so a client registers its set again after the session changes. Errors: `invalid_request` (the message says which field), `host_tools_unavailable` (the running Pi has no tool registration API, or registering failed).
+
+### `host_tool_result`
+
+The client's answer to a `host_tool_call`:
+
+```json
+{ "callId": "htc_…", "content": [{ "type": "text", "text": "Captured the editor window." }, { "type": "image", "data": "iVBORw0KGgo…", "mimeType": "image/png" }], "isError": false }
+```
+
+`content` holds 1-64 items, each `{ "type": "text", "text" }` or `{ "type": "image", "data": <base64>, "mimeType": "image/…" }`, at most 8 MiB together (text counted in UTF-8 bytes, images in base64 characters). It is what the model reads as the tool's result; with `isError: true` the model reads it as a failed call. Answers `{ "accepted": true }`. Errors: `invalid_request`, `too_large` (content over 8 MiB), `unknown_call` (no call with this id in this session), `already_answered` (the call is settled: answered, cancelled, or timed out). Only the first answer counts.
+
 ## Responses
 
 Success:
@@ -1612,7 +1661,7 @@ Failure:
 }
 ```
 
-Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `sessions_unavailable`, `session_switching`, `review_unavailable`, `review_mode_busy`, `stats_unavailable`, `not_found`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
+Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `sessions_unavailable`, `session_switching`, `review_unavailable`, `review_mode_busy`, `stats_unavailable`, `not_found`, `host_tools_unavailable`, `unknown_call`, `already_answered`, `too_large`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
 
 | Code | Meaning |
 | --- | --- |
@@ -1640,6 +1689,10 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `review_mode_busy` | A `set_review_mode` is still running. Nothing was written by this request. |
 | `stats_unavailable` | No sessions root could be read, or the stats owner did not answer for this session (the owning extension is not loaded, or the session changed). Nothing was read. |
 | `not_found` | `cancel_job` or `get_job_output` named a job id, or `cancel_subagent` or `get_subagent_thread` named a subagent id, that does not exist, belongs to another session, or was already evicted by the store; or `switch_session` named an id that does not resolve in the requested scope; or `get_change_diff` named a root and path that are not a file in the owner's current change set. Nothing was stopped, read, or switched. |
+| `host_tools_unavailable` | `set_host_tools` could not register with Pi (no tool registration API in the running Pi, or the registration threw). |
+| `unknown_call` | `host_tool_result` named a call id this session never emitted. |
+| `already_answered` | `host_tool_result` named a call that is already settled: answered, cancelled because the turn was aborted, or timed out. |
+| `too_large` | `host_tool_result` content over 8 MiB. |
 | `internal_error` | Unexpected failure; message stays generic. |
 
 ## Events
@@ -1938,6 +1991,24 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 
 `mode` is identical to the response's `mode`. `confirmation_required`, a no-op (`changed: false`), an unreadable re-read, and every error emit nothing. A change made in the TUI, in Herdr, or by another process emits nothing on this channel; re-read with `get_review_mode`.
 
+### `host_tool_call`
+
+The agent called a host tool. The client that registered `provider` runs `tool` with `args` (already validated against the tool's `parameters`) and answers with `host_tool_result` carrying the same `callId`. Other clients ignore it.
+
+```json
+{ "event": "host_tool_call", "data": { "callId": "htc_3f2a…", "provider": "gentle-desktop", "tool": "desktop_screenshot", "args": { "window": "editor" } } }
+```
+
+The call waits for the answer. When the user aborts the turn, it ends at once as a cancelled call; when no answer comes within 10 minutes, it ends with an error the model reads (`<tool> got no answer from <provider> within 10 minutes.`). Either way `host_tool_cancel` follows.
+
+### `host_tool_cancel`
+
+The call is over without the client's answer (the turn was aborted, or the 10 minutes ran out): the client stops running it. A `host_tool_result` sent afterwards is answered `already_answered`.
+
+```json
+{ "event": "host_tool_cancel", "data": { "callId": "htc_3f2a…" } }
+```
+
 ## Configuration limits
 
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`, `persona-config.ts`, `banner-config.ts`, `notification-policy.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
@@ -2108,6 +2179,16 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **Offline reload.** `reload_credentials` never allows the network, so it does not fetch model catalogs.
 - **No event.** Ask again, or call `reload_credentials`, after a change elsewhere.
 
+## Host tools limits
+
+- **The client's code, the client's authority.** A host tool runs on the device that registered it, with that device's permissions (its screen, its files, its accounts), never on the machine where the agent runs. This process only relays: it emits the call and hands the model whatever content comes back. No client code, script, or command ever reaches the agent's machine, and a host tool cannot reach anything there that the agent could not already reach.
+- **The model's arguments are untrusted input to the client.** They come from the model, shaped by the tool's schema; a client validates them and asks its user before anything sensitive, just as it would for any input from the agent.
+- **Results are untrusted input to the model.** Text and images a client returns go into the conversation like any tool output.
+- **No impersonation in serve.** Through `gentle-shell serve`, `provider` is always the calling device's id, and only that device may answer its calls; see [`docs/serve.md`](serve.md#host-tools).
+- **Bounded.** 32 tools per provider, 16 KiB of schema and 16 guidelines per tool, 8 MiB of content per result, 10 minutes per call. A name never shadows a built-in or extension tool.
+- **Not persisted.** Nothing is written to disk; registrations last for the session.
+- **Over stdio there is no "not connected".** The client that owns the Pi process is the only provider; if it stops answering, the 10-minute limit or an abort ends the call.
+
 ## Verification
 
 ```sh
@@ -2132,10 +2213,13 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-status.test.ts \
   tests/desktop-rpc-background-subagents.test.ts \
   tests/desktop-rpc-auth.test.ts \
+  tests/desktop-rpc-host-tools.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 
 The permission tests register the real `registerYoloSessionPolicy` owner with an isolated temporary config home and a stub identity resolver; they never read or write the user's own permission store.
+
+The host tools tests run the real extension over a fake Pi tool registry with fake timers: they cover every `set_host_tools` and `host_tool_result` limit, registration as a `direct` Pi tool with its schema, snippet, and guidelines (and the tool name prefixed where a guideline lacks it), collisions with built-in, extension, and other providers' tools, set replacement and unregistering as `hidden` (whose names are free again), the first answer settling a call with later answers `already_answered` and strangers `unknown_call`, error results, an abort cancelling the call with `host_tool_cancel`, the 10-minute limit, shutdown failing waiting calls and hiding every tool, and the larger request caps for these two methods only. Two more tests run a real Pi SDK session with an offline scripted provider (no model): a registered tool is declared in the next request with its guideline in the system prompt, the scripted tool call round-trips through `host_tool_call` and `host_tool_result` into the tool result the provider receives, unregistering removes the tool and its guideline from the next request, and aborting the turn emits `host_tool_cancel`.
 
 The design tests use only injected fake canvas/server/browser factories and a fake owner service: they cover stopped/running/open/refresh/stop state, slug and connected-client counts, default URL omission, explicit `includeUrl` inclusion only after trust, untrusted omission, malformed adapters and params, owner absence (`design_unavailable`, never a fabricated `running: false`), failed and no-op actions emitting nothing, external (agent-driven) transition events, late-reset disposal and stale-outcome drops, and raw-error/token redaction. One test runs the real `gentleDesign` owner seam in-process to prove the stopped canvas state and the design list arrive from the single owner adapter.
 

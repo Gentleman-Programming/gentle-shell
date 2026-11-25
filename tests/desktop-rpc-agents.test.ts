@@ -889,8 +889,10 @@ test("the Desktop transport advertises the agents methods and event", (t) => {
 		"clear_profile_binding",
 		"get_auth_status",
 		"reload_credentials",
+		"set_host_tools",
+		"host_tool_result",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel"]);
 });
 
 test("get_subagent_thread answers agents_unavailable through the transport without an owner extension", async (t) => {

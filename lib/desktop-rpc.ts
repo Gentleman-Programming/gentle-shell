@@ -64,8 +64,10 @@ function validRequestId(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0 && value.length <= 128;
 }
 
-function decodeRequest(raw: string): DecodedRequest {
-	if (Buffer.byteLength(raw, "utf8") > MAX_REQUEST_BYTES) return { requestId: null };
+/** Requests up to the default cap, or a larger cap a method was given with `setRequestLimits`; over it, no requestId is answered. */
+function decodeRequest(raw: string, limits: Readonly<Record<string, number>>): DecodedRequest {
+	const bytes = Buffer.byteLength(raw, "utf8");
+	if (bytes > Math.max(MAX_REQUEST_BYTES, ...Object.values(limits))) return { requestId: null };
 	let value: unknown;
 	try {
 		value = JSON.parse(raw);
@@ -79,6 +81,7 @@ function decodeRequest(raw: string): DecodedRequest {
 	if (requestId === null || typeof candidate.method !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(candidate.method)) {
 		return { requestId };
 	}
+	if (bytes > (Object.hasOwn(limits, candidate.method) ? limits[candidate.method] : MAX_REQUEST_BYTES)) return { requestId: null };
 	if (candidate.params !== undefined && (!candidate.params || typeof candidate.params !== "object" || Array.isArray(candidate.params))) {
 		return { requestId };
 	}
@@ -109,6 +112,7 @@ export class DesktopRpcRouter {
 	private readonly session: DesktopRpcSessionReader | undefined;
 	private readonly pending = new Set<PendingRequest>();
 	private gate: DesktopRpcGate | undefined;
+	private requestLimits: Readonly<Record<string, number>> = {};
 
 	constructor(
 		methods: readonly string[] = DEFAULT_METHODS,
@@ -139,6 +143,11 @@ export class DesktopRpcRouter {
 	/** Install (or clear) the pre-dispatch gate. A gated request is answered synchronously and never reaches a domain. */
 	setGate(gate: DesktopRpcGate | undefined): void {
 		this.gate = gate;
+	}
+
+	/** Raise the request size cap for the named methods (for example a tool result carrying images). */
+	setRequestLimits(limits: Readonly<Record<string, number>>): void {
+		this.requestLimits = limits;
 	}
 
 	/**
@@ -187,7 +196,7 @@ export class DesktopRpcRouter {
 	handle(raw: string): void | Promise<void> {
 		if (!this.publisher) return;
 		const publish = this.publisher;
-		const decoded = decodeRequest(raw);
+		const decoded = decodeRequest(raw, this.requestLimits);
 		const request = decoded.request;
 		if (!request) {
 			publish(JSON.stringify(errorResponse(decoded.requestId, "invalid_request", "Request must be a valid JSON object")));

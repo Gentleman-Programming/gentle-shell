@@ -67,7 +67,7 @@ test("signing in to NaN asks for a secret and stores it as /login does", withRun
 test("a NaN stream started outside the extension loader reaches the endpoint", async () => {
 	const paths: string[] = [];
 	const server = createServer((req, res) => {
-		paths.push(req.url ?? "");
+		paths.push(`${req.method} ${req.url ?? ""}`);
 		res.writeHead(500, { "content-type": "application/json" });
 		res.end(JSON.stringify({ error: { message: "stub" } }));
 	});
@@ -79,7 +79,7 @@ test("a NaN stream started outside the extension loader reaches the endpoint", a
 		const stream = nan.streamSimple(model as never, { messages: [{ role: "user", content: "hi", timestamp: 0 }] } as never, { apiKey: "test-key", maxRetries: 0 } as never);
 		const result = await stream.result();
 		assert.doesNotMatch(result.errorMessage ?? "", /OpenAI completions API factory/);
-		assert.equal(paths.length > 0, true, "the stream must issue an HTTP request");
+		assert.deepEqual(paths, ["POST /v1/chat/completions"]);
 	} finally {
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 	}

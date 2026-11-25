@@ -511,6 +511,7 @@ export function provisionedEntry(config: RawLauncherConfig, homeDir: string): Pr
 // A marker written before gentle-pi version tracking existed has no
 // `gentlePi` field, which never strictly-equals a real version string, so it
 // always counts as needing provisioning too — see ProvisionedEntry above.
+// Compatibility alias kept for existing callers and tests; new code uses setupCheck.
 export function needsProvisioning(config: RawLauncherConfig, homeDir: string, pin: string, gentlePiVersion: string): boolean {
 	return setupCheck(config, homeDir, pin, gentlePiVersion).needsSetup;
 }
@@ -555,9 +556,26 @@ const SETUP_CHECK_REASON_TEXT: Record<SetupCheckReason, string> = {
 	"gentle-pi-changed": "gentle-pi changed",
 };
 
+// `setup --check` exits 3 when it cannot read the launcher config or the home
+// (2 stays argument errors): its report then says why, never with a path.
+export const SETUP_CHECK_ERROR_EXIT_CODE = 3;
+
+export function setupCheckErrorMessage(error: unknown): string {
+	const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+	return typeof code === "string" && /^[A-Z0-9_]+$/.test(code)
+		? `could not read the launcher config or home (${code})`
+		: "could not read the launcher config or home";
+}
+
+// The failed check: one `{schema, error}` JSON line (stdout) or one text line (stderr).
+export function describeSetupCheckError(message: string, json: boolean): string {
+	return json ? JSON.stringify({ schema: "gentle-shell.setup-check/v1", error: message }) : `gentle-shell setup --check: ${message}`;
+}
+
 // The `setup --check` report: one `gentle-shell.setup-check/v1` JSON line
 // (the home mode only, never its directory) or one readable line. `foreign`
-// is a home automatic setup never touches (see homeIsForeign in bin/gentle-shell.mjs).
+// is a home automatic setup never touches: a --link home, or one homeIsForeign
+// in bin/gentle-shell.mjs rejects.
 export function describeSetupCheck(result: Pick<SetupCheckResult, "needsSetup" | "reasons">, options: { home: ResolvedHome; foreign: boolean; json: boolean }): string {
 	const { home, foreign, json } = options;
 	if (json) {

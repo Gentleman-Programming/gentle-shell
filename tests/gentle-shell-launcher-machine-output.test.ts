@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,7 +27,9 @@ const packageVersion = JSON.parse(readFileSync(new URL("../package.json", import
 const roots: string[] = [];
 after(() => roots.forEach((root) => rmSync(root, { recursive: true, force: true })));
 function scratch(): string {
-	const root = mkdtempSync(join(tmpdir(), "gentle-shell-machine-output-"));
+	// realpath: the launcher looks homes up through their realpath, and tmpdir
+	// can be a symbolic link (macOS /var -> /private/var).
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-shell-machine-output-")));
 	roots.push(root);
 	return root;
 }
@@ -282,4 +284,60 @@ test("gentle-shell setup --json without --check is still rejected as before", ()
 	// Reached after the home bootstrap, as before, so its first-run hint may come first.
 	assert.match(result.stderr, /^Unrecognized argument for 'gentle-shell setup': --json$/m);
 	assert.equal(result.stdout, "");
+});
+
+test("gentle-shell setup --check treats a malformed config.json as no record", () => {
+	const root = scratch();
+	mkdirSync(join(root, ".gentle-shell"));
+	writeFileSync(join(root, ".gentle-shell", "config.json"), "{ not json");
+	const before = snapshot(root);
+	const result = run(root, ["setup", "--check", "--json"]);
+	assert.equal(result.status, 1, result.stderr);
+	assert.equal(result.stderr, "");
+	assert.deepEqual(JSON.parse(result.stdout), { schema: "gentle-shell.setup-check/v1", needsSetup: true, home: { mode: "isolated" }, reasons: ["never-provisioned"], foreign: false });
+	assert.deepEqual(snapshot(root), before);
+});
+
+test("gentle-shell setup --check reports an unreadable config with exit 3, as JSON and as text, without paths", () => {
+	const root = scratch();
+	// A directory where config.json should be: reading it fails (EISDIR).
+	mkdirSync(join(root, ".gentle-shell", "config.json"), { recursive: true });
+	const before = snapshot(root);
+	const json = run(root, ["setup", "--check", "--json"]);
+	assert.equal(json.status, 3, json.stderr);
+	assert.equal(json.stderr, "");
+	assert.equal(json.stdout.split("\n").length, 2);
+	assert.deepEqual(JSON.parse(json.stdout), { schema: "gentle-shell.setup-check/v1", error: "could not read the launcher config or home (EISDIR)" });
+	const text = run(root, ["setup", "--check"]);
+	assert.equal(text.status, 3);
+	assert.equal(text.stdout, "");
+	assert.equal(text.stderr, "gentle-shell setup --check: could not read the launcher config or home (EISDIR)\n");
+	assert.ok(!json.stdout.includes(root) && !text.stderr.includes(root));
+	assert.deepEqual(snapshot(root), before);
+});
+
+test("gentle-shell setup --check reports a --link home as foreign: automatic setup never touches it", () => {
+	const root = scratch();
+	mkdirSync(join(root, ".pi", "agent"), { recursive: true });
+	writeFileSync(join(root, ".pi", "agent", "settings.json"), "{}\n");
+	const before = snapshot(root);
+	const result = run(root, ["--link", "setup", "--check", "--json"]);
+	assert.equal(result.status, 1, result.stderr);
+	assert.equal(result.stderr, "");
+	assert.deepEqual(JSON.parse(result.stdout), { schema: "gentle-shell.setup-check/v1", needsSetup: true, home: { mode: "link" }, reasons: ["never-provisioned"], foreign: true });
+	const text = run(root, ["--link", "setup", "--check"]);
+	assert.equal(text.status, 1);
+	assert.equal(text.stdout, `gentle-shell: ${join(root, ".pi", "agent")} needs setup (never provisioned; not created by Gentle Shell, so it is never set up automatically); run \`gentle-shell --link setup\`\n`);
+	assert.deepEqual(snapshot(root), before);
+});
+
+test("gentle-shell setup --check reports Pi's default agent home given as --home as foreign, even when empty", () => {
+	const root = scratch();
+	const piHome = join(root, ".pi", "agent");
+	mkdirSync(piHome, { recursive: true });
+	const before = snapshot(root);
+	const result = run(root, ["--home", piHome, "setup", "--check", "--json"]);
+	assert.equal(result.status, 1, result.stderr);
+	assert.deepEqual(JSON.parse(result.stdout), { schema: "gentle-shell.setup-check/v1", needsSetup: true, home: { mode: "path" }, reasons: ["never-provisioned"], foreign: true });
+	assert.deepEqual(snapshot(root), before);
 });

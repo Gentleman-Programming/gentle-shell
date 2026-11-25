@@ -512,6 +512,7 @@ export function provisionedEntry(config                   , homeDir        )    
 // A marker written before gentle-pi version tracking existed has no
 // `gentlePi` field, which never strictly-equals a real version string, so it
 // always counts as needing provisioning too — see ProvisionedEntry above.
+// Compatibility alias kept for existing callers and tests; new code uses setupCheck.
 export function needsProvisioning(config                   , homeDir        , pin        , gentlePiVersion        )          {
 	return setupCheck(config, homeDir, pin, gentlePiVersion).needsSetup;
 }
@@ -556,9 +557,26 @@ const SETUP_CHECK_REASON_TEXT                                   = {
 	"gentle-pi-changed": "gentle-pi changed",
 };
 
+// `setup --check` exits 3 when it cannot read the launcher config or the home
+// (2 stays argument errors): its report then says why, never with a path.
+export const SETUP_CHECK_ERROR_EXIT_CODE = 3;
+
+export function setupCheckErrorMessage(error         )         {
+	const code = typeof error === "object" && error !== null ? (error                      ).code : undefined;
+	return typeof code === "string" && /^[A-Z0-9_]+$/.test(code)
+		? `could not read the launcher config or home (${code})`
+		: "could not read the launcher config or home";
+}
+
+// The failed check: one `{schema, error}` JSON line (stdout) or one text line (stderr).
+export function describeSetupCheckError(message        , json         )         {
+	return json ? JSON.stringify({ schema: "gentle-shell.setup-check/v1", error: message }) : `gentle-shell setup --check: ${message}`;
+}
+
 // The `setup --check` report: one `gentle-shell.setup-check/v1` JSON line
 // (the home mode only, never its directory) or one readable line. `foreign`
-// is a home automatic setup never touches (see homeIsForeign in bin/gentle-shell.mjs).
+// is a home automatic setup never touches: a --link home, or one homeIsForeign
+// in bin/gentle-shell.mjs rejects.
 export function describeSetupCheck(result                                                  , options                                                         )         {
 	const { home, foreign, json } = options;
 	if (json) {

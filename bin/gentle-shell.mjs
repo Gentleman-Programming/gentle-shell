@@ -34,6 +34,7 @@ import {
 	checkPiVersion,
 	decideTakeOver,
 	describeSetupCheck,
+	describeSetupCheckError,
 	describeVersion,
 	describeVersionJson,
 	discoverLooseExtensionEntries,
@@ -63,6 +64,8 @@ import {
 	restoreJsonField,
 	separateHomeHint,
 	setupCheck,
+	setupCheckErrorMessage,
+	SETUP_CHECK_ERROR_EXIT_CODE,
 	shellQuote,
 	standaloneConfigHome,
 	userPiHome,
@@ -1551,18 +1554,24 @@ async function removePostInstallSources(sources, index, home, runtime, stdio, ti
 // `gentle-shell [home selectors] setup --check [--json]`: whether the resolved
 // home needs setup and why, from the same config marker, pin and gentle-pi
 // version automatic setup compares (setupCheck). Only reads: no bootstrap,
-// no config write, no download, no Pi. Exit 0 set up, 1 needs setup.
+// no config write, no download, no Pi. Exit 0 set up, 1 needs setup, 3 when
+// the config or home cannot be read. It compares this running copy's pin and
+// version, the ones automatic setup in this same copy uses; a bundled launch
+// only moves to another copy after an update accepted at its interactive
+// startup prompt, which never runs for a command.
 function handleSetupCheck(args, json) {
-	let home = resolveHome({ args, env: process.env, homedir: homedir(), config: loadConfig() });
-	if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
-	const result = setupCheck(readRawConfig(resolveConfigPath()), safeRealpath(home.dir), resolveSetupGentleAiPin(), ownPackageVersion());
-	let hadContent = false;
+	let home, result, foreign;
 	try {
-		hadContent = existsSync(home.dir) && readdirSync(home.dir).length > 0;
-	} catch {
-		hadContent = false;
+		home = resolveHome({ args, env: process.env, homedir: homedir(), config: loadConfig() });
+		if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
+		result = setupCheck(readRawConfig(resolveConfigPath()), safeRealpath(home.dir), resolveSetupGentleAiPin(), ownPackageVersion());
+		// Automatic setup never touches a --link home, so it is foreign here too.
+		foreign = home.mode === "link" || homeIsForeign(home, result.previous, homeHasContent(home.dir));
+	} catch (error) {
+		const report = describeSetupCheckError(setupCheckErrorMessage(error), json);
+		(json ? process.stdout : process.stderr).write(`${report}\n`);
+		return SETUP_CHECK_ERROR_EXIT_CODE;
 	}
-	const foreign = homeIsForeign(home, result.previous, hadContent);
 	process.stdout.write(`${describeSetupCheck(result, { home, foreign, json })}\n`);
 	return result.needsSetup ? 1 : 0;
 }
@@ -1652,6 +1661,17 @@ async function bootstrapOwnedHome(home) {
 	mkdirSync(home.dir, { recursive: true, mode: 0o700 });
 	await installIsolatedTuiModeSetting(home.dir);
 	writeHomeOwnershipMarker(home); // R3-001: lets a failed first auto-provision attempt still be retried later
+}
+
+// Whether `dir` exists with at least one entry; unreadable counts as empty.
+// The ownership signal homeIsForeign takes, read before any bootstrap.
+function homeHasContent(dir) {
+	if (!existsSync(dir)) return false;
+	try {
+		return readdirSync(dir).length > 0;
+	} catch {
+		return false;
+	}
 }
 
 function homeNeedsBootstrap(dir) {
@@ -2324,14 +2344,7 @@ async function main() {
 	// brand-new --home directory with its own settings.json — after that
 	// bootstrap runs, "did this home already have content" can no longer be
 	// answered by looking at the directory.
-	let homeHadContentBeforeBootstrap = false;
-	if (existsSync(home.dir)) {
-		try {
-			homeHadContentBeforeBootstrap = readdirSync(home.dir).length > 0;
-		} catch {
-			homeHadContentBeforeBootstrap = false;
-		}
-	}
+	const homeHadContentBeforeBootstrap = homeHasContent(home.dir);
 
 	// Isolated-home bootstrap: only on a home gentle-shell has not seen before
 	// (link never bootstraps — it reuses the user's own pi agent home as-is).

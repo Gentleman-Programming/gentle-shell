@@ -33,12 +33,8 @@ Routing Ladder tier 1), it follows the same read discipline as a delegated
 subagent: read the exact indexed `SKILL.md` in this session before acting,
 and let the skill's declared `## Output Contract` shape the result, so the
 reply carries the same contract markers applying the skill directly would
-produce. Close with one attribution line naming the applied skill
-(`Skill applied (parent): <name>`); if the indexed path is unreadable,
-proceed unskilled and close with `Skill unavailable (parent): <name>` instead,
-never the applied attribution. Never present contract markers or
-attribute a skill without the in-session read. Attribution carries the skill
-name only, never paths.
+produce. If the indexed path is unreadable, proceed unskilled. Never present
+contract markers without the in-session read.
 
 ## Intent-Driven Skill Discovery
 

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -61,6 +63,27 @@ test("signing in to NaN asks for a secret and stores it as /login does", withRun
 	const stored = JSON.parse(readFileSync(authPath, "utf8"));
 	assert.deepEqual(stored.nan, { type: "api_key", key: "test-key" });
 }));
+
+test("a NaN stream started outside the extension loader reaches the endpoint", async () => {
+	const paths: string[] = [];
+	const server = createServer((req, res) => {
+		paths.push(req.url ?? "");
+		res.writeHead(500, { "content-type": "application/json" });
+		res.end(JSON.stringify({ error: { message: "stub" } }));
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	try {
+		const { port } = server.address() as AddressInfo;
+		const [nan] = getProviderConfigs();
+		const model = { ...nan.getModels()[0], baseUrl: `http://127.0.0.1:${port}/v1` };
+		const stream = nan.streamSimple(model as never, { messages: [{ role: "user", content: "hi", timestamp: 0 }] } as never, { apiKey: "test-key", maxRetries: 0 } as never);
+		const result = await stream.result();
+		assert.doesNotMatch(result.errorMessage ?? "", /OpenAI completions API factory/);
+		assert.equal(paths.length > 0, true, "the stream must issue an HTTP request");
+	} finally {
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+	}
+});
 
 test("an empty NaN key is rejected and nothing is stored", withRuntime(async (runtime, authPath) => {
 	for (const provider of getProviderConfigs()) runtime.registerNativeProvider(provider);

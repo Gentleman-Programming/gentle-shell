@@ -70,6 +70,92 @@ test("a busy gate applies nothing and says so once", async (t) => {
 	assert.equal(isDesktopProfileApplyRunning(), true, "the other apply keeps its gate");
 });
 
+// ---- The card asks before it binds (S3/S6): a use that binds and switches the live session is confirmed ----
+
+test("a declined confirmation binds nothing, says nothing and leaves the gate free", async (t) => {
+	const home = scratch(t);
+	t.after(() => endDesktopProfileApply());
+	const asked: string[] = [];
+	const runs: string[] = [];
+	const notices: Array<[string, string]> = [];
+	let refreshes = 0;
+	const owner = createProfileCardOwner({ loadItems: () => [item("alpha"), item("beta")], configHome: () => home });
+	owner.setUseHandler(createProfileCardUseHandler({
+		begin: beginDesktopProfileApply,
+		end: endDesktopProfileApply,
+		confirm: async (name) => { asked.push(name); return false; },
+		notify: (message, level) => { notices.push([level, message]); },
+		run: async (name) => { runs.push(name); },
+		refresh: () => { refreshes++; },
+	}));
+	show(owner, home);
+	owner.next();
+	assert.equal(owner.use(), true);
+	await settle();
+	assert.deepEqual(asked, ["beta"], "the shown profile is the one asked about");
+	assert.deepEqual(runs, [], "declining binds no profile and touches no live state");
+	assert.deepEqual(notices, [], "declining is silent");
+	assert.equal(isDesktopProfileApplyRunning(), false, "the gate is released");
+	assert.equal(refreshes, 0, "declining re-reads nothing: nothing changed");
+});
+
+test("a confirmation surface that fails binds nothing", async (t) => {
+	t.after(() => endDesktopProfileApply());
+	const runs: string[] = [];
+	await createProfileCardUseHandler({
+		begin: beginDesktopProfileApply,
+		end: endDesktopProfileApply,
+		confirm: async () => { throw new Error("no confirmation surface"); },
+		notify: () => {},
+		run: async (name) => { runs.push(name); },
+		refresh: () => {},
+	})("alpha");
+	assert.deepEqual(runs, [], "an unanswerable confirmation is not an approval");
+	assert.equal(isDesktopProfileApplyRunning(), false);
+});
+
+test("an approved confirmation runs the owner action under the gate, after asking", async (t) => {
+	t.after(() => endDesktopProfileApply());
+	const order: string[] = [];
+	await createProfileCardUseHandler({
+		begin: () => { order.push("begin"); return beginDesktopProfileApply(); },
+		end: () => { order.push("end"); endDesktopProfileApply(); },
+		confirm: async (name) => { order.push(`confirm:${name}:${isDesktopProfileApplyRunning()}`); return true; },
+		notify: () => {},
+		run: async (name) => { order.push(`run:${name}:${isDesktopProfileApplyRunning()}`); },
+		refresh: () => { order.push("refresh"); },
+	})("alpha");
+	assert.deepEqual(order, ["begin", "confirm:alpha:true", "run:alpha:true", "end", "refresh"], "ask first, then bind inside the shared gate");
+});
+
+test("a busy gate never asks for confirmation", async (t) => {
+	const f = setup(t, () => {});
+	let asked = 0;
+	assert.equal(beginDesktopProfileApply(), true);
+	await createProfileCardUseHandler({
+		begin: beginDesktopProfileApply,
+		end: endDesktopProfileApply,
+		confirm: async () => { asked++; return true; },
+		notify: (m, l) => { f.notices.push([l, m]); },
+		run: async (name) => { f.runs.push(name); },
+		refresh: () => { throw new Error("must not refresh"); },
+	})("alpha");
+	assert.equal(asked, 0, "a busy apply is never confirmed: it cannot run anyway");
+	assert.deepEqual(f.runs, []);
+	assert.deepEqual(f.notices, [["info", PROFILE_CARD_BUSY_NOTICE]]);
+});
+
+test("without a confirmation surface the handler applies directly, as before", async (t) => {
+	const home = scratch(t);
+	const f = setup(t, () => {}, home);
+	show(f.owner, home);
+	f.owner.use();
+	await settle();
+	assert.deepEqual(f.runs, ["alpha"], "a host without the seam keeps the previous behavior");
+	assert.equal(isDesktopProfileApplyRunning(), false);
+	assert.deepEqual(f.notices, []);
+});
+
 test("an owner action that applies nothing (declined or not applied) leaves items refreshed and throws nothing", async (t) => {
 	const home = scratch(t);
 	const f = setup(t, () => { /* the owner declined: it only notifies and returns */ }, home);

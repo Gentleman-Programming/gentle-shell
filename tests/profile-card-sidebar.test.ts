@@ -23,8 +23,8 @@ function fixture(t: { after(fn: () => void): void }, profiles: ProfileCardItem[]
 	let renders = 0;
 	const host = { mode: "fullscreen", terminal: { columns: 140 }, layoutRoot: root, requestRender() { renders++; } };
 	const tui = host as unknown as TUI;
-	const state = { profiles, used: [] as string[], now: 0 };
-	const owner = createProfileCardOwner({ loadItems: () => state.profiles, configHome: () => home, now: () => state.now, onUse: (name) => { state.used.push(name); } });
+	const state = { profiles, used: [] as string[], now: 0, loads: 0 };
+	const owner = createProfileCardOwner({ loadItems: () => { state.loads++; return state.profiles; }, configHome: () => home, now: () => state.now, onUse: (name) => { state.used.push(name); } });
 	const part = mountProfileCard(tui, theme, owner);
 	t.after(() => part.dispose());
 	const rail = sidebarState(tui).parts.get(PROFILE_CARD_SIDEBAR_KEY)!;
@@ -139,6 +139,55 @@ test("saved profiles are re-read at most once per refresh window and keep the sh
 	f.owner.refreshItems();
 	assert.equal(f.owner.shown()?.name, "zeta");
 	assert.equal(f.owner.index(), 0);
+});
+
+test("a session boundary restarts on the profile in effect even when the card is visible", (t) => {
+	const f = fixture(t, [item("alpha", { session: true }), item("beta"), item("gamma")]);
+	f.setVisible(true);
+	assert.equal(f.owner.shown()?.name, "alpha", "the first session starts on its profile");
+	f.owner.next();
+	assert.equal(f.owner.shown()?.name, "beta");
+	const before = f.renders();
+	// The session changed: beta is still in the list, but it is not in effect now.
+	f.state.profiles = [item("alpha"), item("beta"), item("gamma", { session: true })];
+	f.owner.resetForSession();
+	assert.equal(f.owner.shown()?.name, "gamma", "the new session's profile is shown, not the old selection");
+	assert.ok(f.renders() > before, "the rail repaints at the boundary");
+	// Within one session an ordinary refresh still follows the shown profile by name.
+	f.owner.next();
+	assert.equal(f.owner.shown()?.name, "alpha");
+	f.state.profiles = [item("delta"), ...f.state.profiles];
+	f.owner.refreshItems();
+	assert.equal(f.owner.shown()?.name, "alpha", "a same-session refresh keeps the shown profile");
+});
+
+test("a hidden card reads nothing at a session boundary", (t) => {
+	const f = fixture(t, [item("alpha"), item("beta", { session: true })]);
+	const before = f.state.loads;
+	f.owner.resetForSession();
+	assert.equal(f.state.loads, before, "a hidden card never touches the profile stores");
+	assert.equal(f.owner.index(), 0);
+});
+
+test("a panel-sheet render at sheet width never overwrites the rail's click map", (t) => {
+	const f = fixture(t, [item("alpha"), item("beta")]);
+	f.setVisible(true);
+	const railRow = text(f.rail)[1]!;
+	const railNextX = railRow.indexOf("▶");
+	// /gentle:panel paints the same card at sheet width, far wider than the rail.
+	const sheetRow = f.rail.render(120).map((line) => line.trimEnd())[1]!;
+	const sheetNextX = sheetRow.indexOf("▶");
+	assert.notEqual(sheetNextX, railNextX, "the sheet frame puts ▶ somewhere else");
+	const shown = () => text(f.rail)[1]!.match(/◀ (\w+)/)![1];
+	assert.equal(shown(), "alpha");
+	// A rail click still routes against the frame the rail painted for its own width.
+	assert.deepEqual(f.rail.handleMouse!(click(railNextX, 1)), { handled: true, render: true }, "rail ▶ still works after a sheet render");
+	assert.equal(shown(), "beta", "the rail click moved the card");
+	f.rail.render(120);
+	// A sheet-width position can never route a rail click (it could hit use).
+	assert.equal(f.rail.handleMouse!(click(sheetNextX, 1)), undefined, "a sheet-width column is not a rail control");
+	assert.equal(shown(), "beta");
+	assert.deepEqual(f.state.used, [], "no click used a profile");
 });
 
 test("through the installed rail a click lands on the arrows in tinted and carded surfaces", (t) => {

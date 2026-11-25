@@ -34,7 +34,7 @@ import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { PROFILE_CARD_SETTINGS_CHANGED, writeProfileCard } from "../lib/profile-card-policy.ts";
 import { loadKeymaps } from "../lib/keymaps.ts";
-import { createProfileCardOwner, createProfileCardReader, createProfileCardUseHandler, mountProfileCard, registerProfileCardShortcuts } from "../lib/profile-card-sidebar.ts";
+import { createProfileCardOwner, createProfileCardReader, createProfileCardUseHandler, mountProfileCard, PROFILE_CARD_USE_CONFIRM_TITLE, profileCardUseConfirmMessage, registerProfileCardShortcuts } from "../lib/profile-card-sidebar.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
@@ -3512,9 +3512,14 @@ function sessionProfileAuthorityAvailable(ctx: ExtensionContext): boolean {
 }
 
 /**
- * The card's use action: the owner's "Use in this session" with the real session
- * context, so its confirmation dialog and notices appear as for /gentle:profiles.
- * Reads the store (never seeds or writes it) and runs only for a profile that still exists.
+ * The card's use action: asks the user to confirm, then runs the owner's "Use in
+ * this session" with the real session context so its binding notices appear. The
+ * confirmation lives on this path and not in the shared action: the
+ * `/gentle:profiles` `use-session` branch applies without asking (a maintainer
+ * follow-up), while the card must bind nothing and move no live model or
+ * thinking level until the user approves. Declining changes nothing; a busy
+ * apply gate never prompts. Reads the store (never seeds or writes it) and runs
+ * only for a profile that still exists.
  */
 async function useProfileFromCard(ctx: ExtensionContext, live: LiveSession, name: string): Promise<void> {
 	const path = profilesFilePath(gentleAiConfigHome());
@@ -12421,6 +12426,14 @@ function createGentleAiExtensionForTesting(
 		begin: beginDesktopProfileApply,
 		end: endDesktopProfileApply,
 		notify: (message, level) => { profileCardCtx?.ui.notify(message, level); },
+		// /gentle:profiles `use-session` applies without asking; the card binds nothing
+		// before the user approves. An unanswerable dialog is never an approval.
+		confirm: async (name) => {
+			const current = profileCardCtx;
+			if (!current) return false;
+			try { return (await current.ui.confirm(PROFILE_CARD_USE_CONFIRM_TITLE, profileCardUseConfirmMessage(name))) === true; }
+			catch { return false; }
+		},
 		run: async (name) => {
 			if (!profileCardCtx) throw new Error("no active session");
 			await useProfileFromCard(profileCardCtx, pi, name);
@@ -12987,13 +13000,6 @@ function createGentleAiExtensionForTesting(
 		const profileSessionId = ctx.sessionManager?.getSessionId?.();
 		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
 		const profileSession = sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
-		// The card re-reads its visibility store on the settings event (the payload is not trusted).
-		profileCardCtx = ctx;
-		stopProfileCardEvents?.();
-		stopProfileCardEvents = pi.events?.on?.(PROFILE_CARD_SETTINGS_CHANGED, () => profileCard.refreshVisibility());
-		profileCard.refreshVisibility();
-		profileCard.refreshItems();
-		if (ctx.hasUI && typeof ctx.ui.setWidget === "function") ctx.ui.setWidget("gentle-profile-card", (tui, theme) => mountProfileCard(tui, theme, profileCard));
 		// gentle-shell#2742: only a session's own start tells this process its
 		// startup state; anything else leaves it unknown.
 		let startupProfile: SessionProfileStartupState | undefined;
@@ -13033,6 +13039,17 @@ function createGentleAiExtensionForTesting(
 			}
 		}
 		readSessionProfileAuthority(ctx.sessionManager);
+		// The card's first read comes after this session recorded its startup profile
+		// and published it as the session profile, so the card starts on the profile in
+		// effect for this session (S2/T4b), not on the store's active one. A session
+		// boundary resets a card that stayed visible across a session replacement.
+		// The card re-reads its visibility store on the settings event (the payload is not trusted).
+		profileCardCtx = ctx;
+		stopProfileCardEvents?.();
+		stopProfileCardEvents = pi.events?.on?.(PROFILE_CARD_SETTINGS_CHANGED, () => profileCard.refreshVisibility());
+		profileCard.refreshVisibility();
+		profileCard.resetForSession();
+		if (ctx.hasUI && typeof ctx.ui.setWidget === "function") ctx.ui.setWidget("gentle-profile-card", (tui, theme) => mountProfileCard(tui, theme, profileCard));
 		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 		auto.reset();
 		yolo.reset(ctx);

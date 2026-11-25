@@ -137,6 +137,8 @@ export function publicDevice(device              )               {
 
 
 
+
+
 export class ServeAuth {
 	                 devicesFile        ;
 	                 adminToken        ;
@@ -192,9 +194,15 @@ export class ServeAuth {
 		this.prune();
 		const code = newPairingCode();
 		const entry = { scopes: [...new Set(scopes)], expiresAt: this.now() + this.limits.pairingCodeTtlMs };
-		this.codes.set(hashSecret(normalizePairingCode(code)).toString("hex"), entry);
+		this.codes.set(hashSecret(normalizePairingCode(code)).toString("hex"), { ...entry, code: normalizePairingCode(code) });
 		while (this.codes.size > this.limits.maxCodes) this.codes.delete(this.codes.keys().next().value );
 		return { code, ...entry };
+	}
+
+	/** The live pairing codes, normalized: the pairing proof binds each to the server's certificate. */
+	livePairingCodes()           {
+		this.prune();
+		return [...this.codes.values()].map((entry) => entry.code);
 	}
 
 	/** Single use: the code is gone after the first attempt that names it, success or not. */

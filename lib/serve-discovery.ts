@@ -26,8 +26,9 @@ export function isDiscoveryQuery(datagram: Buffer): boolean {
 	}
 }
 
-export function discoveryReply(server: { id: string; name: string; port: number }): Buffer {
-	return Buffer.from(JSON.stringify({ t: DISCOVERY_REPLY, v: DISCOVERY_VERSION, id: server.id, n: server.name, p: server.port }), "utf8");
+/** `{"t":"gentle-shell/here","v":1,"id","n","p"}`, plus `"tls":true,"fp"` when the server serves HTTPS: a hint only, the client pins what the handshake shows after a pairing proof. */
+export function discoveryReply(server: { id: string; name: string; port: number; fingerprint?: string }): Buffer {
+	return Buffer.from(JSON.stringify({ t: DISCOVERY_REPLY, v: DISCOVERY_VERSION, id: server.id, n: server.name, p: server.port, ...(server.fingerprint === undefined ? {} : { tls: true, fp: server.fingerprint }) }), "utf8");
 }
 
 /**
@@ -65,6 +66,8 @@ export interface DiscoveryResponderOptions {
 	/** HTTP port the reply advertises. */
 	httpPort: number;
 	name: () => string;
+	/** The certificate's fingerprint when the server serves HTTPS. */
+	fingerprint?: string;
 	limits?: typeof DISCOVERY_LIMITS;
 	now?: () => number;
 	log?: (line: string) => void;
@@ -93,7 +96,7 @@ export function startDiscoveryResponder(options: DiscoveryResponderOptions): Pro
 	});
 	socket.on("message", (datagram: Buffer, from: RemoteInfo) => {
 		if (!isDiscoveryQuery(datagram) || !limiter.allow(from.address, now())) return;
-		const reply = discoveryReply({ id: options.serverId, name: options.name(), port: options.httpPort });
+		const reply = discoveryReply({ id: options.serverId, name: options.name(), port: options.httpPort, ...(options.fingerprint === undefined ? {} : { fingerprint: options.fingerprint }) });
 		socket.send(reply, from.port, from.address, (error) => { if (error) log(`discovery: reply to ${from.address}:${from.port} failed: ${error.message}`); });
 	});
 	socket.bind({ port: options.port, address: "0.0.0.0", exclusive: true }, () => {

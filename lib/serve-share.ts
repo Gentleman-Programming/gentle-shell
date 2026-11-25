@@ -29,11 +29,15 @@ export interface ConnectionCode {
 	a: string[];
 	/** Pairing code: single use, 5 minutes. */
 	c: string;
+	/** The certificate's fingerprint (base64url SHA-256 of its DER) when the server serves HTTPS: pin it, no pairing proof needed. */
+	fp?: string;
+	/** The relay that reaches the server from anywhere (`gsr://host:port`), routed by `fp`. */
+	r?: string;
 }
 
-/** `gsc1.` + base64url (no padding) of `{"v":1,"id","n","p","a","c"}`. A secret while its pairing code is valid. */
+/** `gsc1.` + base64url (no padding) of `{"v":1,"id","n","p","a","c"[,"fp"][,"r"]}`. A secret while its pairing code is valid. */
 export function encodeConnectionCode(code: ConnectionCode): string {
-	const json = JSON.stringify({ v: 1, id: code.id, n: code.n, p: code.p, a: code.a, c: code.c });
+	const json = JSON.stringify({ v: 1, id: code.id, n: code.n, p: code.p, a: code.a, c: code.c, ...(code.fp === undefined ? {} : { fp: code.fp }), ...(code.r === undefined ? {} : { r: code.r }) });
 	return `${CONNECTION_CODE_PREFIX}${Buffer.from(json, "utf8").toString("base64url")}`;
 }
 
@@ -121,7 +125,7 @@ export interface AutostartCommand {
 }
 
 /** The same launcher, home flags and kept environment as this invocation, serving the network in the foreground. */
-export function autostartCommand(input: { nodePath: string; launcher: string; homeFlags: readonly string[]; port: number; allowHosts: readonly string[]; forwardPorts?: PortRange; env: NodeJS.ProcessEnv; logFile: string }): AutostartCommand {
+export function autostartCommand(input: { nodePath: string; launcher: string; homeFlags: readonly string[]; port: number; allowHosts: readonly string[]; forwardPorts?: PortRange; noTls?: boolean; relay?: string; env: NodeJS.ProcessEnv; logFile: string }): AutostartCommand {
 	const env: Record<string, string> = {};
 	for (const key of AUTOSTART_ENV) {
 		const value = input.env[key];
@@ -130,7 +134,8 @@ export function autostartCommand(input: { nodePath: string; launcher: string; ho
 	return {
 		command: input.nodePath,
 		args: [input.launcher, ...input.homeFlags, "serve", "--foreground", "--listen", `0.0.0.0:${input.port}`, ...input.allowHosts.flatMap((name) => ["--allow-host", name]),
-			...(input.forwardPorts ? ["--forward-ports", `${input.forwardPorts.from}-${input.forwardPorts.to}`] : [])],
+			...(input.forwardPorts ? ["--forward-ports", `${input.forwardPorts.from}-${input.forwardPorts.to}`] : []),
+			...(input.noTls ? ["--no-tls"] : []), ...(input.relay === undefined ? [] : ["--relay", input.relay])],
 		env,
 		logFile: input.logFile,
 	};

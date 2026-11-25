@@ -1,8 +1,10 @@
 // A tiny HTTP client for the `gentle-shell serve` tests: JSON or raw calls,
-// SSE streams that collect their text, and device pairing.
+// SSE streams that collect their text, device pairing, and HTTPS over a pinned socket.
 
 import assert from "node:assert/strict";
 import { request as httpRequest, type IncomingMessage } from "node:http";
+import { request as httpsRequest } from "node:https";
+import type { Socket } from "node:net";
 import type { ServeScope } from "../lib/serve-auth.ts";
 
 export interface Reply { status: number; body: any; headers: IncomingMessage["headers"]; bytes: Buffer }
@@ -72,4 +74,29 @@ export async function pairDevice(base: string, admin: string, scopes: ServeScope
 	const paired = await call(base, "POST", "/api/pair", { body: { code: code.body.code, name } });
 	assert.equal(paired.status, 201, JSON.stringify(paired.body));
 	return { id: paired.body.id, token: paired.body.token };
+}
+
+/** One HTTPS request over a connection that is already open and pinned (directly, or through a relay). */
+export function callOver(socket: Socket, method: string, path: string, options: { token?: string; body?: unknown; host?: string; headers?: Record<string, string> } = {}): Promise<Reply> {
+	const { promise, resolve, reject } = Promise.withResolvers<Reply>();
+	const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
+	// The Host header as given (host:port included): the request options would bracket a host holding a colon.
+	const req = httpsRequest({ createConnection: () => socket, method, path, headers: {
+		Host: options.host ?? "127.0.0.1",
+		...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+		...(payload === undefined ? {} : { "Content-Type": "application/json" }),
+		...options.headers,
+	} }, (res) => {
+		const chunks: Buffer[] = [];
+		res.on("data", (c: Buffer) => chunks.push(c));
+		res.on("end", () => {
+			const bytes = Buffer.concat(chunks);
+			let body: unknown = bytes.toString("utf8");
+			try { body = JSON.parse(body as string); } catch { /* not JSON */ }
+			resolve({ status: res.statusCode ?? 0, body, headers: res.headers, bytes });
+		});
+	});
+	req.on("error", reject);
+	req.end(payload);
+	return promise;
 }

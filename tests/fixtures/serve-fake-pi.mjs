@@ -35,6 +35,16 @@ function handle(cmd) {
 			for (let n = 0; n < (cmd.count ?? 1); n += 1) out({ type: "fake_event", n, pad });
 			return respond(cmd, { sent: cmd.count ?? 1 });
 		}
+		case "fake_trickle": {
+			// Records keep coming after the response, as during a turn: `count` of them, one every `everyMs`.
+			let n = 0;
+			const timer = setInterval(() => {
+				out({ type: "fake_event", tick: n });
+				n += 1;
+				if (n >= (cmd.count ?? 1)) clearInterval(timer);
+			}, cmd.everyMs ?? 10);
+			return respond(cmd, {});
+		}
 		case "fake_unicode":
 			// U+2028/U+2029 stay raw inside the JSON string: they must not split the record.
 			process.stdout.write(`{"type":"fake_event","text":"a\u2028b\u2029c"}\r\n`);
@@ -47,7 +57,8 @@ function handle(cmd) {
 		}
 		case "fake_exit":
 			out({ type: "fake_event", bye: true });
-			return void setTimeout(() => process.exit(cmd.code ?? 0), 10);
+			if (cmd.afterMs) respond(cmd, {});
+			return void setTimeout(() => process.exit(cmd.code ?? 0), cmd.afterMs ?? 10);
 		case "fake_host_call":
 		case "fake_host_cancel": {
 			respond(cmd, {});

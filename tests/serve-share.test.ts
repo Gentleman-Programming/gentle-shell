@@ -22,7 +22,7 @@ function scratch(): string {
 }
 
 /** The client side of the contract: `gsc1.` + base64url (no padding) of the JSON. */
-function decode(code: string): { v: number; id: string; n: string; p: number; a: string[]; c: string } {
+function decode(code: string): { v: number; id: string; n: string; p: number; a: string[]; c: string; fp?: string; r?: string } {
 	assert.ok(code.startsWith("gsc1."), code);
 	const payload = code.slice("gsc1.".length);
 	assert.match(payload, /^[A-Za-z0-9_-]+$/, "base64url without padding");
@@ -44,6 +44,14 @@ test("serve share arguments", () => {
 	assert.deepEqual(parseServeArgs(["share", "--port"]), { error: '--port needs a port 1-65535 (got "")' });
 	assert.deepEqual(parseServeArgs(["share", "--listen", "0.0.0.0:1"]), { error: 'unknown serve share argument "--listen"' });
 	assert.deepEqual(parseServeArgs(["--always"]), { error: 'unknown serve argument "--always"' });
+	assert.deepEqual(parseServeArgs(["share", "--no-tls"]), { action: "share", port: 8787, always: false, json: false, noTls: true });
+	assert.deepEqual(parseServeArgs(["share", "--relay", "gsr://relay.example.com:7700"]), { action: "share", port: 8787, always: false, json: false, relay: "gsr://relay.example.com:7700" });
+	assert.deepEqual(parseServeArgs(["--listen", "0.0.0.0:8787", "--relay=gsr://[2001:db8::1]:7700"]), { action: "start", host: "0.0.0.0", port: 8787, foreground: false, json: false, relay: "gsr://[2001:db8::1]:7700" });
+	assert.deepEqual(parseServeArgs(["share", "--relay", "gsr://relay.example.com:7700", "--no-tls"]), { error: "--relay needs TLS (the relay must only see ciphertext): leave out --no-tls" });
+	assert.match((parseServeArgs(["share", "--relay", "https://relay.example.com"]) as { error: string }).error, /starts with gsr:\/\//);
+	assert.match((parseServeArgs(["share", "--relay", "gsr://relay.example.com"]) as { error: string }).error, /needs a port/);
+	assert.match((parseServeArgs(["share", "--relay", "gsr://secret@relay.example.com:7700"]) as { error: string }).error, /relay secret goes in GENTLE_SHELL_RELAY_SECRET/);
+	assert.deepEqual(parseServeArgs(["share", "--off", "--no-tls"]), { error: "serve share --off takes no other argument" });
 });
 
 test("a connection code is gsc1. + base64url JSON in the contract's key order", () => {
@@ -51,6 +59,12 @@ test("a connection code is gsc1. + base64url JSON in the contract's key order", 
 	assert.ok(!code.includes("="), "no padding");
 	assert.deepEqual(decode(code), { v: 1, id: "srv_0123456789abcdef", n: "Box", p: 8787, a: ["192.168.1.20", "box", "box.local"], c: "ABCD-EFGH" });
 	assert.deepEqual(Object.keys(decode(code)), ["v", "id", "n", "p", "a", "c"]);
+	// HTTPS and a relay add the certificate's fingerprint and the relay, last.
+	const fp = "q2pTqfGOkIMwLzAqnmz5aHN5LyFnSRmA7Xc3WEZ8k4o";
+	const secure = decode(encodeConnectionCode({ id: "srv_0123456789abcdef", n: "Box", p: 8787, a: ["box"], c: "ABCD-EFGH", fp, r: "gsr://relay.example.com:7700" }));
+	assert.deepEqual(Object.keys(secure), ["v", "id", "n", "p", "a", "c", "fp", "r"]);
+	assert.equal(secure.fp, fp);
+	assert.equal(secure.r, "gsr://relay.example.com:7700");
 	// Characters base64 would turn into + and / stay URL-safe.
 	const odd = encodeConnectionCode({ id: "srv_?>?>", n: "ñ~~~", p: 1, a: [], c: "????-????" });
 	assert.match(odd, /^gsc1\.[A-Za-z0-9_-]+$/);
@@ -245,7 +259,9 @@ test("serve share from stopped: starts on the network (next port when taken), th
 	assert.equal(started.status, 0, started.stderr);
 	try {
 		const info = JSON.parse(started.stdout);
-		assert.deepEqual(Object.keys(info), ["code", "pairingCode", "port", "addresses", "expiresAt", "serverId", "discovery"]);
+		assert.deepEqual(Object.keys(info), ["code", "pairingCode", "port", "addresses", "expiresAt", "serverId", "discovery", "tls", "fingerprint"]);
+		assert.equal(info.tls, true, "the network gets HTTPS");
+		assert.match(info.fingerprint, /^[A-Za-z0-9_-]{43}$/);
 		assert.equal(info.discovery, true, "the network server answers LAN discovery");
 		assert.equal(info.port, port + 1, "the taken port is skipped");
 		const code = decode(info.code);
@@ -255,6 +271,8 @@ test("serve share from stopped: starts on the network (next port when taken), th
 		assert.equal(code.n, hostname());
 		assert.equal(code.p, port + 1);
 		assert.deepEqual(code.a, info.addresses);
+		assert.equal(code.fp, info.fingerprint, "the long code pins the certificate");
+		assert.equal(code.r, undefined, "no relay asked");
 		assert.ok(code.a.length >= 1 && code.a.length <= 8);
 		const names = ownHostNames(hostname());
 		assert.deepEqual(code.a.slice(code.a.length - names.length), names, "this machine's names come last");
@@ -266,10 +284,14 @@ test("serve share from stopped: starts on the network (next port when taken), th
 		assert.deepEqual(server.listen, { host: "0.0.0.0", port: port + 1 });
 		assert.deepEqual(server.forwardPorts, { from: 8800, to: 8899 }, "forwarded pages take one range a firewall can open");
 		assert.equal(server.serverId, info.serverId);
+		assert.equal(server.fingerprint, info.fingerprint);
+		assert.ok(existsSync(join(home, "serve", "tls", "cert.pem")) && (process.platform === "win32" || (statSync(join(home, "serve", "tls", "key.pem")).mode & 0o777) === 0o600), "the key is owner-only");
 
-		// What the client does: identity first, then the pairing code, at the same address.
+		// What the client does: identity first, then the pairing code, at the same address (this machine may use plain HTTP).
 		const base = `http://127.0.0.1:${port + 1}`;
 		const identity = await (await fetch(`${base}/.well-known/gentle-shell`)).json();
+		assert.equal(identity.fp, info.fingerprint);
+		assert.equal(identity.tls, true);
 		assert.equal(identity.serverId, code.id);
 		assert.equal(identity.schema, "gentle-shell.serve.identity/v1");
 		const paired = await fetch(`${base}/api/pair`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: code.c, name: "gpui" }) });
@@ -292,7 +314,7 @@ test("serve share from stopped: starts on the network (next port when taken), th
 		assert.equal(decode(lines[6]).c, short[1], "the long code carries the short one");
 		assert.notEqual(short[1], code.c, "a fresh pairing code");
 		assert.equal(lines[7], "");
-		assert.match(lines[8], /plain HTTP on your network/, "discovery is on: no note before the warning");
+		assert.equal(lines[8], `It uses HTTPS; the app checks this computer's certificate, fingerprint ${info.fingerprint}.`, "discovery is on: no note before it");
 		assert.equal(readServerFile(serveFiles(home).server)!.pid, server.pid);
 	} finally {
 		assert.equal(cli(root, ["stop"]).status, 0);

@@ -2224,6 +2224,17 @@ async function main() {
 			version: ownPackageVersion(), env: process.env, stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text) });
 		return;
 	}
+	// `gentle-shell [home selectors] relay`: the rendezvous that lets devices outside
+	// a server's network reach it (docs/serve.md#relay). Its secret lives in the home.
+	if (args.command === "relay") {
+		const { parseRelayArgs, runRelayCommand } = await import("../runtime/serve-relay-cli.mjs");
+		const relay = parseRelayArgs(args.commandArgs);
+		if ("error" in relay) fail(`gentle-shell relay: ${relay.error}\nRun 'gentle-shell relay --help' for usage.`, 2);
+		let home = resolveHome({ args, env: process.env, homedir: homedir(), config: loadConfig() });
+		if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
+		process.exitCode = await runRelayCommand(relay, { agentHome: home.dir, env: process.env, stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text) });
+		return;
+	}
 
 	const startupCode = await startupUpdate(bundled, args, startupEnv);
 	if (startupCode !== undefined) {

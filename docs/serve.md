@@ -1,6 +1,6 @@
 # `gentle-shell serve`
 
-`gentle-shell serve` runs one long-lived server per agent home. The server owns Gentle Shell sessions — one `gentle-shell --mode rpc` child each — so they keep running when the client that started them disconnects, and any paired device can follow and drive them over HTTP and Server-Sent Events (SSE). A device can also open web pages that live on the server's own loopback — the design canvas, a dev server the agent started, [Gentle Tower](#gentle-tower) — through [authenticated port forwards](#port-forwarding).
+`gentle-shell serve` runs one long-lived server per agent home. The server owns Gentle Shell sessions — one `gentle-shell --mode rpc` process each, under a small keeper process — so they keep running when the client that started them disconnects, and when the server itself restarts or is upgraded; any paired device can follow and drive them over HTTP and Server-Sent Events (SSE). A device can also open web pages that live on the server's own loopback — the design canvas, a dev server the agent started, [Gentle Tower](#gentle-tower) — through [authenticated port forwards](#port-forwarding).
 
 This is Phase 1 of [RFC #3527](https://github.com/Gentleman-Programming/gentle-shell/issues/3527), plus the `/.well-known/gentle-shell` identity, LAN discovery and `serve share` codes, and the pieces a remote client needs around sessions: [files](#files-on-the-server), [git](#git-on-the-server), [uploads](#uploads), [server-level forwards](#server-level-forwards-and-services) and [persistent terminals](#persistent-terminals) over a native terminal host. SSH bootstrap and TLS (Phase 3) and a mobile web client (Phase 4) are not part of it; see [Not done yet](#not-done-yet). To run it from a source checkout on a Linux machine and reach it from another one, see [Try it](#try-it-from-source-on-linux).
 
@@ -46,7 +46,7 @@ curl -X POST http://127.0.0.1:PORT/api/sessions/$SID/rpc -H "Authorization: Bear
 curl -N "http://127.0.0.1:PORT/api/sessions/$SID/events?after=0" -H "Authorization: Bearer $TOKEN"
 
 gentle-shell serve status
-gentle-shell serve stop            # stops the server and every session it owns
+gentle-shell serve stop            # stops the server; its sessions keep running for the next one (--sessions stops them too)
 ```
 
 ## Commands
@@ -57,7 +57,7 @@ gentle-shell serve stop            # stops the server and every session it owns
 | `gentle-shell serve share --off` | Remove the login autostart that `--always` installed (this stops the server it runs). |
 | `gentle-shell serve [--listen <host>:<port>] [--allow-host <name>]... [--forward-ports <from>-<to>] [--foreground] [--json]` | Start the server. In the background by default (log in `serve/server.log`); `--foreground` keeps it in the terminal until Ctrl+C. `--listen` defaults to `127.0.0.1:0` (a random port); `:8787`, `8787` and `[::1]:8787` are accepted. `--allow-host` adds one DNS name clients may use in the `Host` header (repeatable; see [Security model](#security-model)). `--forward-ports` gives [port forwards](#port-forwarding) their listen ports from one range (at most 1000 ports), so a firewall can open it; without it each forward takes a random port. |
 | `gentle-shell serve status [--json]` | URL, pid, start time, protocol and the session list. Exit 1 when no server runs. |
-| `gentle-shell serve stop` | Asks the server to stop (it stops every session first) and waits for it to exit. |
+| `gentle-shell serve stop [--sessions]` | Asks the server to stop and waits for it to exit. Its sessions keep running and the next server reattaches them ([Sessions across server restarts](#sessions-across-server-restarts)); `--sessions` stops them first. |
 | `gentle-shell serve pair [--scope <scope,…>] [--json]` | Mint a pairing code. Scopes default to `sessions:read,sessions:operate,terminal`. |
 | `gentle-shell serve devices [--revoke <id>] [--json]` | List paired devices or revoke one. Works without a running server too (on the devices file). |
 
@@ -127,7 +127,8 @@ Everything lives in `<agent home>/serve/`, a `0700` folder:
 | `server-id` (`0600`) | The server's `serverId` (`srv_` and 16 hex digits), minted on the first run and kept: the id in `server.json`, `/.well-known/gentle-shell`, `GET /api/server`, discovery replies and connection codes stays the same across restarts and upgrades. Delete it to give the server a new identity. |
 | `server.lock` (`0600`) | The pid holding the single-instance lock. A lock whose pid is gone is taken over. |
 | `devices.json` (`0600`) | Paired devices: id, name, scopes, created and last-used times, and the **sha256 of the token** — never the token. |
-| `server.log` (`0600`) | Background server log: lifecycle lines and each session's stderr, prefixed by session id. |
+| `server.log` (`0600`) | Background server log: lifecycle lines and each session's stderr while the server is attached, prefixed by session id. |
+| `sessions/` (`0700`) | One [keeper](#sessions-across-server-restarts) per session: `<id>.json` (`0600`) is its record (`{ schema: "gentle-shell.serve.session/v1", id, cwd, startedAt, keeperPid, pid, token, state, exitCode, exitSignal, exitedAt, seq, error? }`), kept after the session exits so the next server lists it, removed when the session is deleted or forgotten; `<id>.sock` (`0600`) is the keeper's socket while it runs. |
 | `uploads/<device>/<random>/<name>` (`0700` folders, `0600` files) | [Uploads](#uploads) from devices; each removed 7 days after it arrived. |
 | `term.sock` (`0600`) | The [terminal host](#persistent-terminals)'s Unix socket, while it runs (not on Windows). |
 | `term/` (`0700`) | The terminal host's state folder: its log, `term-host.log`; over TCP (Windows) also `term-host.json` (`0600`; on Windows a DACL for its owner only): `{ port, token, pid }`. |
@@ -138,12 +139,23 @@ Everything lives in `<agent home>/serve/`, a `0700` folder:
 
 ## Process model
 
-Each session is a child process: this same launcher (`node bin/gentle-shell.mjs <home flags> --mode rpc [--session-id <id>]`, in the requested folder), so Pi is resolved exactly as a plain launch resolves it, with `GENTLE_SHELL_INTERACTIVE_HOST=1` (Desktop RPC and RPC dialogs on, as for Gentle Desktop) and `GENTLE_DESIGN_OPEN_BROWSER=0` (never a browser on the server machine).
+Each session is a Pi process run by this same launcher (`node bin/gentle-shell.mjs <home flags> --mode rpc [--session-id <id>]`, in the requested folder), so Pi is resolved exactly as a plain launch resolves it, with `GENTLE_SHELL_INTERACTIVE_HOST=1` (Desktop RPC and RPC dialogs on, as for Gentle Desktop) and `GENTLE_DESIGN_OPEN_BROWSER=0` (never a browser on the server machine). It is not the server's child: a small detached Node process, the session's **keeper**, starts it and owns its stdin and stdout, so the session outlives the server.
 
-- The server reads every child's stdout continuously, whoever is listening, and keeps the child's stdin open for its whole life (closing it is Pi's shutdown request).
-- A session ends only when it is deleted (`DELETE /api/sessions/:id`), when the server stops, or when the child exits on its own. Its exit is a record in its stream (`serve_session_exited`) and a state in the list. Up to 16 exited sessions stay listed (with their replay ring) until deleted.
-- Stopping closes stdin and sends SIGTERM together (Pi treats them as one orderly shutdown request), then SIGKILL after 5 s.
+- The keeper reads Pi's stdout continuously, whoever is listening, numbers each record (`seq`), keeps the replay ring, the dialogs waiting for an answer and the host tool calls still open, and keeps Pi's stdin open for its whole life (closing it is Pi's shutdown request). The server is a client of the keeper and holds a copy of that state, which it serves to devices.
+- A session ends only when it is deleted (`DELETE /api/sessions/:id`), when the server stops with `--sessions` (`POST /api/server/stop { endSessions: true }`), when Pi exits on its own, or when no server came back to it for 24 hours. Its exit is a record in its stream (`serve_session_exited`) and a state in the list. Up to 16 exited sessions stay listed (with their replay ring while this server holds it) until deleted.
+- Stopping closes stdin and sends SIGTERM together (Pi treats them as one orderly shutdown request), then SIGKILL after 5 s; then the keeper exits.
 - At most 16 sessions run at once.
+
+### Sessions across server restarts
+
+Stopping the server (`serve stop`, SIGTERM from a service manager, Ctrl+C on a foreground server) closes its connections to the keepers and leaves the sessions running. The next server — the same version or an upgrade — scans `<home>/serve/sessions/` and reattaches every keeper that answers before it serves requests:
+
+- **Same ids, same `seq`.** A session keeps its id, and its `seq` continues where it was: what Pi printed while no server ran is in the keeper's replay ring. A client reconnects to `GET /api/sessions/:id/events?after=<last seq>` and gets exactly what it missed (or `snapshot-required` if the ring moved past it). `GET /api/server` lists the capability `persistent-sessions`.
+- **Dialogs and host tool calls** still waiting are kept and re-sent to subscribers as before. The devices that registered host tools and which device drove the session last are kept with the keeper too; device streams are not, so a device owing a host tool call has 30 s after the restart to reconnect before the server answers the call for it ("isn't connected right now").
+- **A session that ended meanwhile** is listed as exited with its exit code (from its record). A keeper whose Pi exited while no server ran waits 60 s for a server to collect the end of its stream, then exits. A keeper that is gone without recording an exit (killed, a reboot) is listed with `exitCode: null` and `error: "keeper_lost"` in its record; a server attached to it when that happens adds `serve_session_exited` with `"error":"keeper_lost"` to the stream.
+- **Orphans.** A keeper with no server attached for 24 hours stops its session.
+- **Security.** Each keeper listens on an owner-only Unix socket `<home>/serve/sessions/<id>.sock` (`0600`, in a `0700` folder; on Windows the named pipe `\\.\pipe\gentle-shell-serve-<user>-<id>`) and answers only a connection that first presents the session's random token from its record file (`0600`); one server at a time (a new one takes over).
+- **What a restart loses:** requests in flight (they fail) and open event streams (clients reconnect with their last `id`); in-memory state of the old server such as forwards and Tower. A server started without a serve folder (only in tests) keeps its keepers in a private temporary folder and stops them when it stops.
 
 ## Protocol
 
@@ -155,14 +167,14 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | --- | --- | --- |
 | `GET /.well-known/gentle-shell` | none | `{ schema: "gentle-shell.serve.identity/v1", serverId, name, protocol, version }`: who answers at this address (`name` is the machine's hostname). No secrets; `Host` and `Origin` rules still apply. A client holding a [connection code](#connection-code) probes it before pairing. |
 | `POST /api/pair` | none (the code) | `{ code, name? }` → `201 { id, name, scopes, createdAt, token }`. `403 invalid_code`, `429 rate_limited`, `409 too_many_devices`. |
-| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `server-forwards`, `services`, `tower`, `files`, `git`, `uploads`, `print` ([one-shot prompts](#one-shot-prompts)), and `terminals` when a [terminal host](#persistent-terminals) binary is there. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
-| `POST /api/server/stop` | `admin` | `202 { stopping: true }`; the server stops its sessions and exits. |
+| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `server-forwards`, `services`, `tower`, `files`, `git`, `uploads`, `print` ([one-shot prompts](#one-shot-prompts)), `persistent-sessions` ([sessions survive a server restart](#sessions-across-server-restarts)), and `terminals` when a [terminal host](#persistent-terminals) binary is there. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
+| `POST /api/server/stop` | `admin` | `{ endSessions? }` → `202 { stopping: true, endSessions }`; the server exits. Its sessions keep running for the next server unless `endSessions` is `true`. |
 | `POST /api/pairing-codes` | `admin` | `{ scopes? }` → `201 { code, scopes, expiresAt }` |
 | `GET /api/devices` | `admin` | `{ devices: [{ id, name, scopes, createdAt, lastUsedAt? }] }` |
 | `DELETE /api/devices/:id` | `admin` | `{ revoked }`. Immediate: the token stops working, its tickets die, its open streams close. |
 | `POST /api/tickets` | `sessions:read` | `{ sessionId }` → `201 { ticket, expiresAt }` (see [Stream tickets](#stream-tickets)). |
 | `GET /api/sessions` | `sessions:read` | `{ sessions: [Session] }` |
-| `POST /api/sessions` | `sessions:operate` | `{ cwd, sessionId? }` → `201 { session }`. `cwd` must be an absolute path to an existing folder; `sessionId` is a Pi session id (`--session-id <id>`: the folder's session with that exact id, or a new one with it when Pi never wrote it, as for a conversation with no messages yet), never a path. |
+| `POST /api/sessions` | `sessions:operate` | `{ cwd, sessionId? }` → `201 { session }`. `cwd` must be an absolute path to an existing folder; `sessionId` is a Pi session id (`--session-id <id>`: the folder's session with that exact id, or a new one with it when Pi never wrote it, as for a conversation with no messages yet), never a path. `503 session_start_failed` when its keeper could not start. |
 | `GET /api/sessions/:id` | `sessions:read` | `{ session }` |
 | `DELETE /api/sessions/:id` | `sessions:operate` | Stops the session (waits for its exit) and forgets it: `{ session }`. |
 | `POST /api/sessions/:id/rpc` | per command | One Pi RPC command object → its Pi `response`. |
@@ -203,7 +215,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 
 ### Pi RPC: `POST /api/sessions/:id/rpc`
 
-The body is one [Pi RPC command](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc-commands.md) (`{ "type": "get_state" }`, `{ "type": "prompt", "message": "…" }`, …). Several clients can share a session, so the server sends it under its own id (`serve-rpc-N`) and puts the client's `id` back on the response it returns. The same response also appears in the event stream, under the server's id.
+The body is one [Pi RPC command](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc-commands.md) (`{ "type": "get_state" }`, `{ "type": "prompt", "message": "…" }`, …). Several clients can share a session, so the server sends it under its own id (`serve-rpc-<run>-N`, unique per server run) and puts the client's `id` back on the response it returns. The same response also appears in the event stream, under the server's id.
 
 - The server waits up to 30 s for the response. A command that takes longer (a long `bash`, `compact`) answers `202 { pending: true, id }`, and its response arrives in the stream under that `id`.
 - `extension_ui_response` is the answer to a dialog: see [Dialogs](#dialogs). It answers `202 { accepted: true }`.
@@ -242,7 +254,7 @@ id: 1
 data: {"type":"extension_ui_request","id":"…","method":"setStatus",…}
 
 id: 2
-data: {"type":"response","id":"serve-rpc-1","command":"get_state","success":true,"data":{…}}
+data: {"type":"response","id":"serve-rpc-3f9a1c07-1","command":"get_state","success":true,"data":{…}}
 
 : ping
 ```
@@ -252,7 +264,7 @@ Other SSE events, which carry no `id` (so they never move a client's cursor):
 | Event | When |
 | --- | --- |
 | `hello` | First, on every connection: the session's state, current `seq` and oldest replayable `seq`. |
-| `snapshot-required` | `after` is older than the replay ring (records the client never saw were evicted) or newer than the stream (a cursor from another server run). `{ after, oldest, seq }`. The client recovers state with Pi `get_state` / `get_messages` and Desktop RPC `get_snapshot`, then follows the live stream that continues on the same connection. |
+| `snapshot-required` | `after` is older than the replay ring (records the client never saw were evicted) or newer than the stream (a cursor from another session). `{ after, oldest, seq }`. The client recovers state with Pi `get_state` / `get_messages` and Desktop RPC `get_snapshot`, then follows the live stream that continues on the same connection. |
 | `dialog` | A dialog still waiting for an answer that this connection's replay did not carry. `data` is the original `extension_ui_request`. |
 | `host_tool_call` | To the device that provides it only: a host tool call still waiting for that device's result that this connection's replay did not carry. `data` is the original `setWidget` record. |
 | `resync` | Sent as the stream is closed for falling behind: `{ reason: "slow_client", seq }`. Reconnect with the last `id` seen. |
@@ -262,7 +274,7 @@ The server also adds its own records to the stream (they have a `seq` like any o
 | Record | Meaning |
 | --- | --- |
 | `{"type":"serve_dialog_resolved","id"}` | A client answered this dialog; other clients can close it. |
-| `{"type":"serve_session_exited","code","signal","error"?}` | The child exited. The stream ends after it. |
+| `{"type":"serve_session_exited","code","signal","error"?}` | Pi exited (`error`: `spawn_failed` when it could not start, `keeper_lost` when its keeper went away). The stream ends after it. |
 | `{"type":"serve_record_dropped","reason":"too_large","maxBytes"}` | A stdout record over 16 MiB was dropped. |
 
 `after` comes from the query, or from the `Last-Event-ID` header that `EventSource` sends on reconnect. Without it the stream starts live (plus the pending dialogs and the device's waiting host tool calls). An exited session replays and then ends the stream.
@@ -271,7 +283,7 @@ A comment line (`: ping`) is sent every 20 s so proxies do not close idle stream
 
 #### Replay and resume
 
-Each session keeps a replay ring of its newest records: 2000 records or 8 MiB, whichever is reached first (the newest record is always kept). `after` inside the ring replays exactly what was missed; outside it the client gets `snapshot-required`. Sequence numbers belong to one session in one server run: a restarted server has new session ids, so an old id answers `404`.
+Each session keeps a replay ring of its newest records: 2000 records or 8 MiB, whichever is reached first (the newest record is always kept). `after` inside the ring replays exactly what was missed; outside it the client gets `snapshot-required`. Sequence numbers belong to the session for its whole life, across [server restarts](#sessions-across-server-restarts).
 
 #### Dialogs
 
@@ -279,11 +291,11 @@ Each session keeps a replay ring of its newest records: 2000 records or 8 MiB, w
 
 #### Backpressure
 
-A slow client never slows a session. The child's stdout is always read; each subscriber's unsent bytes are bounded (4 MiB). A subscriber over that bound is dropped: its stream ends with a `resync` event (and is cut 5 s later if it still is not reading), and it reconnects with its last `id`. Commands are refused with `503 session_busy` if a child stops reading its stdin and 16 MiB pile up there.
+A slow client never slows a session. Pi's stdout is always read; each subscriber's unsent bytes are bounded (4 MiB). A subscriber over that bound is dropped: its stream ends with a `resync` event (and is cut 5 s later if it still is not reading), and it reconnects with its last `id`. Commands are refused with `503 session_busy` if Pi stops reading its stdin and 16 MiB pile up there.
 
 #### Framing
 
-Child stdout is split on LF only, with an optional CR before it stripped, never on U+2028/U+2029 (which are valid inside JSON strings, and which Node's `readline` would split on). A line that is not a JSON object is not forwarded. Commands are written as one JSON object plus LF.
+Pi's stdout is split on LF only, with an optional CR before it stripped, never on U+2028/U+2029 (which are valid inside JSON strings, and which Node's `readline` would split on). A line that is not a JSON object is not forwarded, nor is a record whose `type` starts with `serve_` (those are the server side's own). Commands are written as one JSON object plus LF.
 
 ## Authentication
 
@@ -519,6 +531,8 @@ sequenceDiagram
 | --- | --- |
 | Running sessions | 16 (`429 too_many_sessions`) |
 | Exited sessions kept | 16 |
+| Session with no server attached | 24 hours, then stopped; an exited one waits 60 s for a server to collect its stream |
+| Host tool call after a server restart | 30 s for its device to reconnect |
 | Replay ring per session | 2000 records or 8 MiB |
 | Unsent bytes per subscriber | 4 MiB, then `resync` |
 | One stdout record | 16 MiB, then `serve_record_dropped` |
@@ -591,7 +605,7 @@ gsdev serve --listen 127.0.0.1:8787   # starts in the background, prints the URL
 gsdev serve status                    # URL, pid, sessions
 gsdev serve pair                      # one-time code (5 minutes, single use)
 gsdev serve devices                   # paired devices; --revoke <id> removes one
-gsdev serve stop                      # stops the server and every session it owns
+gsdev serve stop                      # stops the server; sessions keep running (--sessions stops them too)
 ```
 
 The log is `<home>/serve/server.log` (rewritten on each start). Gentle Shell never launches the server on its own: once started it runs until `serve stop`, a reboot, or its process is killed. Sessions run on the Linux machine, so their `cwd` is a path there.
@@ -699,7 +713,7 @@ The Gentle Shell GPUI desktop app is getting a client for this server: [gentle-s
 
 - **WebSocket.** The RFC proposes one WebSocket per client with `hello`/`welcome` negotiation and `session/subscribe`. This phase uses HTTP + SSE instead, which needs no dependency (Gentle Shell ships one runtime dependency) and works from browsers, phones and curl. The contract — per-session `seq`, replay window, `snapshot-required`, dialog replay, per-request scopes, tickets for streams — is transport-independent, so a WebSocket transport can be added later behind it.
 - **Native Desktop RPC frames.** Desktop RPC still travels as `/gentle:desktop` prompts and `setWidget` records inside each session; `/desktop` only correlates them.
-- **Idle unload and crash resume.** Sessions run until stopped; a restarted server does not resume the previous run's sessions (start them again with `sessionId`).
+- **Idle unload and crash resume.** Sessions run until stopped and survive a server restart, but not a reboot or a crash of their keeper: start them again with `sessionId` and Pi reopens the conversation from disk.
 - **`message_update` coalescing.** Slow clients are dropped into a resync instead.
 - **Narrower file scopes.** File access uses `sessions:read` and `sessions:operate`; separate `fs:read`/`fs:write` scopes, or a folder jail per device, are not there.
 - **SSH bootstrap and TLS** (Phase 3), **the mobile web client, QR codes and a relay** (Phase 4).

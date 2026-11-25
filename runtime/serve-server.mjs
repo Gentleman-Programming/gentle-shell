@@ -8,7 +8,7 @@
 
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer,                                           } from "node:http";
+
 import { arch, homedir, hostname } from "node:os";
 import { basename, join, sep } from "node:path";
 import { hasScope, isServeScope,                                                 } from "./serve-auth.mjs";
@@ -20,7 +20,10 @@ import { HttpError, need, readJsonBody, realDirectory, SECURITY_HEADERS, sendErr
 import { UploadStore,                          } from "./serve-uploads.mjs";
 import { PrintService,                         } from "./serve-print.mjs";
 import { TerminalService,                        } from "./serve-terminals.mjs";
-import { HOST_TOOL_METHODS, ServeSession, SessionError,                                             } from "./serve-session.mjs";
+import { HOST_TOOL_METHODS, KeeperLink, SERVE_SESSION_LIMITS, ServeSession, SessionError,                                             } from "./serve-session.mjs";
+import { exitedSnapshot, keeperAlive, keeperEndpoint, newKeeperToken, privateKeeperDir, readKeeperRecords, removeKeeperRecord, removePrivateKeeperDir, SERVE_KEEPER_LIMITS, spawnKeeper, writeKeeperRecord,                   } from "./serve-session-keeper.mjs";
+import { startRelayLink,                } from "./serve-relay.mjs";
+import { createServeListener, PairProofs, PAIR_PROOF, requestScheme,                                           } from "./serve-tls.mjs";
 
 export const SERVE_SCHEMA = "gentle-shell.serve/v1";
 export const SERVE_PROTOCOL = 1;
@@ -112,7 +115,17 @@ export function carriesHostToolRequest(message        )          {
 
 
 
+
+
+
+
+
 /** A running Gentle Tower: its loopback port, the path that carries its token, and how to stop it. */
+
+
+
+
+
 
 
 
@@ -190,6 +203,7 @@ export function stableServerId(serveDir        )         {
 }
 
 export function startServeServer(options                    )                       {
+	if (options.relay && !options.tls) return Promise.reject(new Error("a relay needs TLS: the relay must only ever see ciphertext"));
 	const limits = { ...SERVE_SERVER_LIMITS, ...options.limits };
 	const now = options.now ?? Date.now;
 	const log = options.log ?? (() => {});
@@ -203,15 +217,19 @@ export function startServeServer(options                    )                   
 	const deviceLabel = (deviceId        ) => deviceNames.get(deviceId) ?? options.auth.listDevices().find((d) => d.id === deviceId)?.name;
 
 	let mainPort = options.port;
+	let relayLink                       ;
 	// Pages on this machine's loopback, opened from a device: one listener each on the same address as this server.
 	const forwards = new ForwardManager({
 		bindHost: options.host,
 		hostCheck: (port) => allowedHosts(options.host, port, options.allowHosts),
 		...(options.forwardPorts === undefined ? {} : { portRange: options.forwardPorts }),
+		...(options.tls === undefined ? {} : { tls: options.tls }),
 		now,
 		log,
 		limits: options.forwardLimits,
 	});
+	// Pairing proofs bind each live code to the certificate, for a client that found this server through discovery.
+	const proofs = options.tls === undefined ? undefined : new PairProofs(options.tls.fingerprint, now);
 	// Files on this machine, and their change streams.
 	const files = new FileService({ limits: options.fsLimits, now, log });
 	// git commands in folders on this machine.
@@ -254,33 +272,99 @@ export function startServeServer(options                    )                   
 		return s;
 	};
 
+	// Sessions run under detached keepers (lib/serve-session-keeper.ts) that outlive this server; a later server
+	// reattaches them. Without a serve folder they live in a private temporary folder and end with the server.
+	const keepSessions = options.serveDir !== undefined;
+	const keeperDir = options.serveDir !== undefined ? join(options.serveDir, "sessions") : privateKeeperDir();
+	const keeperLimits = { ...SERVE_KEEPER_LIMITS, ...options.keeperLimits };
+	let starting = 0;
+
 	const forgetExited = () => {
 		const exited = [...sessions.values()].filter((s) => s.state === "exited");
-		for (const s of exited.slice(0, Math.max(0, exited.length - limits.keepExited))) sessions.delete(s.id);
+		for (const s of exited.slice(0, Math.max(0, exited.length - limits.keepExited))) {
+			sessions.delete(s.id);
+			removeKeeperRecord(keeperDir, s.id);
+		}
 	};
 
-	const startSession = (cwd        , sessionId         )               => {
+	const sessionHooks = (id        ) => ({
+		limits: options.sessionLimits,
+		now,
+		onStderr: (text        ) => { for (const line of text.split("\n")) if (line.trim()) log(`[${id}] ${line}`); },
+		onExit: (s              ) => {
+			log(`[${id}] exited (code ${s.exitCode}, signal ${s.exitSignal})`);
+			forwards.closeWhere((f) => f.sessionId === id, "session ended");
+			forgetExited();
+		},
+		deviceLabel,
+	});
+
+	/** Connects to a session's keeper and takes over its state. */
+	const attachSession = async (id        , token        , reattached         )                        => {
+		const { link, snapshot, ring } = await KeeperLink.connect(keeperEndpoint(keeperDir, id), token, {
+			timeoutMs: keeperLimits.connectMs,
+			maxLineBytes: options.sessionLimits?.maxLineBytes ?? SERVE_SESSION_LIMITS.maxLineBytes,
+		});
+		const session = new ServeSession({ snapshot, ring, link, reattached, ...sessionHooks(id) });
+		sessions.set(id, session);
+		return session;
+	};
+
+	const startSession = async (cwd        , sessionId         )                        => {
 		if (closing) throw new HttpError(503, "shutting_down", "The server is stopping");
-		const running = [...sessions.values()].filter((s) => s.state === "running").length;
+		const running = [...sessions.values()].filter((s) => s.state === "running").length + starting;
 		if (running >= limits.maxSessions) throw new HttpError(429, "too_many_sessions", `At most ${limits.maxSessions} sessions run at once`);
 		const id = `ses_${randomBytes(8).toString("hex")}`;
-		const session = new ServeSession({
-			id,
-			launch: options.launchSession({ cwd, ...(sessionId === undefined ? {} : { sessionId }) }),
-			limits: options.sessionLimits,
-			now,
-			onStderr: (text) => { for (const line of text.split("\n")) if (line.trim()) log(`[${id}] ${line}`); },
-			onExit: (s) => {
-				log(`[${id}] exited (code ${s.exitCode}, signal ${s.exitSignal})`);
-				forwards.closeWhere((f) => f.sessionId === id, "session ended");
-				forgetExited();
-			},
-			deviceLabel,
-		});
-		sessions.set(id, session);
+		const token = newKeeperToken();
+		const launch = options.launchSession({ cwd, ...(sessionId === undefined ? {} : { sessionId }) });
+		starting += 1;
+		let session              ;
+		try {
+			await spawnKeeper({ id, dir: keeperDir, token, launch, ...(options.sessionLimits ? { limits: options.sessionLimits } : {}), keeperLimits });
+			session = await attachSession(id, token, false);
+		} catch (error) {
+			removeKeeperRecord(keeperDir, id);
+			const message = error instanceof Error ? error.message : String(error);
+			log(`[${id}] could not start: ${message}`);
+			throw new HttpError(503, "session_start_failed", `The session could not start: ${message}`);
+		} finally {
+			starting -= 1;
+		}
+		// The server began stopping meanwhile: the session goes the way the others went.
+		if (closing) {
+			if (keepSessions) session.detach();
+			else await session.stop();
+			throw new HttpError(503, "shutting_down", "The server is stopping");
+		}
 		log(`[${id}] started`);
 		return session;
 	};
+
+	/** At start: every keeper a previous server left is attached again; sessions that ended are listed from their records. */
+	const reattach = async () => {
+		await Promise.all(readKeeperRecords(keeperDir).map(async (record              ) => {
+			// A keeper whose Pi already exited waits a minute for a server to collect the end of its stream.
+			if (record.state === "running" || keeperAlive(record.keeperPid)) {
+				try {
+					const session = await attachSession(record.id, record.token, true);
+					log(`[${record.id}] reattached (seq ${session.seq}, ${session.state})`);
+					return;
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					if (record.state === "running") {
+						// A keeper that is there but does not answer is left alone: it stops its session after a day without a server.
+						if (keeperAlive(record.keeperPid)) return log(`[${record.id}] its keeper (pid ${record.keeperPid}) did not answer: ${message}`);
+						record = { ...record, state: "exited", exitCode: null, exitSignal: null, exitedAt: now(), error: "keeper_lost" };
+						writeKeeperRecord(keeperDir, record);
+						log(`[${record.id}] lost: its keeper is gone`);
+					}
+				}
+			}
+			sessions.set(record.id, new ServeSession({ snapshot: exitedSnapshot(record), ...sessionHooks(record.id) }));
+		}));
+		forgetExited();
+	};
+	const reattached = reattach().catch((error         ) => log(`reattaching sessions failed: ${error instanceof Error ? error.message : String(error)}`));
 
 	const openEvents = (req                 , res                , session              , principal           , url     ) => {
 		const raw = url.searchParams.get("after") ?? (typeof req.headers["last-event-id"] === "string" ? req.headers["last-event-id"] : null);
@@ -307,11 +391,11 @@ export function startServeServer(options                    )                   
 		lastUsedAt: new Date(f.lastUsedAt).toISOString(),
 	});
 
-	/** A fresh single-use link to the forward, on the host name the client reached this server with. */
+	/** A fresh single-use link to the forward, on the host name and scheme the client reached this server with. */
 	const forwardLink = (req                 , forward             , path        ) => {
 		const minted = forwards.mintTicket(forward.id);
 		const clientHost = (req.headers.host ?? "127.0.0.1").replace(/:\d+$/, "");
-		return { url: forwards.urlFor(forward.id, clientHost, path, minted.ticket), expiresAt: new Date(minted.expiresAt).toISOString() };
+		return { url: forwards.urlFor(forward.id, clientHost, path, minted.ticket, requestScheme(req)), expiresAt: new Date(minted.expiresAt).toISOString() };
 	};
 
 	/** A device sees and closes its own forwards; an admin token sees every one. */
@@ -422,6 +506,8 @@ export function startServeServer(options                    )                   
 	};
 
 	const route = async (req                 , res                , url     )                => {
+		// Requests wait for the sessions a previous server left to be attached again.
+		await reattached;
 		const method = req.method ?? "GET";
 		const path = url.pathname;
 		const principal = options.auth.authenticate(bearer(req));
@@ -431,7 +517,20 @@ export function startServeServer(options                    )                   
 		// connection code probes each advertised address and pairs only where the id matches.
 		if (path === SERVE_IDENTITY_PATH) {
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
-			return sendJson(res, 200, { schema: SERVE_IDENTITY_SCHEMA, serverId, name: hostname(), protocol: SERVE_PROTOCOL, version: options.version });
+			return sendJson(res, 200, { schema: SERVE_IDENTITY_SCHEMA, serverId, name: hostname(), protocol: SERVE_PROTOCOL, version: options.version,
+				tls: options.tls !== undefined, ...(options.tls === undefined ? {} : { fp: options.tls.fingerprint }) });
+		}
+
+		// Before a client that found this server through discovery sends its code: one proof per live code that
+		// binds it to this certificate, which only a server knowing the code can make (docs/serve.md#pairing-proof).
+		if (path === "/api/pair/proof") {
+			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
+			if (!proofs) throw new HttpError(501, "not_supported", "This server has no certificate: it serves plain HTTP");
+			const body = await readJsonBody(req, limits.smallBodyBytes);
+			const nonce = typeof body.nonce === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(body.nonce) ? Buffer.from(body.nonce, "base64url") : undefined;
+			if (!nonce || nonce.length < PAIR_PROOF.nonceMinBytes || nonce.length > PAIR_PROOF.nonceMaxBytes) throw new HttpError(400, "invalid_nonce", `nonce must be ${PAIR_PROOF.nonceMinBytes}-${PAIR_PROOF.nonceMaxBytes} random bytes, base64url`);
+			if (!proofs.allow()) throw new HttpError(429, "rate_limited", "Too many proof requests; wait a minute");
+			return sendJson(res, 200, { proofs: await proofs.proofs(options.auth.livePairingCodes(), nonce) });
 		}
 
 		if (path === "/api/pair") {
@@ -458,18 +557,23 @@ export function startServeServer(options                    )                   
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			const who = need(principal, "sessions:read");
 			return sendJson(res, 200, { schema: SERVE_SCHEMA, protocol: SERVE_PROTOCOL, serverId, version: options.version, startedAt: new Date(startedAt).toISOString(),
-				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : []), ...(terminals?.binary() ? ["terminals"] : []), ...(prints.available ? ["print"] : [])],
+				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : []), ...(terminals?.binary() ? ["terminals"] : []), ...(prints.available ? ["print"] : []), ...(keepSessions ? ["persistent-sessions"] : [])],
 				device: { id: who.deviceId, name: who.name, scopes: who.scopes },
 				// How to build paths for the file and session endpoints.
 				platform: process.platform, arch: arch(), pathSeparator: sep,
 				// The server user's home folder, a default for new sessions; only for a token that may start them.
-				...(hasScope(who, "sessions:operate") ? { home: homedir() } : {}) });
+				...(hasScope(who, "sessions:operate") ? { home: homedir() } : {}),
+				// The certificate devices pin on the network, and the relay registration.
+				...(options.tls === undefined ? {} : { tls: { fingerprint: options.tls.fingerprint } }),
+				...(relayLink === undefined ? {} : { relay: { url: relayLink.url, connected: relayLink.connected() } }) });
 		}
 		if (path === "/api/server/stop") {
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
 			need(principal, "admin");
-			sendJson(res, 202, { stopping: true });
-			setImmediate(() => options.onStopRequested?.());
+			const body = await readJsonBody(req, limits.smallBodyBytes);
+			const endSessions = body.endSessions === true;
+			sendJson(res, 202, { stopping: true, endSessions });
+			setImmediate(() => options.onStopRequested?.({ endSessions }));
 			return;
 		}
 		if (path === "/api/pairing-codes") {
@@ -521,7 +625,7 @@ export function startServeServer(options                    )                   
 				if (typeof body.sessionId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.sessionId)) throw new HttpError(400, "invalid_session_id", "sessionId must be a Pi session id");
 				sessionId = body.sessionId;
 			}
-			const started = startSession(cwd, sessionId);
+			const started = await startSession(cwd, sessionId);
 			started.noteActivity(who.deviceId);
 			return sendJson(res, 201, { session: sessionView(started, who) });
 		}
@@ -563,6 +667,7 @@ export function startServeServer(options                    )                   
 				const who = need(principal, "sessions:operate");
 				await session.stop();
 				sessions.delete(session.id);
+				removeKeeperRecord(keeperDir, session.id);
 				return sendJson(res, 200, { session: sessionView(session, who) });
 			}
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
@@ -590,7 +695,7 @@ export function startServeServer(options                    )                   
 		if (command.id !== undefined && (typeof command.id !== "string" || command.id.length > 128)) throw new HttpError(400, "invalid_command", "id must be a string up to 128 characters");
 		if (command.type === "extension_ui_response") {
 			session.noteActivity(need(principal, "sessions:operate").deviceId);
-			const outcome = session.answerDialog(command);
+			const outcome = await session.answerDialog(command);
 			if (outcome === "unknown") throw new HttpError(404, "unknown_dialog", "No pending dialog with this id");
 			if (outcome === "answered") throw new HttpError(409, "dialog_answered", "Another client already answered this dialog");
 			return sendJson(res, 202, { accepted: true });
@@ -645,12 +750,13 @@ export function startServeServer(options                    )                   
 		return sendJson(res, 200, outcome.answer);
 	};
 
-	const handler = (req                 , res                ) => {
+	const handler = (via               ) => (req                 , res                ) => {
 		const host = req.headers.host;
-		if (typeof host !== "string" || !hostOk(host)) return sendError(res, 421, "bad_host", "Unexpected Host header");
+		// Through a relay the Host is whatever name the client used for it; no browser can speak the relay's handshake, so rebinding cannot reach here.
+		if (typeof host !== "string" || (via !== "relay" && !hostOk(host))) return sendError(res, 421, "bad_host", "Unexpected Host header");
 		// Bearer tokens, not cookies, so a foreign page cannot ride a session; only this server's own origin is accepted.
-		const origin = req.headers.origin;
-		if (origin !== undefined && origin.toLowerCase() !== `http://${host.toLowerCase()}`) return sendError(res, 403, "forbidden_origin", "Origin not allowed");
+		const origin = req.headers.origin?.toLowerCase();
+		if (origin !== undefined && origin !== `http://${host.toLowerCase()}` && origin !== `https://${host.toLowerCase()}`) return sendError(res, 403, "forbidden_origin", "Origin not allowed");
 		let url     ;
 		try {
 			url = new URL(req.url ?? "/", "http://serve.invalid");
@@ -659,17 +765,23 @@ export function startServeServer(options                    )                   
 		}
 		route(req, res, url).catch((error         ) => {
 			if (error instanceof HttpError) return sendError(res, error.status, error.code, error.message);
-			if (error instanceof SessionError) return sendError(res, error.code === "session_busy" ? 503 : 409, error.code, error.message);
+			if (error instanceof SessionError) return sendError(res, error.code === "session_busy" || error.code === "shutting_down" ? 503 : 409, error.code, error.message);
 			if (error instanceof ForwardError) return sendError(res, error.status, error.code, error.message);
 			log(`internal error: ${error instanceof Error ? error.message : String(error)}`);
 			sendError(res, 500, "internal_error", "Server error");
 		});
 	};
 
-	const server = createServer(handler);
-	server.headersTimeout = 20_000;
-	server.requestTimeout = 0; // SSE streams stay open
-	server.keepAliveTimeout = 5_000;
+	const listener = createServeListener({
+		...(options.tls === undefined ? {} : { tls: options.tls }),
+		setup: (http            , via) => {
+			http.on("request", handler(via));
+			http.headersTimeout = 20_000;
+			http.requestTimeout = 0; // SSE streams stay open
+			http.keepAliveTimeout = 5_000;
+		},
+	});
+	const server = listener.server;
 	const heartbeat = setInterval(() => {
 		for (const s of sessions.values()) s.heartbeat();
 		files.heartbeat();
@@ -680,21 +792,34 @@ export function startServeServer(options                    )                   
 	const { promise, resolve, reject } = Promise.withResolvers             ();
 	server.once("error", reject);
 	server.listen(options.port, options.host.replace(/^\[|\]$/g, ""), async () => {
+		server.off("error", reject);
 		const address = server.address();
 		const port = typeof address === "object" && address ? address.port : options.port;
 		hostOk = allowedHosts(options.host, port, options.allowHosts);
 		mainPort = port;
 		const localHost = isUnspecified(options.host) ? "127.0.0.1" : options.host.includes(":") && !options.host.startsWith("[") ? `[${options.host}]` : options.host;
+		// Plain HTTP: this machine may always use it, also when the network gets TLS.
 		const url = `http://${localHost}:${port}`;
 		// On the network, also answer LAN discovery on the same port number (UDP); the HTTP server works without it.
 		let discovery                                ;
 		if (!isLoopbackHost(options.host)) {
 			try {
-				discovery = await startDiscoveryResponder({ port, serverId, httpPort: port, name: hostname, log });
+				discovery = await startDiscoveryResponder({ port, serverId, httpPort: port, name: hostname, log, ...(options.tls === undefined ? {} : { fingerprint: options.tls.fingerprint }) });
 			} catch (error) {
 				log(`discovery off: could not bind UDP 0.0.0.0:${port}: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}
+		// Outside the network: a registration with the relay; each client it brings is one more TLS connection here (or to a forward's port).
+		const relay = relayLink = options.relay && options.tls ? startRelayLink({
+			url: options.relay.url,
+			...(options.relay.secret === undefined ? {} : { secret: options.relay.secret }),
+			...(options.relay.retryMinMs === undefined ? {} : { retryMinMs: options.relay.retryMinMs }),
+			certDer: options.tls.der,
+			keyPem: options.tls.keyPem,
+			accept: (target) => (target === undefined || target === port ? (socket) => listener.acceptRelayed(socket) : forwards.relayTarget(target)),
+			log,
+		}) : undefined;
+		await reattached;
 		resolve({
 			serverId,
 			host: options.host,
@@ -702,9 +827,12 @@ export function startServeServer(options                    )                   
 			url,
 			startedAt,
 			discovery: discovery !== undefined,
-			close: async () => {
+			...(options.tls === undefined ? {} : { fingerprint: options.tls.fingerprint }),
+			...(relay === undefined ? {} : { relay }),
+			close: async (closeOptions                            ) => {
 				closing = true;
 				clearInterval(heartbeat);
+				relay?.close();
 				await discovery?.close();
 				forwards.closeAll();
 				files.closeAll();
@@ -714,10 +842,13 @@ export function startServeServer(options                    )                   
 				terminals?.closeAll();
 				await towerStarting?.catch(() => undefined);
 				await stopTower();
-				await Promise.all([...sessions.values()].map((s) => s.stop()));
+				// Sessions keep running for the next server unless asked to end, or when no later server could find them.
+				if (keepSessions && closeOptions?.endSessions !== true) for (const s of sessions.values()) s.detach();
+				else await Promise.all([...sessions.values()].map((s) => s.stop()));
+				if (!keepSessions) removePrivateKeeperDir(keeperDir);
 				const closed = Promise.withResolvers      ();
 				server.close(() => closed.resolve());
-				server.closeAllConnections();
+				listener.closeAllConnections();
 				await closed.promise;
 			},
 		});

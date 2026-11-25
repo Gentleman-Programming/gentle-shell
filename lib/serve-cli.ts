@@ -13,6 +13,8 @@ import { join } from "node:path";
 import { INTERACTIVE_HOST_ENV } from "./rpc-host.ts";
 import { DEFAULT_PAIR_SCOPES, parseScopes, readDevicesFile, ServeAuth, writeDevicesFile, type PublicDevice, type ServeScope } from "./serve-auth.ts";
 import { isLoopbackHost, isUnspecified, SERVE_PROTOCOL, startServeServer, type ServeServer, type ServeTower } from "./serve-server.ts";
+import { parseRelayUrl } from "./serve-relay.ts";
+import { loadOrCreateServeTls, type ServeTlsIdentity } from "./serve-tls.ts";
 import type { SessionLaunch } from "./serve-session.ts";
 import { autostartCommand, autostartFile, autostartInstalled, defaultShareSystem, encodeConnectionCode, firewallHint, HOST_NAME, installAutostart, ownHostNames,
 	removeAutostart, SHARE_DEFAULT_PORT, SHARE_FORWARD_PORTS, SHARE_PORT_ATTEMPTS, shareAddresses, type PortRange, type ShareSystem } from "./serve-share.ts";
@@ -26,12 +28,12 @@ const STOP_TIMEOUT_MS = 15_000;
 // --- arguments -----------------------------------------------------------------
 
 export type ServeArgs =
-	| { action: "start"; host: string; port: number; foreground: boolean; json: boolean; allowHosts?: string[]; forwardPorts?: PortRange }
+	| { action: "start"; host: string; port: number; foreground: boolean; json: boolean; allowHosts?: string[]; forwardPorts?: PortRange; noTls?: true; relay?: string }
 	| { action: "status"; json: boolean }
-	| { action: "stop" }
+	| { action: "stop"; endSessions: boolean }
 	| { action: "pair"; scopes: ServeScope[]; json: boolean }
 	| { action: "devices"; revoke?: string; json: boolean }
-	| { action: "share"; port: number; always: boolean; json: boolean }
+	| { action: "share"; port: number; always: boolean; json: boolean; noTls?: true; relay?: string }
 	| { action: "share-off" }
 	| { action: "help" };
 
@@ -55,7 +57,10 @@ export function parseServeArgs(args: readonly string[]): ServeArgs | { error: st
 	let sharePort: number | undefined;
 	let always = false;
 	let off = false;
+	let endSessions = false;
 	let forwardPorts: PortRange | undefined;
+	let noTls = false;
+	let relay: string | undefined;
 	const scopeValues: string[] = [];
 	const allowHosts: string[] = [];
 	for (let i = 0; i < rest.length; i += 1) {
@@ -67,6 +72,13 @@ export function parseServeArgs(args: readonly string[]): ServeArgs | { error: st
 		if (arg === "--help" || arg === "-h") return { action: "help" };
 		if (arg === "--json" && sub !== "stop") { json = true; continue; }
 		if (sub === undefined && arg === "--foreground") { foreground = true; continue; }
+		if ((sub === undefined || sub === "share") && arg === "--no-tls") { noTls = true; continue; }
+		if ((sub === undefined || sub === "share") && (arg === "--relay" || arg.startsWith("--relay="))) {
+			const parsed = parseRelayUrl(value("--relay") ?? "");
+			if ("error" in parsed) return { error: `--relay: ${parsed.error}` };
+			relay = parsed.url;
+			continue;
+		}
 		if (sub === undefined && (arg === "--listen" || arg.startsWith("--listen="))) {
 			const v = value("--listen");
 			if (v === undefined) return { error: "--listen needs <host>:<port>" };
@@ -108,21 +120,24 @@ export function parseServeArgs(args: readonly string[]): ServeArgs | { error: st
 		}
 		if (sub === "share" && arg === "--always") { always = true; continue; }
 		if (sub === "share" && arg === "--off") { off = true; continue; }
+		if (sub === "stop" && arg === "--sessions") { endSessions = true; continue; }
 		return { error: `unknown serve${sub ? ` ${sub}` : ""} argument "${arg}"` };
 	}
+	if (noTls && relay !== undefined) return { error: "--relay needs TLS (the relay must only see ciphertext): leave out --no-tls" };
+	const network = { ...(noTls ? { noTls: true as const } : {}), ...(relay === undefined ? {} : { relay }) };
 	if (sub === "status") return { action: "status", json };
-	if (sub === "stop") return { action: "stop" };
+	if (sub === "stop") return { action: "stop", endSessions };
 	if (sub === "devices") return { action: "devices", json, ...(revoke === undefined ? {} : { revoke }) };
 	if (sub === "share") {
-		if (off) return always || json || sharePort !== undefined ? { error: "serve share --off takes no other argument" } : { action: "share-off" };
-		return { action: "share", port: sharePort ?? SHARE_DEFAULT_PORT, always, json };
+		if (off) return always || json || sharePort !== undefined || noTls || relay !== undefined ? { error: "serve share --off takes no other argument" } : { action: "share-off" };
+		return { action: "share", port: sharePort ?? SHARE_DEFAULT_PORT, always, json, ...network };
 	}
 	if (sub === "pair") {
 		if (scopeValues.length === 0) return { action: "pair", scopes: [...DEFAULT_PAIR_SCOPES], json };
 		const parsed = parseScopes(scopeValues);
 		return "error" in parsed ? parsed : { action: "pair", scopes: parsed.scopes, json };
 	}
-	return { action: "start", host: listen.host, port: listen.port, foreground, json, ...(allowHosts.length === 0 ? {} : { allowHosts }), ...(forwardPorts ? { forwardPorts } : {}) };
+	return { action: "start", host: listen.host, port: listen.port, foreground, json, ...(allowHosts.length === 0 ? {} : { allowHosts }), ...(forwardPorts ? { forwardPorts } : {}), ...network };
 }
 
 /** `<from>-<to>`, both 1-65535, from ≤ to, at most 1000 ports. */
@@ -135,11 +150,11 @@ export function parsePortRange(value: string): PortRange | undefined {
 }
 
 export const SERVE_HELP = [
-	"Usage: gentle-shell [home selectors] serve share [--port <n>] [--always] [--json]",
+	"Usage: gentle-shell [home selectors] serve share [--port <n>] [--always] [--no-tls] [--relay gsr://<host>:<port>] [--json]",
 	"       gentle-shell [home selectors] serve share --off",
-	"       gentle-shell [home selectors] serve [--listen <host>:<port>] [--allow-host <name>]... [--forward-ports <from>-<to>] [--foreground] [--json]",
+	"       gentle-shell [home selectors] serve [--listen <host>:<port>] [--allow-host <name>]... [--forward-ports <from>-<to>] [--no-tls] [--relay gsr://<host>:<port>] [--foreground] [--json]",
 	"       gentle-shell [home selectors] serve status [--json]",
-	"       gentle-shell [home selectors] serve stop",
+	"       gentle-shell [home selectors] serve stop [--sessions]",
 	"       gentle-shell [home selectors] serve pair [--scope <scope,...>] [--json]",
 	"       gentle-shell [home selectors] serve devices [--revoke <id>] [--json]",
 	"",
@@ -147,23 +162,25 @@ export const SERVE_HELP = [
 	"and lets paired devices drive them over HTTP + Server-Sent Events. Sessions keep running when",
 	"clients disconnect. Binds 127.0.0.1 on a random port unless --listen says otherwise; every",
 	"request needs a device token (there is no unauthenticated mode). A non-loopback --listen",
-	"serves plain HTTP: use it only on a network you trust, or reach a loopback server through",
-	"ssh -L or a tunnel.",
+	"serves HTTPS with a self-signed certificate made on first run (<home>/serve/tls/); devices pin",
+	"its fingerprint. This computer itself may keep using plain http://127.0.0.1.",
 	"",
 	"  serve share      The easy way to connect Gentle Shell GPUI from another computer on your",
-	"                   network: opens the server to the network (plain HTTP, port 8787 or the next",
+	"                   network: opens the server to the network (HTTPS, port 8787 or the next",
 	"                   free one; --port picks another) and prints a short code to enter in the app",
 	"                   (valid 5 minutes, once). The app finds this computer on the network by itself",
 	"                   (UDP broadcast on the same port); where it cannot (another subnet, a tailnet,",
-	"                   client isolation), paste the long gsc1. code printed under it. Reuses a server",
-	"                   already on the network; one on this computer only is reopened when it runs no",
-	"                   sessions. Pages it forwards to the app (dev servers, the design canvas, Gentle",
-	"                   Tower) take ports 8800-8899.",
+	"                   client isolation, a relay), paste the long gsc1. code printed under it. Reuses",
+	"                   a server already on the network; one on this computer only (or with other",
+	"                   TLS or relay settings) is reopened when it runs no sessions. Pages it forwards",
+	"                   to the app (dev servers, the design canvas, Gentle Tower) take ports 8800-8899.",
 	"    --always       Also start that server at every login (systemd user unit on Linux, a",
 	"                   LaunchAgent on macOS). 'serve share --off' turns it off and stops it.",
 	"  serve            Start the server in the background (--foreground keeps it in this terminal).",
 	"  serve status     Show whether the server runs, its URL and its sessions.",
-	"  serve stop       Stop the server and every session it owns.",
+	"  serve stop       Stop the server. Its sessions keep running and the next server picks them",
+	"                   up (a session no server came back to stops after 24 hours); --sessions",
+	"                   stops them too.",
 	"  serve pair       Print a one-time pairing code (single use, 5 minutes). Scopes default to",
 	"                   sessions:read,sessions:operate,terminal; leave terminal out (--scope",
 	"                   sessions:read,sessions:operate) for a device that must not open shells, and",
@@ -174,6 +191,12 @@ export const SERVE_HELP = [
 	"                   MagicDNS name (repeatable). Names not allowed are refused (DNS rebinding).",
 	"  --forward-ports  Listen ports for forwarded pages (for example 8800-8899), so a firewall can",
 	"                   open one range; without it each forward takes a random port.",
+	"  --no-tls         Plain HTTP on the network, as before TLS existed: tokens and traffic cross",
+	"                   the network unencrypted. Only for a network that encrypts by itself.",
+	"  --relay <url>    Also register with a relay (gentle-shell relay), so devices outside this",
+	"                   network reach the server through it with the long code. The relay sees only",
+	"                   TLS ciphertext. Its secret comes from GENTLE_SHELL_RELAY_SECRET or",
+	"                   <home>/serve/relay-secret.",
 	"",
 	"Paired devices can also read and write files, run git and open persistent terminals here,",
 	"all as the user the server runs as. Terminals run in gentle-term-host ($GENTLE_TERM_HOST,",
@@ -200,6 +223,10 @@ export interface ServerFile {
 	discovery?: boolean;
 	/** Listen ports forwarded pages take; absent when the OS assigns them. */
 	forwardPorts?: PortRange;
+	/** The certificate's fingerprint when the server serves HTTPS on the network. */
+	fingerprint?: string;
+	/** The relay it registers with (`gsr://host:port`). */
+	relay?: string;
 }
 
 export function serveDir(agentHome: string): string {
@@ -344,10 +371,34 @@ function untilSignal(stopRequested: Promise<void>): Promise<void> {
 }
 
 function plainHttpWarning(host: string): string {
-	return `gentle-shell serve: warning: listening on ${host} over plain HTTP. Device tokens and session traffic cross the network unencrypted; use it only on a network you trust, or keep the default loopback and reach it through ssh -L or a tunnel.\n`;
+	return `gentle-shell serve: warning: listening on ${host} over plain HTTP (--no-tls). Device tokens and session traffic cross the network unencrypted; use it only on a network that encrypts by itself, such as a tailnet.\n`;
 }
 
-type StartArgs = { host: string; port: number; allowHosts?: readonly string[]; forwardPorts?: PortRange };
+type StartArgs = { host: string; port: number; allowHosts?: readonly string[]; forwardPorts?: PortRange; noTls?: true; relay?: string };
+
+/** The relay secret a server presents: `GENTLE_SHELL_RELAY_SECRET`, else the first line of `<home>/serve/relay-secret`. */
+export function relaySecret(env: NodeJS.ProcessEnv, serveDirectory: string): string | undefined {
+	const fromEnv = env.GENTLE_SHELL_RELAY_SECRET?.trim();
+	if (fromEnv) return fromEnv;
+	try {
+		return readFileSync(join(serveDirectory, "relay-secret"), "utf8").split(/\r?\n/)[0].trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** HTTPS on a network listen (unless --no-tls) and always with a relay: the certificate, made on first run. */
+function serverTls(ctx: ServeCommandContext, args: StartArgs, serveDirectory: string): ServeTlsIdentity | undefined {
+	if (args.noTls || (isLoopbackHost(args.host) && args.relay === undefined)) return undefined;
+	const system = ctx.system ?? defaultShareSystem(ctx.env);
+	const name = system.hostname();
+	const addresses = isUnspecified(args.host) ? shareAddresses(system.networkInterfaces(), name) : [args.host];
+	return loadOrCreateServeTls(serveDirectory, {
+		commonName: `gentle-shell serve ${name}`,
+		dnsNames: ["localhost", ...ownHostNames(name), ...(args.allowHosts ?? [])],
+		ips: ["127.0.0.1", "::1", ...addresses],
+	});
+}
 
 /** Gentle Tower in this process, on 127.0.0.1 with a fresh token: what `gentle-shell tower` runs, never a browser. */
 async function startTower(env: NodeJS.ProcessEnv): Promise<ServeTower> {
@@ -365,8 +416,11 @@ async function runForeground(ctx: ServeCommandContext, args: StartArgs & { json:
 		return 1;
 	}
 	let server: ServeServer | undefined;
+	let endSessions = false;
 	try {
-		if (!isLoopbackHost(args.host)) ctx.stderr(plainHttpWarning(args.host));
+		const tls = serverTls(ctx, args, files.dir);
+		if (!isLoopbackHost(args.host) && !tls) ctx.stderr(plainHttpWarning(args.host));
+		const secret = args.relay === undefined ? undefined : relaySecret(ctx.env, files.dir);
 		const adminToken = `gsa_${randomBytes(32).toString("base64url")}`;
 		const auth = new ServeAuth({ devicesFile: files.devices, adminToken });
 		const stop = Promise.withResolvers<void>();
@@ -376,6 +430,8 @@ async function runForeground(ctx: ServeCommandContext, args: StartArgs & { json:
 			port: args.port,
 			allowHosts: args.allowHosts ?? [],
 			...(args.forwardPorts ? { forwardPorts: args.forwardPorts } : {}),
+			...(tls ? { tls } : {}),
+			...(args.relay === undefined ? {} : { relay: { url: args.relay, ...(secret === undefined ? {} : { secret }) } }),
 			startTower: () => startTower(ctx.env),
 			serveDir: files.dir,
 			env: ctx.env,
@@ -384,7 +440,7 @@ async function runForeground(ctx: ServeCommandContext, args: StartArgs & { json:
 			launchSession: (input) => sessionLaunch(ctx, input),
 			launchPrint: (input) => printLaunch(ctx, input),
 			log,
-			onStopRequested: () => stop.resolve(),
+			onStopRequested: (request) => { endSessions = request.endSessions; stop.resolve(); },
 		});
 		const file: ServerFile = {
 			schema: SERVE_SERVER_FILE_SCHEMA,
@@ -398,11 +454,15 @@ async function runForeground(ctx: ServeCommandContext, args: StartArgs & { json:
 			adminToken,
 			discovery: server.discovery,
 			...(args.forwardPorts ? { forwardPorts: args.forwardPorts } : {}),
+			...(server.fingerprint === undefined ? {} : { fingerprint: server.fingerprint }),
+			...(args.relay === undefined ? {} : { relay: args.relay }),
 		};
 		writeServerFile(files.server, file);
+		if (tls) log(`HTTPS for the network: certificate ${tls.fingerprint}${tls.created ? " (new)" : ""}`);
+		if (args.relay !== undefined && secret === undefined) log(`relay: no relay secret (GENTLE_SHELL_RELAY_SECRET or ${join(files.dir, "relay-secret")}); a relay that has one refuses this server`);
 		ctx.stdout(args.json
-			? `${JSON.stringify({ schema: "gentle-shell.serve/v1", url: server.url, pid: process.pid, serverId: server.serverId })}\n`
-			: `Gentle Shell server: ${server.url} (pid ${process.pid})\nPair a device with 'gentle-shell serve pair'. Press Ctrl+C to stop.\n`);
+			? `${JSON.stringify({ schema: "gentle-shell.serve/v1", url: server.url, pid: process.pid, serverId: server.serverId, ...(server.fingerprint === undefined ? {} : { fingerprint: server.fingerprint }), ...(args.relay === undefined ? {} : { relay: args.relay }) })}\n`
+			: `Gentle Shell server: ${server.url} (pid ${process.pid})\n${server.fingerprint === undefined ? "" : `HTTPS on the network, certificate fingerprint ${server.fingerprint}\n`}${args.relay === undefined ? "" : `Relay: ${args.relay}\n`}Pair a device with 'gentle-shell serve pair'. Press Ctrl+C to stop.\n`);
 		await (ctx.untilStopped ?? untilSignal)(stop.promise);
 		log("stopping");
 		return 0;
@@ -410,7 +470,7 @@ async function runForeground(ctx: ServeCommandContext, args: StartArgs & { json:
 		ctx.stderr(`gentle-shell serve: could not start: ${error instanceof Error ? error.message : String(error)}\n`);
 		return 1;
 	} finally {
-		await server?.close();
+		await server?.close({ endSessions });
 		if (readServerFile(files.server)?.pid === process.pid) rmSync(files.server, { force: true });
 		releaseServeLock(files.lock);
 	}
@@ -443,7 +503,8 @@ async function spawnDaemon(ctx: ServeCommandContext, args: StartArgs): Promise<{
 	const listen = `${args.host.includes(":") ? `[${args.host}]` : args.host}:${args.port}`;
 	const allow = (args.allowHosts ?? []).flatMap((name) => ["--allow-host", name]);
 	const ports = args.forwardPorts ? ["--forward-ports", `${args.forwardPorts.from}-${args.forwardPorts.to}`] : [];
-	const child = spawn(ctx.nodePath, [ctx.launcher, ...ctx.homeFlags, "serve", "--foreground", "--listen", listen, ...allow, ...ports], {
+	const network = [...(args.noTls ? ["--no-tls"] : []), ...(args.relay === undefined ? [] : ["--relay", args.relay])];
+	const child = spawn(ctx.nodePath, [ctx.launcher, ...ctx.homeFlags, "serve", "--foreground", "--listen", listen, ...allow, ...ports, ...network], {
 		detached: true,
 		stdio: ["ignore", logFd, logFd],
 		env: ctx.env,
@@ -513,8 +574,8 @@ async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
 	return !processAlive(pid);
 }
 
-async function stopServer(ctx: ServeCommandContext, server: ServerFile): Promise<boolean> {
-	const result = await api(server, "POST", "/api/server/stop");
+async function stopServer(ctx: ServeCommandContext, server: ServerFile, endSessions = false): Promise<boolean> {
+	const result = await api(server, "POST", "/api/server/stop", { endSessions });
 	if (result.status !== 202) process.kill(server.pid, "SIGTERM");
 	if (await waitForExit(server.pid, STOP_TIMEOUT_MS)) return true;
 	ctx.stderr(`gentle-shell serve: pid ${server.pid} is still running\n`);
@@ -563,29 +624,34 @@ async function waitForServer(agentHome: string, timeoutMs: number, accept: (file
  * (start it, reopen a loopback one that runs no sessions, or reuse one already
  * there), mint a pairing code and print the connection code that carries it.
  */
-async function runShare(ctx: ServeCommandContext, args: { port: number; always: boolean; json: boolean }): Promise<number> {
+async function runShare(ctx: ServeCommandContext, args: { port: number; always: boolean; json: boolean; noTls?: true; relay?: string }): Promise<number> {
 	const system = ctx.system ?? defaultShareSystem(ctx.env);
 	const files = serveFiles(ctx.agentHome);
 	const fail = (message: string): number => { ctx.stderr(`gentle-shell serve share: ${message}\n`); return 1; };
 	if (args.always && !autostartFile(system)) return fail(`--always (start at login) is not supported on ${system.platform === "win32" ? "Windows" : system.platform} yet; run 'gentle-shell serve share' without it.`);
 	const allowHosts = ownHostNames(system.hostname());
-	const autostartFor = (port: number) => autostartCommand({ nodePath: ctx.nodePath, launcher: ctx.launcher, homeFlags: ctx.homeFlags, port, allowHosts, forwardPorts: SHARE_FORWARD_PORTS, env: ctx.env, logFile: files.log });
+	const autostartFor = (port: number) => autostartCommand({ nodePath: ctx.nodePath, launcher: ctx.launcher, homeFlags: ctx.homeFlags, port, allowHosts, forwardPorts: SHARE_FORWARD_PORTS,
+		...(args.noTls ? { noTls: true } : {}), ...(args.relay === undefined ? {} : { relay: args.relay }), env: ctx.env, logFile: files.log });
 	let server = liveServer(ctx.agentHome);
 	let opened: "started" | "reopened" | "reused" = "started";
 	let atLogin = false;
 	try {
 		if (server) {
 			const lan = !isLoopbackHost(server.listen.host);
+			// TLS as asked (a server from before TLS is reopened with it); the relay asked for, when one is (none asked keeps the one it has).
+			const sameNetwork = (server.fingerprint !== undefined) === !args.noTls && (args.relay === undefined || server.relay === args.relay);
 			atLogin = lan && autostartInstalled(system, autostartFor(server.listen.port));
-			if (lan && (!args.always || atLogin)) {
+			if (lan && sameNetwork && (!args.always || atLogin)) {
 				opened = "reused";
 			} else {
 				// Reopening it on the network, or under the service manager, would end its sessions.
 				const busy = await runningSessions(server);
 				if (busy > 0) {
-					return fail(lan
-						? `the server has ${busy} running session(s), and --always has to restart it; stop them or run 'gentle-shell serve stop', then try again.`
-						: `the server here is reachable from this computer only and has ${busy} running session(s); stop them or run 'gentle-shell serve stop', then run share again to open it to your network.`);
+					return fail(!lan
+						? `the server here is reachable from this computer only and has ${busy} running session(s); stop them or run 'gentle-shell serve stop', then run share again to open it to your network.`
+						: !sameNetwork
+						? `the server has ${busy} running session(s), and changing its TLS or relay settings has to restart it; stop them or run 'gentle-shell serve stop', then try again.`
+						: `the server has ${busy} running session(s), and --always has to restart it; stop them or run 'gentle-shell serve stop', then try again.`);
 				}
 				if (!(await stopServer(ctx, server))) return 1;
 				if (!lan) opened = "reopened";
@@ -607,7 +673,7 @@ async function runShare(ctx: ServeCommandContext, args: { port: number; always: 
 			} else {
 				for (const port of ports) {
 					if (!(await portFree(port))) continue;
-					const started = await spawnDaemon(ctx, { host: LAN_HOST, port, allowHosts, forwardPorts: SHARE_FORWARD_PORTS });
+					const started = await spawnDaemon(ctx, { host: LAN_HOST, port, allowHosts, forwardPorts: SHARE_FORWARD_PORTS, ...(args.noTls ? { noTls: true } : {}), ...(args.relay === undefined ? {} : { relay: args.relay }) });
 					if ("file" in started) { server = started.file; break; }
 					// Taken between the probe and the bind: try the next one.
 					if (!started.log.includes("EADDRINUSE")) return fail(`the server did not start.${started.log ? `\n${started.log}` : ""}`);
@@ -622,11 +688,14 @@ async function runShare(ctx: ServeCommandContext, args: { port: number; always: 
 		const host = server.listen.host;
 		const addresses = isUnspecified(host) ? shareAddresses(system.networkInterfaces(), system.hostname()) : [host.includes(":") ? `[${host}]` : host];
 		const pairingCode = minted.data.code;
-		const code = encodeConnectionCode({ id: server.serverId, n: system.hostname(), p: port, a: addresses, c: pairingCode });
+		const fingerprint = server.fingerprint;
+		const code = encodeConnectionCode({ id: server.serverId, n: system.hostname(), p: port, a: addresses, c: pairingCode,
+			...(fingerprint === undefined ? {} : { fp: fingerprint }), ...(server.relay === undefined ? {} : { r: server.relay }) });
 		// A server file from before discovery existed has no flag: that server does not answer it.
 		const discovery = server.discovery === true;
 		if (args.json) {
-			ctx.stdout(`${JSON.stringify({ code, pairingCode, port, addresses, expiresAt: minted.data.expiresAt, serverId: server.serverId, discovery })}\n`);
+			ctx.stdout(`${JSON.stringify({ code, pairingCode, port, addresses, expiresAt: minted.data.expiresAt, serverId: server.serverId, discovery, tls: fingerprint !== undefined,
+				...(fingerprint === undefined ? {} : { fingerprint }), ...(server.relay === undefined ? {} : { relay: server.relay }) })}\n`);
 			return 0;
 		}
 		const firewall = firewallHint(system.platform, port, system.has, server.forwardPorts);
@@ -642,7 +711,10 @@ async function runShare(ctx: ServeCommandContext, args: { port: number; always: 
 			code,
 			"",
 			...(discovery ? [] : [`Discovery is off on this server (UDP port ${port} could not be opened), so the app cannot find this computer by itself: paste the long code.`]),
-			"It uses plain HTTP on your network: share only on a network you trust, such as your home network.",
+			...(server.relay === undefined ? [] : [`Outside this network the app reaches it through the relay ${server.relay} with the long code (the short code works on this network only).`]),
+			fingerprint === undefined
+				? "It uses plain HTTP on your network (--no-tls): share only on a network that encrypts by itself."
+				: `It uses HTTPS; the app checks this computer's certificate, fingerprint ${fingerprint}.`,
 			...(firewall ? [`If the app cannot find or reach this computer, or a page it opens from here, open the ports in the firewall: ${firewall}`] : []),
 			...(firewall && !server.forwardPorts ? ["This server gives forwarded pages random ports; to keep them in one range (8800-8899), run 'gentle-shell serve stop' and then 'gentle-shell serve share'."] : []),
 			...(atLogin ? ["It starts at every login; turn that off with 'gentle-shell serve share --off'."] : []),
@@ -698,20 +770,23 @@ export async function runServeCommand(args: ServeArgs, ctx: ServeCommandContext)
 
 	try {
 		if (args.action === "status") {
-			const info = await api<{ protocol: number }>(server, "GET", "/api/server");
+			const info = await api<{ protocol: number; tls?: { fingerprint: string }; relay?: { url: string; connected: boolean } }>(server, "GET", "/api/server");
 			const list = await api<{ sessions: SessionSummary[] }>(server, "GET", "/api/sessions");
 			if (info.status !== 200) return apiFailure(ctx, "status", info);
 			const sessions = Array.isArray(list.data.sessions) ? list.data.sessions : [];
 			if (args.json) {
-				ctx.stdout(`${JSON.stringify({ running: true, url: server.url, pid: server.pid, serverId: server.serverId, protocol: server.protocol, startedAt: server.startedAt, version: server.version, sessions })}\n`);
+				ctx.stdout(`${JSON.stringify({ running: true, url: server.url, pid: server.pid, serverId: server.serverId, protocol: server.protocol, startedAt: server.startedAt, version: server.version,
+					...(info.data.tls ? { tls: info.data.tls } : {}), ...(info.data.relay ? { relay: info.data.relay } : {}), sessions })}\n`);
 			} else {
 				ctx.stdout(`Running at ${server.url} (pid ${server.pid}, since ${server.startedAt}, protocol ${server.protocol})\n`);
+				if (info.data.tls) ctx.stdout(`HTTPS on the network, certificate fingerprint ${info.data.tls.fingerprint}\n`);
+				if (info.data.relay) ctx.stdout(`Relay ${info.data.relay.url}: ${info.data.relay.connected ? "connected" : "not connected (retrying)"}\n`);
 				ctx.stdout(sessions.length === 0 ? "No sessions.\n" : sessions.map((s) => `${s.id}  ${s.state}  ${s.cwd ?? s.name}  seq ${s.seq}, ${s.subscribers} subscriber(s)${s.pendingDialogs ? `, ${s.pendingDialogs} dialog(s) waiting` : ""}`).join("\n") + "\n");
 			}
 			return 0;
 		}
 		if (args.action === "stop") {
-			if (!(await stopServer(ctx, server))) return 1;
+			if (!(await stopServer(ctx, server, args.endSessions))) return 1;
 			ctx.stdout("Stopped.\n");
 			return 0;
 		}

@@ -148,8 +148,8 @@ export function parseLauncherArgs(argv          )                     {
 		// already started, a later "setup" is just an ordinary passthrough
 		// argument, same as "home" is.
 		// `serve` takes them too: one server per agent home, and its sessions
-		// run against the home those selectors resolve to.
-		if ((arg === "setup" || arg === "serve") && command === undefined && passthrough.length === 0) {
+		// run against the home those selectors resolve to. So does `relay`, whose secret lives in the home.
+		if ((arg === "setup" || arg === "serve" || arg === "relay") && command === undefined && passthrough.length === 0) {
 			command = arg;
 			commandArgs = argv.slice(i + 1);
 			break;
@@ -1385,6 +1385,7 @@ export function helpText()         {
 		"       gentle-shell desktop [--yes] [--no-open] | --status | --uninstall",
 		"       gentle-shell tower [--no-open] [--port <n>] [--json]",
 		"       gentle-shell [home selectors] serve [--listen <host>:<port>] [--allow-host <name>]... [--foreground] | share | status | stop | pair | devices",
+		"       gentle-shell [home selectors] relay --listen <host>:<port> [--secret-file <path>] [--json]",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",
@@ -1443,6 +1444,9 @@ export function helpText()         {
 		"                   needs a device token. 'serve share' opens it to your network and prints one",
 		"                   code to paste in Gentle Shell GPUI. 'serve status', 'serve stop', 'serve pair",
 		"                   [--scope …]', 'serve devices [--revoke <id>]'; 'gentle-shell serve --help'.",
+		"  relay            Run a relay that lets devices outside a server's network reach it: servers",
+		"                   connect out to it ('serve share --relay gsr://host:port'), it splices raw TLS",
+		"                   streams and never sees their content. 'gentle-shell relay --help'.",
 		"",
 		"Managing packages:",
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",

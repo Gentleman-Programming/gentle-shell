@@ -172,6 +172,8 @@ export const requiredPaths = [
 	// `gentle-shell serve` imports these generated modules by path.
 	"runtime/rpc-host.mjs",
 	"runtime/serve-session.mjs",
+	"runtime/serve-session-keeper.mjs",
+	"runtime/serve-session-keeper-main.mjs",
 	"runtime/serve-auth.mjs",
 	"runtime/serve-discovery.mjs",
 	"runtime/serve-forward.mjs",
@@ -184,6 +186,9 @@ export const requiredPaths = [
 	"runtime/serve-terminals.mjs",
 	"runtime/serve-share.mjs",
 	"runtime/serve-cli.mjs",
+	"runtime/serve-tls.mjs",
+	"runtime/serve-relay.mjs",
+	"runtime/serve-relay-cli.mjs",
   "docs/serve.md",
   "docs/remote.md",
   "scripts/check-provider-contract.mjs",

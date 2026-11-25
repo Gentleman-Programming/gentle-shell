@@ -32,9 +32,13 @@ export const HOST_NAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\
 
 
 
-/** `gsc1.` + base64url (no padding) of `{"v":1,"id","n","p","a","c"}`. A secret while its pairing code is valid. */
+
+
+
+
+/** `gsc1.` + base64url (no padding) of `{"v":1,"id","n","p","a","c"[,"fp"][,"r"]}`. A secret while its pairing code is valid. */
 export function encodeConnectionCode(code                )         {
-	const json = JSON.stringify({ v: 1, id: code.id, n: code.n, p: code.p, a: code.a, c: code.c });
+	const json = JSON.stringify({ v: 1, id: code.id, n: code.n, p: code.p, a: code.a, c: code.c, ...(code.fp === undefined ? {} : { fp: code.fp }), ...(code.r === undefined ? {} : { r: code.r }) });
 	return `${CONNECTION_CODE_PREFIX}${Buffer.from(json, "utf8").toString("base64url")}`;
 }
 
@@ -122,7 +126,7 @@ const AUTOSTART_ENV = ["PATH", "GENTLE_SHELL_NO_AUTO_SETUP", "GENTLE_SHELL_HOME"
 
 
 /** The same launcher, home flags and kept environment as this invocation, serving the network in the foreground. */
-export function autostartCommand(input                                                                                                                                                                                      )                   {
+export function autostartCommand(input                                                                                                                                                                                                                       )                   {
 	const env                         = {};
 	for (const key of AUTOSTART_ENV) {
 		const value = input.env[key];
@@ -131,7 +135,8 @@ export function autostartCommand(input                                          
 	return {
 		command: input.nodePath,
 		args: [input.launcher, ...input.homeFlags, "serve", "--foreground", "--listen", `0.0.0.0:${input.port}`, ...input.allowHosts.flatMap((name) => ["--allow-host", name]),
-			...(input.forwardPorts ? ["--forward-ports", `${input.forwardPorts.from}-${input.forwardPorts.to}`] : [])],
+			...(input.forwardPorts ? ["--forward-ports", `${input.forwardPorts.from}-${input.forwardPorts.to}`] : []),
+			...(input.noTls ? ["--no-tls"] : []), ...(input.relay === undefined ? [] : ["--relay", input.relay])],
 		env,
 		logFile: input.logFile,
 	};

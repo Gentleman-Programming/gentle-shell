@@ -12,9 +12,10 @@
 // before the target sees the request. Zero dependencies: `http` and `net`.
 
 import { randomBytes } from "node:crypto";
-import { createServer, request as httpRequest, type IncomingMessage, type OutgoingHttpHeaders, type Server, type ServerResponse } from "node:http";
-import { connect, type Socket } from "node:net";
+import { request as httpRequest, type IncomingMessage, type OutgoingHttpHeaders, type ServerResponse } from "node:http";
+import { connect, type Server, type Socket } from "node:net";
 import { hashSecret } from "./serve-auth.ts";
+import { createServeListener, requestScheme, type ConnectionVia, type ServeListener, type ServeTlsMaterial } from "./serve-tls.ts";
 
 export const SERVE_FORWARD_LIMITS = {
 	ticketTtlMs: 60_000,
@@ -76,6 +77,8 @@ export interface ForwardManagerOptions {
 	now?: () => number;
 	log?: (line: string) => void;
 	limits?: Partial<typeof SERVE_FORWARD_LIMITS>;
+	/** The main server's certificate: every forward then speaks TLS to the network (plain HTTP from this machine), like the API. */
+	tls?: ServeTlsMaterial;
 }
 
 /** Hop-by-hop headers (RFC 9110 §7.6.1), never passed through a proxy. */
@@ -89,6 +92,7 @@ const literal = (host: Upstream) => (host === "::1" ? "[::1]" : host);
 interface ForwardState {
 	info: ForwardInfo;
 	server: Server;
+	listener: ServeListener;
 	hostOk: (host: string) => boolean;
 	sockets: Set<Socket>;
 	/** sha256 (hex) of each cookie secret, oldest first. */
@@ -220,25 +224,26 @@ export class ForwardManager {
 		}
 		if (this.forwards.size >= this.limits.maxForwards) throw new ForwardError(429, "too_many_forwards", `At most ${this.limits.maxForwards} forwards are open at once; close one first`);
 		const id = `fwd_${randomBytes(8).toString("hex")}`;
-		const state: ForwardState = {
-			info: { id, port: input.port, listenPort: 0, deviceId: input.deviceId, sessionId: input.sessionId, kind: input.kind, createdAt: this.now(), lastUsedAt: this.now() },
-			server: createServer(),
-			hostOk: () => false,
-			sockets: new Set(),
-			cookies: new Set(),
-		};
-		const server = state.server;
-		server.headersTimeout = this.limits.headersTimeoutMs;
-		server.requestTimeout = 0; // streams (SSE) stay open
-		server.keepAliveTimeout = this.limits.keepAliveTimeoutMs;
-		server.maxConnections = this.limits.maxConnections;
-		server.on("connection", (socket: Socket) => {
-			state.sockets.add(socket);
-			socket.on("close", () => state.sockets.delete(socket));
+		const info: ForwardInfo = { id, port: input.port, listenPort: 0, deviceId: input.deviceId, sessionId: input.sessionId, kind: input.kind, createdAt: this.now(), lastUsedAt: this.now() };
+		const sockets = new Set<Socket>();
+		const listener = createServeListener({
+			...(this.options.tls === undefined ? {} : { tls: this.options.tls }),
+			setup: (http, via) => {
+				http.headersTimeout = this.limits.headersTimeoutMs;
+				http.requestTimeout = 0; // streams (SSE) stay open
+				http.keepAliveTimeout = this.limits.keepAliveTimeoutMs;
+				http.on("request", (req: IncomingMessage, res: ServerResponse) => this.handle(state, req, res, via));
+				http.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => this.upgrade(state, req, socket, head, via));
+				http.on("clientError", (_error, socket: Socket) => { if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); else socket.destroy(); });
+			},
+			onConnection: (socket) => {
+				sockets.add(socket);
+				socket.on("close", () => sockets.delete(socket));
+			},
 		});
-		server.on("request", (req: IncomingMessage, res: ServerResponse) => this.handle(state, req, res));
-		server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => this.upgrade(state, req, socket, head));
-		server.on("clientError", (_error, socket: Socket) => { if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); else socket.destroy(); });
+		const state: ForwardState = { info, server: listener.server, listener, hostOk: () => false, sockets, cookies: new Set() };
+		const server = state.server;
+		server.maxConnections = this.limits.maxConnections;
 		const host = this.options.bindHost.replace(/^\[|\]$/g, "");
 		state.info.listenPort = await this.bind(server, host);
 		if (this.closed) {
@@ -279,14 +284,24 @@ export class ForwardManager {
 		return { ticket, expiresAt };
 	}
 
-	/** The URL a browser opens: the host the client used, the forward's port, the page's path and the ticket. */
-	urlFor(forwardId: string, clientHost: string, path: string, ticket: string): string {
+	/** Where a relayed connection for a forward's listen port goes; undefined when no forward listens there. */
+	relayTarget(listenPort: number): ((socket: Socket) => void) | undefined {
+		const state = [...this.forwards.values()].find((f) => f.info.listenPort === listenPort);
+		if (!state) return undefined;
+		return (socket) => {
+			if (state.sockets.size >= this.limits.maxConnections) return void socket.destroy();
+			state.listener.acceptRelayed(socket);
+		};
+	}
+
+	/** The URL a browser opens: the host and scheme the client used, the forward's port, the page's path and the ticket. */
+	urlFor(forwardId: string, clientHost: string, path: string, ticket: string, scheme: "http" | "https" = "http"): string {
 		const state = this.forwards.get(forwardId);
 		if (!state) throw new ForwardError(404, "not_found", "No such forward");
 		const hash = path.indexOf("#");
 		const target = hash === -1 ? path : path.slice(0, hash);
 		const fragment = hash === -1 ? "" : path.slice(hash);
-		return `http://${clientHost}:${state.info.listenPort}${target}${target.includes("?") ? "&" : "?"}${FORWARD_TICKET_PARAM}=${ticket}${fragment}`;
+		return `${scheme}://${clientHost}:${state.info.listenPort}${target}${target.includes("?") ? "&" : "?"}${FORWARD_TICKET_PARAM}=${ticket}${fragment}`;
 	}
 
 	private redeemTicket(ticket: string, state: ForwardState): boolean {
@@ -314,19 +329,19 @@ export class ForwardManager {
 		return state.cookies.has(hashSecret(value).toString("hex"));
 	}
 
-	/** Host and Origin, as the main server checks them; a message when refused. */
-	private refused(state: ForwardState, req: IncomingMessage): { status: number; reason: string; message: string } | undefined {
+	/** Host and Origin, as the main server checks them (no Host check through a relay); a message when refused. */
+	private refused(state: ForwardState, req: IncomingMessage, via: ConnectionVia): { status: number; reason: string; message: string } | undefined {
 		const host = req.headers.host;
-		if (typeof host !== "string" || !state.hostOk(host)) return { status: 421, reason: "Misdirected Request", message: "Unexpected Host header" };
+		if (typeof host !== "string" || (via !== "relay" && !state.hostOk(host))) return { status: 421, reason: "Misdirected Request", message: "Unexpected Host header" };
 		// Another page (another forward on this host is the same site) never drives this one; no CORS is added either.
-		const origin = req.headers.origin;
-		if (origin !== undefined && origin.toLowerCase() !== `http://${host.toLowerCase()}`) return { status: 403, reason: "Forbidden", message: "Origin not allowed" };
+		const origin = req.headers.origin?.toLowerCase();
+		if (origin !== undefined && origin !== `http://${host.toLowerCase()}` && origin !== `https://${host.toLowerCase()}`) return { status: 403, reason: "Forbidden", message: "Origin not allowed" };
 		if (!(req.url ?? "").startsWith("/")) return { status: 400, reason: "Bad Request", message: "Bad request" };
 		return undefined;
 	}
 
-	private handle(state: ForwardState, req: IncomingMessage, res: ServerResponse): void {
-		const refused = this.refused(state, req);
+	private handle(state: ForwardState, req: IncomingMessage, res: ServerResponse, via: ConnectionVia): void {
+		const refused = this.refused(state, req, via);
 		if (refused) return plain(res, refused.status, refused.message);
 		const { path, ticket } = splitTicket(req.url ?? "/");
 		if (ticket !== undefined) {
@@ -360,7 +375,7 @@ export class ForwardManager {
 
 	/** The request's headers for the page: hop-by-hop gone, Host the page's own, Origin and Referer translated, forward cookies stripped. */
 	private upstreamHeaders(state: ForwardState, req: IncomingMessage, upstream: Upstream, keepUpgrade: boolean): Record<string, string | string[]> {
-		const own = `http://${req.headers.host}`;
+		const own = `${requestScheme(req)}://${req.headers.host}`;
 		const target = `http://${literal(upstream)}:${state.info.port}`;
 		const drop = hopHeaders(req.headers);
 		const headers: Record<string, string | string[]> = {};
@@ -389,7 +404,7 @@ export class ForwardManager {
 			const lower = name.toLowerCase();
 			if (drop.has(lower)) continue;
 			if (lower === "set-cookie" && value.trimStart().startsWith(FORWARD_COOKIE_PREFIX)) continue;
-			if (lower === "location" || lower === "content-location") value = value.replace(loopback, `http://${req.headers.host}`);
+			if (lower === "location" || lower === "content-location") value = value.replace(loopback, `${requestScheme(req)}://${req.headers.host}`);
 			out.push(name, value);
 		}
 		return out;
@@ -427,9 +442,9 @@ export class ForwardManager {
 		req.pipe(up);
 	}
 
-	private upgrade(state: ForwardState, req: IncomingMessage, socket: Socket, head: Buffer): void {
+	private upgrade(state: ForwardState, req: IncomingMessage, socket: Socket, head: Buffer, via: ConnectionVia): void {
 		socket.on("error", () => socket.destroy());
-		const refused = this.refused(state, req);
+		const refused = this.refused(state, req, via);
 		if (refused) return refuseUpgrade(socket, refused.status, refused.reason);
 		// A WebSocket opens from a page already loaded through the forward: the cookie, never a ticket.
 		if (!this.hasCookie(state, req)) return refuseUpgrade(socket, 401, "Unauthorized");
@@ -471,6 +486,7 @@ export class ForwardManager {
 		this.forwards.delete(id);
 		for (const [key, entry] of this.tickets) if (entry.forwardId === id) this.tickets.delete(key);
 		state.server.close();
+		state.listener.closeAllConnections();
 		for (const socket of state.sockets) socket.destroy();
 		this.log(`forward ${id}: ${reason}`);
 		return true;

@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
-import { JsonlDecoder, ReplayRing, ServeSession, type ServeSessionLimits, type StreamSink } from "../lib/serve-session.ts";
+import test, { after } from "node:test";
+import { JsonlDecoder, KeeperLink, ReplayRing, SERVE_SESSION_LIMITS, ServeSession, type ServeSessionLimits, type SessionLaunch, type StreamSink } from "../lib/serve-session.ts";
+import { keeperEndpoint, SessionKeeper } from "../lib/serve-session-keeper.ts";
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
+const roots: string[] = [];
+after(() => roots.forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 /** An SSE sink that records what it was sent; `backlog` simulates unsent bytes. */
 class FakeSink implements StreamSink {
@@ -32,8 +38,26 @@ function frames(text: string): Frame[] {
 	});
 }
 
-function startFake(limits: Partial<ServeSessionLimits> = {}, now?: () => number): ServeSession {
-	return new ServeSession({ id: "ses_test", launch: { command: process.execPath, args: [FAKE_PI], cwd: process.cwd(), env: process.env }, limits, ...(now ? { now } : {}) });
+interface FakeOptions {
+	now?: () => number;
+	launch?: SessionLaunch;
+	deviceLabel?: (id: string) => string | undefined;
+}
+
+/** A session as the server holds it, over a keeper running in this process (so both share the test's clock). */
+async function startFake(limits: Partial<ServeSessionLimits> = {}, options: FakeOptions = {}): Promise<ServeSession> {
+	const dir = mkdtempSync(join(tmpdir(), "gs-session-"));
+	roots.push(dir);
+	const keeper = new SessionKeeper({
+		id: "ses_test",
+		dir,
+		token: "test-token",
+		launch: options.launch ?? { command: process.execPath, args: [FAKE_PI], cwd: process.cwd(), env: process.env },
+		limits,
+	}, options.now ? { now: options.now } : {});
+	await keeper.start();
+	const { link, snapshot, ring } = await KeeperLink.connect(keeperEndpoint(dir, "ses_test"), "test-token", { timeoutMs: 5000, maxLineBytes: SERVE_SESSION_LIMITS.maxLineBytes });
+	return new ServeSession({ snapshot, ring, link, limits, ...(options.now ? { now: options.now } : {}), ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}) });
 }
 
 // Polls a condition a real child process makes true; there is no event to await for it.
@@ -95,7 +119,7 @@ test("ReplayRing evicts by count and bytes and answers snapshot-required outside
 });
 
 test("a session numbers every record, restores the caller's id and survives framing edge cases", async (t) => {
-	const session = startFake();
+	const session = await startFake();
 	t.after(() => session.stop());
 	const outcome = await session.rpc({ type: "get_state", id: "mine" }, 5000);
 	assert.ok("response" in outcome);
@@ -122,7 +146,7 @@ test("a session numbers every record, restores the caller's id and survives fram
 });
 
 test("rpc times out without losing the late response, and Desktop RPC is matched by requestId", async (t) => {
-	const session = startFake();
+	const session = await startFake();
 	t.after(() => session.stop());
 	const silent = await session.rpc({ type: "fake_silent" }, 50);
 	assert.ok("timeout" in silent);
@@ -136,7 +160,7 @@ test("rpc times out without losing the late response, and Desktop RPC is matched
 });
 
 test("pending dialogs replay to a late subscriber and only the first answer reaches the child", async (t) => {
-	const session = startFake();
+	const session = await startFake();
 	t.after(() => session.stop());
 	await session.rpc({ type: "fake_dialog" }, 5000);
 	await until(() => session.pendingDialogs().length === 1, "dialog");
@@ -151,9 +175,9 @@ test("pending dialogs replay to a late subscriber and only the first answer reac
 	session.subscribe(caughtUp, "dev", 0); // the replay already carries it: no duplicate
 	assert.equal(frames(caughtUp.text).filter((f) => f.event === "dialog").length, 0);
 
-	assert.equal(session.answerDialog({ type: "extension_ui_response", id: "dlg-1", value: "a" }), "accepted");
-	assert.equal(session.answerDialog({ type: "extension_ui_response", id: "dlg-1", value: "b" }), "answered");
-	assert.equal(session.answerDialog({ type: "extension_ui_response", id: "nope", value: "b" }), "unknown");
+	assert.equal(await session.answerDialog({ type: "extension_ui_response", id: "dlg-1", value: "a" }), "accepted");
+	assert.equal(await session.answerDialog({ type: "extension_ui_response", id: "dlg-1", value: "b" }), "answered");
+	assert.equal(await session.answerDialog({ type: "extension_ui_response", id: "nope", value: "b" }), "unknown");
 	await until(() => late.text.includes("fake_dialog_answer"), "answer echo");
 	const echoes = frames(late.text).map((f) => f.data && JSON.parse(f.data)).filter((r) => r?.type === "fake_dialog_answer");
 	assert.deepEqual(echoes.map((r) => r.value), ["a"], "the second answer never reached the child");
@@ -163,17 +187,17 @@ test("pending dialogs replay to a late subscriber and only the first answer reac
 
 test("a dialog with a timeout stops being pending once it expires", async (t) => {
 	let clock = 1_000;
-	const session = startFake({}, () => clock);
+	const session = await startFake({}, { now: () => clock });
 	t.after(() => session.stop());
 	await session.rpc({ type: "fake_dialog", timeout: 500 }, 5000);
 	await until(() => session.pendingDialogs().length === 1, "dialog");
 	clock += 501;
 	assert.equal(session.pendingDialogs().length, 0);
-	assert.equal(session.answerDialog({ type: "extension_ui_response", id: "dlg-1", value: "a" }), "unknown");
+	assert.equal(await session.answerDialog({ type: "extension_ui_response", id: "dlg-1", value: "a" }), "unknown");
 });
 
 test("a cursor older than the ring gets snapshot-required, then the live stream", async (t) => {
-	const session = startFake({ ringRecords: 5 });
+	const session = await startFake({ ringRecords: 5 });
 	t.after(() => session.stop());
 	await session.rpc({ type: "fake_burst", count: 10 }, 5000);
 	assert.equal(session.seq, 11);
@@ -192,7 +216,7 @@ test("a cursor older than the ring gets snapshot-required, then the live stream"
 });
 
 test("a slow subscriber is dropped with a resync marker and never stalls the others", async (t) => {
-	const session = startFake({ clientBufferBytes: 1024, dropFlushMs: 20 });
+	const session = await startFake({ clientBufferBytes: 1024, dropFlushMs: 20 });
 	t.after(() => session.stop());
 	const slow = new FakeSink();
 	const fast = new FakeSink();
@@ -210,7 +234,7 @@ test("a slow subscriber is dropped with a resync marker and never stalls the oth
 });
 
 test("revoking a device closes only its streams; the child's own exit is a record and ends every stream", async () => {
-	const session = startFake();
+	const session = await startFake();
 	const a = new FakeSink(), b = new FakeSink();
 	session.subscribe(a, "dev_a");
 	session.subscribe(b, "dev_b");
@@ -233,7 +257,7 @@ test("revoking a device closes only its streams; the child's own exit is a recor
 });
 
 test("stop closes stdin and terminates the child", async () => {
-	const session = startFake();
+	const session = await startFake();
 	await session.rpc({ type: "get_state" }, 5000);
 	await session.stop();
 	assert.equal(session.state, "exited");
@@ -241,7 +265,7 @@ test("stop closes stdin and terminates the child", async () => {
 });
 
 test("a command that cannot spawn exits the session instead of throwing", async () => {
-	const session = new ServeSession({ id: "ses_bad", launch: { command: "/nonexistent/serve-test-binary", args: [], cwd: process.cwd(), env: process.env } });
+	const session = await startFake({}, { launch: { command: "/nonexistent/serve-test-binary", args: [], cwd: process.cwd(), env: process.env } });
 	await session.whenExited();
 	assert.equal(session.state, "exited");
 	const sink = new FakeSink();
@@ -251,11 +275,8 @@ test("a command that cannot spawn exits the session instead of throwing", async 
 
 // ---- host tools ---------------------------------------------------------------
 
-function startHostFake(limits: Partial<ServeSessionLimits> = {}): ServeSession {
-	return new ServeSession({
-		id: "ses_host", launch: { command: process.execPath, args: [FAKE_PI], cwd: process.cwd(), env: process.env }, limits,
-		deviceLabel: (id) => (id === "dev_phone" ? "Ismael's phone" : undefined),
-	});
+function startHostFake(limits: Partial<ServeSessionLimits> = {}): Promise<ServeSession> {
+	return startFake(limits, { deviceLabel: (id) => (id === "dev_phone" ? "Ismael's phone" : undefined) });
 }
 
 /** The host_tool_result the server sent for `callId` on a device's behalf, as the fake child echoed it. */
@@ -271,7 +292,7 @@ function serverAnswer(sink: FakeSink, callId: string): { callId: string; content
 }
 
 test("a host tool call for a device with no open stream is answered at once with a not-connected error", async (t) => {
-	const session = startHostFake();
+	const session = await startHostFake();
 	t.after(() => session.stop());
 	const watcher = new FakeSink();
 	session.subscribe(watcher, "local");
@@ -285,7 +306,7 @@ test("a host tool call for a device with no open stream is answered at once with
 });
 
 test("a connected device's call waits; a reconnect within the grace gets it again; the last stream gone past the grace fails it", async (t) => {
-	const session = startHostFake({ hostToolGraceMs: 80 });
+	const session = await startHostFake({ hostToolGraceMs: 80 });
 	t.after(() => session.stop());
 	const watcher = new FakeSink();
 	session.subscribe(watcher, "local");
@@ -321,7 +342,7 @@ test("a connected device's call waits; a reconnect within the grace gets it agai
 });
 
 test("a cancel or a settled result forgets a call; revoking the device fails its calls at once", async (t) => {
-	const session = startHostFake();
+	const session = await startHostFake();
 	t.after(() => session.stop());
 	const watcher = new FakeSink();
 	session.subscribe(watcher, "local");

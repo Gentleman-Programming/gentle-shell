@@ -32,8 +32,9 @@ flowchart LR
 
     subgraph Server["Server machine: one agent home"]
         S["gentle-shell serve<br/>HTTP + SSE API, auth, routing"]
-        P1["Session child<br/>gentle-shell --mode rpc (Pi)"]
-        P2["Session child<br/>gentle-shell --mode rpc (Pi)"]
+        K1["Session keeper<br/>owns Pi's stdio, seq, replay ring; outlives serve"]
+        P1["Session<br/>gentle-shell --mode rpc (Pi)"]
+        P2["Session<br/>gentle-shell --mode rpc (Pi), under its own keeper"]
         H["gentle-term-host<br/>PTYs, Unix socket (loopback TCP on Windows), outlives serve"]
         F["Forward listeners<br/>one port per forward"]
         L["Pages on loopback<br/>dev server, design canvas, Tower, Engram"]
@@ -43,8 +44,9 @@ flowchart LR
     A -- "Bearer token: JSON requests, SSE streams" --> S
     B -- "Bearer token" --> S
     A -- "Cookie per forward" --> F
-    S -- "stdin / stdout JSON lines" --> P1
-    S -- "stdin / stdout JSON lines" --> P2
+    S -- "JSON lines over sessions/<id>.sock" --> K1
+    K1 -- "stdin / stdout JSON lines" --> P1
+    S -- "via its keeper" --> P2
     S -- "JSON lines over term.sock (Windows: 127.0.0.1 + token)" --> H
     S -- "files, git, uploads" --> FS
     P1 -- "agent tools" --> FS
@@ -53,8 +55,9 @@ flowchart LR
 
 | Piece | Runs on | Does | Why there |
 | --- | --- | --- | --- |
-| `gentle-shell serve` | Server | One long-lived process per agent home. Pairs devices, checks every request's token and scope, starts and stops sessions, keeps each session's replay ring, routes host tool calls, serves files, git and uploads, opens forwards, talks to the terminal host. | One owner per home: sessions must survive the client that started them, and every device must see the same state. |
-| Session child | Server | One `gentle-shell --mode rpc` process per session: the same launcher, Pi and extensions as a local launch, with Desktop RPC on. | The agent needs the project, the tools and the provider sign-ins that live on the server. Each session isolated in its own process: a crash or a hang takes down one session, not the server. |
+| `gentle-shell serve` | Server | One long-lived process per agent home. Pairs devices, checks every request's token and scope, starts and stops sessions, serves each session's replay ring to devices, routes host tool calls, serves files, git and uploads, opens forwards, talks to the terminal host. | One owner per home: sessions must survive the client that started them, and every device must see the same state. |
+| Session keeper | Server | One small detached Node process per session: starts Pi and owns its stdin and stdout, numbers its records, keeps the replay ring, pending dialogs and open host tool calls; `serve` attaches to it over an owner-only socket. | Sessions must survive a `serve` restart or upgrade with their ids and `seq`, as terminals do. |
+| Session | Server | One `gentle-shell --mode rpc` process per session: the same launcher, Pi and extensions as a local launch, with Desktop RPC on. | The agent needs the project, the tools and the provider sign-ins that live on the server. Each session isolated in its own process: a crash or a hang takes down one session, not the server. |
 | `gentle-term-host` | Server | A small native process that owns the PTYs (ConPTY on Windows); `serve` is its client over an owner-only Unix socket, or on Windows over loopback TCP with a token from an owner-only file. | Shells must survive a `serve` restart or upgrade, and a reattaching client needs the screen as it is, which a headless terminal emulator in the host can draw. |
 | Forward listeners | Server (inside `serve`) | One listener per forward, proxying to a page on the server's loopback. | Pages bound to `127.0.0.1` (dev servers, the design canvas, Tower) are unreachable from another machine by design; a forward opens one of them to one device without opening the port to anyone. |
 | Client app | Each device | Shows sessions, files, diffs, branches, terminals and forwarded pages; sends prompts, edits and keystrokes; runs its own [host tools](#host-tools-across-several-devices) (a screenshot of this Mac). Remembers the server, its device token, and the last `seq` / terminal offset it saw. | It is the person's device: the screen, the keyboard, and tools that only make sense on that device. |
@@ -93,18 +96,18 @@ sequenceDiagram
 
 ## Session lifecycle
 
-A session belongs to the server, not to the client that started it. Clients come and go; the session keeps running until someone deletes it, the server stops, or its child exits.
+A session belongs to the server, not to the client that started it. Clients come and go; the session keeps running until someone deletes it, Pi exits, or the server stops with `--sessions`. It also outlives the server itself: its keeper holds it while the server restarts.
 
-Every record a session child prints gets the session's next sequence number (`seq`). The server keeps the newest records in a replay ring (2000 records or 8 MiB). A client follows a session with one SSE stream and remembers the last `seq` it saw; when it comes back it asks for everything after it. Details: [Event stream](serve.md#event-stream-get-apisessionsidevents), [Replay and resume](serve.md#replay-and-resume).
+Every record a session prints gets the session's next sequence number (`seq`). The keeper keeps the newest records in a replay ring (2000 records or 8 MiB), which the server serves. A client follows a session with one SSE stream and remembers the last `seq` it saw; when it comes back it asks for everything after it. Details: [Event stream](serve.md#event-stream-get-apisessionsidevents), [Replay and resume](serve.md#replay-and-resume), [Sessions across server restarts](serve.md#sessions-across-server-restarts).
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant App as Client app
     participant S as serve
-    participant P as Session child (Pi)
+    participant P as Session (Pi, under its keeper)
     App->>S: POST /api/sessions { cwd }
-    S->>P: spawn gentle-shell --mode rpc in cwd
+    S->>P: start a keeper, which runs gentle-shell --mode rpc in cwd
     S-->>App: 201 { session: { id: "ses_…", seq: 0 } }
     App->>S: GET /api/sessions/ses_…/events
     S-->>App: event: hello { seq, oldest }
@@ -116,7 +119,7 @@ sequenceDiagram
     App->>S: GET …/events?after=41 (or Last-Event-ID: 41)
     alt 41 is still in the ring
         S-->>App: hello, then records 42…N, then live
-    else the ring moved past it, or the cursor is from another server run
+    else the ring moved past it
         S-->>App: event: snapshot-required { after, oldest, seq }
         App->>S: POST …/rpc get_state and get_messages, POST …/desktop get_snapshot
         S-->>App: current state, then the live stream continues on the same connection
@@ -126,15 +129,15 @@ sequenceDiagram
 
 | Situation | What happens |
 | --- | --- |
-| **Start** | `POST /api/sessions { cwd }` spawns a child in that folder. `{ cwd, sessionId }` opens the Pi session with that exact id (an existing conversation in that folder, or a new one under that id). The starting device becomes the session's `lastActiveDevice`. |
-| **Client disconnects** | Nothing stops. The child keeps running and its records keep entering the ring. A turn waiting on a dialog keeps waiting (until the dialog's own timeout). |
+| **Start** | `POST /api/sessions { cwd }` starts a keeper and Pi in that folder. `{ cwd, sessionId }` opens the Pi session with that exact id (an existing conversation in that folder, or a new one under that id). The starting device becomes the session's `lastActiveDevice`. |
+| **Client disconnects** | Nothing stops. Pi keeps running and its records keep entering the ring. A turn waiting on a dialog keeps waiting (until the dialog's own timeout). |
 | **Resume by `seq`** | The client reconnects with `after=<last seq>`. Inside the ring it gets exactly what it missed, then live records. Dialogs still pending are re-sent as `dialog` events; a host tool call still waiting for this device is re-sent as `host_tool_call`. |
-| **Snapshot required** | The cursor is older than the ring (the client was away for a long run) or newer than the stream (a cursor from an earlier server run). The client rebuilds its view from Pi `get_state` / `get_messages` and Desktop RPC `get_snapshot`, then follows the live stream on the same connection. |
+| **Snapshot required** | The cursor is older than the ring (the client was away for a long run) or newer than the stream (a cursor from another session). The client rebuilds its view from Pi `get_state` / `get_messages` and Desktop RPC `get_snapshot`, then follows the live stream on the same connection. |
 | **Slow client** | A subscriber with more than 4 MiB unsent is dropped with a `resync` event and reconnects with its last `id`. The session is never slowed down by a client. |
 | **Client restarts** | The app keeps the server URL, the token, the session ids it had open and their last `seq`. On relaunch it lists `GET /api/sessions` and reattaches each one as above; terminals reattach by id and offset (see [Terminals](#terminals)). |
 | **Several clients** | Every subscriber sees the same records. The first answer to a dialog wins; the others get `serve_dialog_resolved` and close it. Each request is authorized on its own, by scope. |
-| **Session ends** | `DELETE /api/sessions/:id`, or the child exits on its own: the stream carries `serve_session_exited` and ends. Up to 16 exited sessions stay listed with their ring until deleted. The session's forwards close with it. |
-| **Server restarts** | `serve stop` (or a reboot) stops every session child in order (SIGTERM, then SIGKILL after 5 s). Paired devices stay paired (`devices.json`). A new server run has new session ids, so old ids answer `404`; a client starts the session again with `{ cwd, sessionId }` (Pi's own session id, from `get_state`) and Pi reopens the same conversation from disk. Terminals are not affected: they live in the terminal host, which outlives `serve`. |
+| **Session ends** | `DELETE /api/sessions/:id`, or Pi exits on its own: the stream carries `serve_session_exited` and ends. Up to 16 exited sessions stay listed until deleted. The session's forwards close with it. |
+| **Server restarts** | `serve stop`, a service manager's restart or an upgrade stops only `serve`: sessions keep running under their keepers. The next server reattaches every one before it answers requests: same ids, `seq` continuing, dialogs and host tool calls still pending; a device owing a host tool call has 30 s to reconnect. A client reconnects with `after=<last seq>` and gets what it missed while the server was down. `serve stop --sessions` stops the sessions too; a reboot ends them (a client starts one again with `{ cwd, sessionId }` and Pi reopens the conversation from disk). A session no server came back to stops after 24 hours. Paired devices stay paired (`devices.json`), the server id stays the same, and terminals live on in the terminal host. |
 
 ## Host tools across several devices
 
@@ -146,7 +149,7 @@ sequenceDiagram
     participant Mac as Laptop (device A)
     participant Phone as Phone (device B)
     participant S as serve
-    participant P as Session child (Pi)
+    participant P as Session (Pi)
     Mac->>S: POST …/desktop set_host_tools { tools: [device_screenshot] }
     S->>P: set_host_tools with provider = dev_A (whatever the body said)
     Phone->>S: POST …/desktop set_host_tools { tools: [device_screenshot] }
@@ -359,7 +362,7 @@ Every error is `{ "error": { "code", "message" } }`. The codes a client meets mo
 | `403 forbidden` | The token lacks the scope; or a `host_tool_result` for another device's call; or `set_host_activity` from a client | [Authentication](serve.md#authentication), [Host tools](serve.md#host-tools) |
 | `403 forbidden_origin`, `421 bad_host` | `Origin` or `Host` rules | [Security model](serve.md#security-model) |
 | `403 invalid_code`, `429 rate_limited`, `409 too_many_devices` | Pairing | [Endpoints](serve.md#endpoints) |
-| `404 not_found` | Unknown session (also after a server restart), forward, terminal (or another device's) | [Replay and resume](serve.md#replay-and-resume) |
+| `404 not_found` | Unknown session (deleted, or gone after a reboot), forward, terminal (or another device's) | [Replay and resume](serve.md#replay-and-resume) |
 | `400 use_desktop_endpoint` | A host tool request sent through `/rpc` | [Pi RPC](serve.md#pi-rpc-post-apisessionsidrpc) |
 | `409 dialog_answered`, `404 unknown_dialog` | Another client answered first; no such dialog | [Dialogs](serve.md#dialogs) |
 | `409 session_exited`, `503 session_busy`, `429 too_many_sessions` | Session state and limits | [Backpressure](serve.md#backpressure), [Limits](serve.md#limits) |

@@ -37,7 +37,8 @@ test("parseServeArgs reads each subcommand and rejects what it does not know", (
 	assert.deepEqual(parseServeArgs(["--foreground", "--listen", "0.0.0.0:8787"]), { action: "start", host: "0.0.0.0", port: 8787, foreground: true, json: false });
 	assert.deepEqual(parseServeArgs(["--listen=localhost:9000", "--json"]), { action: "start", host: "127.0.0.1", port: 9000, foreground: false, json: true });
 	assert.deepEqual(parseServeArgs(["status", "--json"]), { action: "status", json: true });
-	assert.deepEqual(parseServeArgs(["stop"]), { action: "stop" });
+	assert.deepEqual(parseServeArgs(["stop"]), { action: "stop", endSessions: false });
+	assert.deepEqual(parseServeArgs(["stop", "--sessions"]), { action: "stop", endSessions: true });
 	assert.deepEqual(parseServeArgs(["pair"]), { action: "pair", scopes: ["sessions:read", "sessions:operate", "terminal"], json: false });
 	assert.deepEqual(parseServeArgs(["pair", "--scope", "sessions:read", "--scope=admin"]), { action: "pair", scopes: ["sessions:read", "admin"], json: false });
 	assert.deepEqual(parseServeArgs(["devices", "--revoke", "dev_123"]), { action: "devices", revoke: "dev_123", json: false });

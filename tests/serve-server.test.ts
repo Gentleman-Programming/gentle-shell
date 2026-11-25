@@ -158,7 +158,7 @@ test("requests with a foreign Origin or an unexpected Host are refused before au
 test("GET /.well-known/gentle-shell names the server without a token, and Host/Origin rules still apply", async () => {
 	const identity = await call("GET", "/.well-known/gentle-shell");
 	assert.equal(identity.status, 200);
-	assert.deepEqual(identity.body, { schema: "gentle-shell.serve.identity/v1", serverId: server.serverId, name: hostname(), protocol: 1, version: "test" });
+	assert.deepEqual(identity.body, { schema: "gentle-shell.serve.identity/v1", serverId: server.serverId, name: hostname(), protocol: 1, version: "test", tls: false });
 	assert.equal(identity.headers["cache-control"], "no-store");
 	assert.ok(!JSON.stringify(identity.body).includes("gsa_"), "no admin token, code or device in it");
 	// A token changes nothing: the answer is the same public identity.

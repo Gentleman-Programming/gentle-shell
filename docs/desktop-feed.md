@@ -64,7 +64,7 @@ gone or that were not updated for a day. The folder is created `0700` and files
 
 | Field | Content |
 |---|---|
-| `identity` | `sessionId`, exact `sessionFile`, `sessionName`, `cwd`, `realCwd`, `pid`, `ppid`, `ancestors` (nearest first, best effort), `mode`, `agentDir` (absolute agent dir the snapshot lives under), `herdr` (`paneId` from `HERDR_PANE_ID`, `env`) or `null` |
+| `identity` | `sessionId`, exact `sessionFile`, `sessionName`, `cwd`, `realCwd`, `pid`, `ppid`, `ancestors` (nearest first, best effort: `ps` per hop, or on Windows one process-table read per walk; empty when it cannot be read), `mode`, `agentDir` (absolute agent dir the snapshot lives under), `herdr` (`paneId` from `HERDR_PANE_ID`, `env`) or `null` |
 | `project` | `cwd`, `branch`, `dirty` (changed files, `null` before the first scan) |
 | `model` | `id`, `provider`, `effort` (thinking level when the model reasons), `profile` `{ name, tier }` |
 | `persona` | the active persona mode (`"gentleman"` or `"neutral"`, read like `/gentle:persona` does), or `null` when it could not be resolved |

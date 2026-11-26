@@ -25,7 +25,7 @@ import { createDesktopFeedStore, sweepDesktopFeedOrphans, type DesktopFeedStore 
 import { answerableFromDesktop, createDesktopActionInbox, DESKTOP_ACTION_LIMITS, createDesktopActivityTimeline, providerDecisionIn, questionShape, sweepDesktopActionOrphans, watchDesktopActionInbox, type DesktopActionInbox, type DesktopActionQuestion, type DesktopActivityTimeline } from "../lib/desktop-feed-actions.ts";
 import { askAnswerHandle } from "../lib/desktop-feed-answers.ts";
 import { DesktopPermissionBridge } from "../lib/desktop-rpc-permissions.ts";
-import { createDesktopFeedProfileReader, createUntrackedLineCounter, desktopFeedGitRunner, processAncestors, psParentOf, type DesktopFeedProfile, type ParentOf, type UntrackedLineCounter } from "../lib/desktop-feed-sources.ts";
+import { createDesktopFeedProfileReader, createUntrackedLineCounter, desktopFeedGitRunner, processAncestors, type DesktopFeedProfile, type ParentOf, type UntrackedLineCounter } from "../lib/desktop-feed-sources.ts";
 import { DesktopAgentsBridge } from "../lib/desktop-agents-service.ts";
 import { DesktopJobsBridge } from "../lib/desktop-jobs-service.ts";
 import { DesktopUsageBridge } from "../lib/desktop-usage-service.ts";
@@ -535,7 +535,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				session.yolo = { adapter, unobserve };
 				refreshPermission(session);
 			}, () => undefined);
-			void processAncestors(process.ppid, DESKTOP_FEED_LIMITS.ancestors, options.parentOf ?? psParentOf).then((ancestors) => {
+			void processAncestors(process.ppid, DESKTOP_FEED_LIMITS.ancestors, options.parentOf).then((ancestors) => {
 				if (!current(session) || ancestors.length === 0) return;
 				session.ancestors = ancestors;
 				schedule();

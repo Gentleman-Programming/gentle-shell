@@ -2179,11 +2179,11 @@ function missingToolsChild(env: NodeJS.ProcessEnv, toolNames: string[] | (() => 
 }
 
 test("a child warns once about requested tools it does not have", async () => {
-	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,gentle_review_scope,grep,codegraph,subagent_parent_message" }, ["read", "grep", "subagent_parent_message"]);
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,gentle_review_scope,grep,subagent_parent_message" }, ["read", "grep", "subagent_parent_message"]);
 	await child.start();
 	assert.deepEqual(child.notes, [], "session_start runs before later extensions register their tools");
 	assert.deepEqual(await child.prompt(), [undefined], "the check never alters the prompt");
-	assert.deepEqual(child.notes, [{ message: `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope, codegraph`, type: "warning" }]);
+	assert.deepEqual(child.notes, [{ message: `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope`, type: "warning" }]);
 	await child.start();
 	assert.deepEqual(await child.prompt(), [undefined]);
 	assert.equal(child.notes.length, 1, "later prompts and session replacements do not repeat the warning");
@@ -2218,7 +2218,7 @@ test("a child stays quiet when every checkable requested tool exists or nothing 
 });
 
 test("the missing-tools check never throws into before_agent_start", async () => {
-	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,codegraph" }, () => { throw new Error("tool registry unavailable"); });
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read" }, () => { throw new Error("tool registry unavailable"); });
 	await child.start();
 	assert.deepEqual(await child.prompt(), [undefined]);
 	assert.deepEqual(child.notes, []);
@@ -3866,8 +3866,99 @@ test("a queued launch keeps the session routing frozen across a rebind", async t
 	}
 });
 
-// gentle-shell#1064 slice 3b-ii: a parent session without an explicit Enter
-// binding freezes p → P → G at session_start; later default changes only show
+	// gentle-shell#1064 A4: two concurrent parent sessions in the same clone select
+	// different profiles; neither launch observes the other's binding, and the
+	// shared routing files are byte-identical afterwards.
+	test("two concurrent parent sessions keep separate bindings without shared writes", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("two-parents");
+	base.writeStore({
+		first: { explore: { model: "openai/alpha", thinking: "minimal" } },
+		second: { explore: { model: "openai/beta" } },
+	});
+	base.writePin("first");
+	const sharedFiles = [join(base.configHome, "profiles.json"), base.localPinPath];
+	const before = sharedFiles.map((path) => readFileSync(path, "utf8"));
+	const model = (args: string[]) => args[args.indexOf("--model") + 1];
+	const launchAs = async (sessionId: string, profile: string, routing: Record<string, unknown>, label: string) => {
+		const harness = deps();
+		harness.deps.resolveWorktree = () => ({ root: base.root, commonDir: base.commonDir });
+		harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome };
+		const { pi, tools, fire } = fakePi();
+		gentleAgents(pi, {}, harness.deps);
+		const { ctx } = fakeContext();
+		ctx.sessionManager.getSessionId = () => sessionId;
+		bindSessionProfile(sessionId, profile, routing as never);
+		await fire("session_start", ctx);
+		try {
+			await tools.get("subagent_run")!.execute(`two-parents-${label}`, { agent: "explore", task: `Map ${label}`, mode: "background" }, undefined, undefined, ctx);
+			await tick();
+			return { model: model(harness.spawned[0]), shutdown: async () => { await fire("session_shutdown", ctx); await tick(); } };
+		} catch (error) {
+			await fire("session_shutdown", ctx);
+			await tick();
+			throw error;
+		}
+	};
+	const parentA = await launchAs("s1", "first", { explore: { model: "openai/alpha", thinking: "minimal" } }, "a");
+	const parentB = await launchAs("s2", "second", { explore: { model: "openai/beta" } }, "b");
+	try {
+		assert.equal(parentA.model, "openai/alpha:minimal", "parent A's child launches on its own binding");
+		assert.equal(parentB.model, "openai/beta:high", "parent B's child launches on its own binding, not A's");
+		assert.deepEqual(sharedFiles.map((path) => readFileSync(path, "utf8")), before, "no session wrote to the shared profiles store or pin layers");
+	} finally {
+		await parentA.shutdown();
+		await parentB.shutdown();
+	}
+	});
+
+	// gentle-shell#1064 A4: the running half of child stability. The queued half is
+	// pinned above; here the child is already spawned and running when the parent
+	// rebinds, and its frozen routing must survive both the rebind and its own
+	// settlement.
+	test("a running child keeps the routing resolved at its launch across a mid-flight rebind", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("running-freeze");
+	base.writeStore({
+		first: { explore: { model: "openai/alpha", thinking: "minimal" } },
+		second: { explore: { model: "openai/beta" } },
+	});
+	bindSessionProfile("s1", "first", { explore: { model: "openai/alpha", thinking: "minimal" } });
+	const harness = deps();
+	harness.deps.resolveWorktree = () => ({ root: base.root, commonDir: base.commonDir });
+	harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome };
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	try {
+		const model = (args: string[]) => args[args.indexOf("--model") + 1];
+		await tools.get("subagent_run")!.execute("running-1", { agent: "explore", task: "Map first", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		// The child is spawned and still running here; only after confirming it is
+		// live does the parent rebind.
+		assert.equal(harness.spawned.length, 1, "the first child is already spawned before the rebind");
+		const runningModel = model(harness.spawned[0]);
+		bindSessionProfile("s1", "second", { explore: { model: "openai/beta" } });
+		assert.equal(model(harness.spawned[0]), runningModel, "the running child's spawn routing is untouched by the rebind");
+		// The running child settles normally under the new binding.
+		const child = harness.children[0]!;
+		child.emit({ type: "agent_end", messages: [] });
+		child.emit({ type: "agent_settled" });
+		child.exit(0);
+		await tick();
+		await tools.get("subagent_run")!.execute("running-2", { agent: "explore", task: "Map second", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runningModel, "openai/alpha:minimal", "the child ran on the routing frozen at its launch");
+		assert.equal(model(harness.spawned[1]), "openai/beta:high", "only a child launched after the rebind resolves the new binding");
+	} finally {
+		await fire("session_shutdown", ctx);
+		await tick();
+	}
+	});
+
+	// gentle-shell#1064 slice 3b-ii: a parent session without an explicit Enter
+	// binding freezes p → P → G at session_start; later default changes only show
 // a drift notice once per change. GENTLE_PI_PROFILE_FOLLOW=1 keeps the live
 // resolution.
 async function launchSession(base: ReturnType<typeof pinFixture>, env: Record<string, string> = {}) {
@@ -4192,7 +4283,7 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 	const fixture = mkdtempSync(join(tmpdir(), "capability-catalog-"));
 	const agentHome = join(fixture, "agent-home");
 	mkdirSync(join(agentHome, ".pi", "agent", "agents"), { recursive: true });
-	writeFileSync(join(agentHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep, find, codegraph]\n---\nYou map things.");
+	writeFileSync(join(agentHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep, find]\n---\nYou map things.");
 	writeFileSync(join(agentHome, ".pi", "agent", "agents", "open.md"), "---\ndescription: no allowlist\n---\nYou are open.");
 	writeFileSync(join(agentHome, ".pi", "agent", "agents", "unknown.md"), "---\ndescription: unverified name\ntools: [glob]\n---\nYou explore.");
 	writeFileSync(join(agentHome, ".pi", "agent", "agents", "lens.md"), "---\ndescription: review lane\ntools:\n  - \"*\": false\n  - read\n  - grep\n  - gentle_review_scope\n---\nYou review.");
@@ -4204,7 +4295,7 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 		const { ctx } = fakeContext();
 		await h.fire("session_start", ctx);
 		const listed = await h.tools.get("subagent_list_agents")!.execute("c0", {}, undefined, undefined, ctx);
-		assert.match(listed.content[0].text, /- explore \(global\): maps things \[declared tools \(not verified\): read, grep, find, codegraph\]/);
+		assert.match(listed.content[0].text, /- explore \(global\): maps things \[declared tools \(not verified\): read, grep, find\]/);
 		// gentle-shell#1269: a definition without an allowlist keeps Pi's default
 		// tool set, so the catalog must never render it as having no tools at all.
 		assert.match(listed.content[0].text, /- open \(global\): no allowlist \[declared tools: Pi defaults \(no allowlist\)\]/);
@@ -8014,6 +8105,76 @@ function fakeJobShell() {
 const jobIo = () => new Promise((done) => setTimeout(done, 50));
 const toolText = (result: { content: Array<{ text?: string }> }) => result.content.map((part) => part.text ?? "").join("\n");
 
+async function jobTextHarness(t: TestContext, provider?: string) {
+	const h = fakePi(provider), jobs = fakeJobShell(), { ctx } = fakeContext();
+	gentleAgents(h.pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	t.after(async () => {
+		try { await h.fire("session_shutdown", ctx); } finally { jobs.cleanup(); }
+	});
+	await h.fire("session_start", ctx);
+	const notices = () => h.sent.filter(({ message }) => message.customType === "gentle-jobs.notice");
+	return { ...h, jobs, ctx, notices };
+}
+
+for (const { name, input, provider, heading, intro, resume } of [
+	{
+		name: "bash_background", input: { command: "make build", label: "Build" }, provider: "claude-bridge",
+		heading: 'Started background job job-1 ("Build").', intro: "You will be notified once when it exits.",
+		resume: "Resume dependent work on the exit notice.",
+	},
+	{
+		name: "monitor", input: { command: "watch checks", label: "Checks", timeout_seconds: 30 }, provider: "openai-codex",
+		heading: 'Started monitor job-1 ("Checks") for up to 30s.', intro: "Each new output line reaches you as an event.",
+		resume: "Resume work on relevant events or the exit notice.",
+	},
+]) {
+	test(`${name} launch says to continue independent work before ending the turn to wait`, async (t) => {
+		const { tools, jobs, ctx } = await jobTextHarness(t, provider);
+		const result = await tools.get(name)!.execute("start", input, undefined, undefined, ctx);
+		assert.equal(toolText(result), `${heading}\nOutput: ${join(jobs.dir, "job-1.log")}\n${intro} Continue independent in-scope work now; end the turn to wait only when none remains. ${resume} Stop it with job_stop.`);
+	});
+
+	test(`${name} starts at once and still delivers one exit notice to its owner only`, async (t) => {
+		const { tools, jobs, ctx, fire, notices, events, delivery } = await jobTextHarness(t, provider);
+		const { ctx: other } = fakeContext();
+		other.sessionManager.getSessionId = () => "other";
+		const run = await tools.get(name)!.execute("start", input, undefined, undefined, ctx);
+		assert.equal(jobs.runs.length, 1);
+		assert.equal(jobs.runs[0]!.command, input.command);
+		assert.deepEqual(run.details.gentleJobs, {
+			jobId: "job-1", kind: name === "monitor" ? "monitor" : "command", label: input.label,
+			status: "running", exitCode: null, outputPath: join(jobs.dir, "job-1.log"),
+		});
+		assert.deepEqual(delivery, []);
+		await fire("session_start", other, { reason: "new" });
+		jobs.runs[0]!.exit(0);
+		await eventually(() => events.some(({ name }) => name === "gentle-pi:herdr-desktop:job-settled"), "job settles while the other session is active");
+		assert.deepEqual(delivery, [], "the other session does not receive the notice or wake");
+		await fire("session_start", ctx, { reason: "resume" });
+		await fire("turn_end", ctx);
+		await eventually(() => notices().length === 1, "the owner receives the retained notice");
+		assert.deepEqual(notices()[0]!.options, { triggerTurn: false });
+		await fire("agent_settled", ctx);
+		await fire("turn_end", ctx);
+		assert.deepEqual(delivery, ["custom:gentle-jobs.notice", provider === "claude-bridge" ? "user" : "custom:gentle-agents.wake"]);
+	});
+}
+
+test("job exit notices themselves tell the parent to continue and diagnose a failed exit as an obstacle", async (t) => {
+	const { tools, jobs, ctx, notices } = await jobTextHarness(t);
+	const start = tools.get("bash_background")!;
+	await start.execute("a", { command: "passing check" }, undefined, undefined, ctx);
+	await start.execute("b", { command: "failing check" }, undefined, undefined, ctx);
+	jobs.runs[0]!.exit(0);
+	jobs.runs[1]!.exit(7);
+	await eventually(() => notices().length === 2, "both results reach the idle parent");
+	const continuation = (jobId: string) => String(notices().find(({ message }) => String(message.content).startsWith(`Background job ${jobId} `))!.message.content).split("\n").at(-1);
+	assert.deepEqual([continuation("job-1"), continuation("job-2")], [
+		"This result does not end the task: read it and continue the authorized work that depended on this job.",
+		"This failure is an obstacle, not the end of the task: read the result, diagnose the cause, and continue the authorized work that depended on this job.",
+	]);
+});
+
 test("standalone bash sleep is blocked only while background work is active (#1903)", async () => {
 	const { pi, tools, fire, sent } = fakePi();
 	const jobs = fakeJobShell();
@@ -8031,7 +8192,8 @@ test("standalone bash sleep is blocked only while background work is active (#19
 			const blocked = await call("bash", command);
 			assert.equal(blocked?.block, true, command);
 			assert.match(blocked!.reason!, /background work is active/);
-			assert.match(blocked!.reason!, /End the turn/);
+			assert.match(blocked!.reason!, /Continue independent in-scope work; end the turn to wait only when none remains\./);
+			assert.doesNotMatch(blocked!.reason!, /End the turn now/);
 		}
 		// Real wait conditions, mixed commands and the sanctioned background tools stay allowed.
 		for (const command of ["until curl -s x; do sleep 1; done", "sleep 5 && gh run view 42", "for i in 1 2; do sleep 1; echo $i; done", "sleep $N"]) {
@@ -8557,6 +8719,38 @@ test("monitor delivers line events to an idle parent with one wake, and reports 
 		assert.equal(contents.length, 3, "pending lines are delivered before the end notice");
 		assert.match(contents[1]!, /reported 1 new line:\ne2e: pass/);
 		assert.match(contents[2]!, /Monitor job-1 \("CI checks"\) exited with code 1 after .* 3 events\./);
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("the monitor deadline stops watching and wakes the parent with the agent-configured limit", async () => {
+	const { pi, tools, fire, sent, userMessages } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("monitor")!.execute("m1", { command: "tail -f log", label: "checks", timeout_seconds: 17 }, undefined, undefined, ctx);
+		assert.equal(jobs.runs.length, 1);
+		assert.equal(sent.length, 0, "a running monitor has not reached its deadline");
+		assert.equal(timers.run(17_000), 1, "fire the monitor controller's scheduled deadline");
+		assert.equal(jobs.runs[0]!.signal?.aborted, true, "the limit stops the running monitor");
+		await eventually(() => userMessages.length === 1, "the deadline notice wakes the idle parent");
+		const outputPath = join(jobs.dir, "job-1.log");
+		const notices = sent.filter(({ message }) => message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1);
+		assert.deepEqual(notices[0]!.options, { triggerTurn: false });
+		assert.deepEqual(notices[0]!.message.details, {
+			gentleJobs: { jobId: "job-1", kind: "monitor", label: "checks", status: "stopped", exitCode: null, outputPath, event: "timeout" },
+		});
+		assert.equal(notices[0]!.message.content,
+			`Monitor job-1 ("checks") reached its 17s timeout after 0 events and ended. This is the limit you set with timeout_seconds, not a failure or a user stop. Start a new monitor only if watching is still needed for authorized work and other limits allow it.\nFull output: ${outputPath}`);
+		assert.equal(timers.pending(17_000), 0, "the deadline is not rearmed");
+		assert.equal(jobs.runs.length, 1, "a new watch was not started automatically");
 	} finally {
 		await fire("session_shutdown", ctx);
 		jobs.cleanup();

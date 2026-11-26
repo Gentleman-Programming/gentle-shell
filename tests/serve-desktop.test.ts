@@ -85,11 +85,11 @@ test("the control session starts on first use in the server's home, answers Desk
 		assert.equal(launches.length, 0, "nothing starts before a client uses it");
 		assert.equal(controlOf(dir), undefined);
 
-		const answer = await call(server.url, "POST", "/api/desktop", { token: ADMIN, body: { method: "get_config", params: { store: "model_defaults" } } });
+		const answer = await call(server.url, "POST", "/api/desktop", { token: ADMIN, body: { method: "get_config", params: { store: "pi_settings" } } });
 		assert.equal(answer.status, 200, JSON.stringify(answer.body));
 		assert.equal(answer.body.kind, "response");
 		assert.equal(answer.body.ok, true);
-		assert.deepEqual(answer.body.data, { method: "get_config", params: { store: "model_defaults" } });
+		assert.deepEqual(answer.body.data, { method: "get_config", params: { store: "pi_settings" } });
 		assert.deepEqual(launches.map((l) => l.cwd), [homedir()], "one session, in the server user's home folder");
 		const control = controlOf(dir)!;
 		assert.ok(control, "serve names its control session beside the keepers");
@@ -142,7 +142,7 @@ test("scopes per method as /desktop; host tool methods and bad requests are refu
 			const read = await call(server.url, "POST", "/api/desktop", { token: reader.token, body: { method } });
 			assert.equal(read.status, 200, method);
 		}
-		const write = await call(server.url, "POST", "/api/desktop", { token: operator.token, body: { method: "set_config", params: { store: "model_defaults", data: {} } } });
+		const write = await call(server.url, "POST", "/api/desktop", { token: operator.token, body: { method: "set_config", params: { store: "pi_settings", data: {} } } });
 		assert.equal(write.status, 200);
 		assert.equal(launches.length, 1);
 	} finally {

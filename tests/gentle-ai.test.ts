@@ -4305,12 +4305,35 @@ test("A3 provider review roles keep the explicit session binding ahead of the fr
 	}
 });
 
-test("A3 documented divergence: provider review roles skip the orchestrator fallback on resume without a startup record", (t) => {
+test("A3 S5: a resumed session reads its startup record's orchestrator for the provider review roles", (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	// #2863: a later process opening the session has no in-memory freeze; the
+	// startup record is what gives reviewers the profile's orchestrator instead
+	// of the persisted default. The authority publishes exactly this binding:
+	// the record's origin and its full definition, orchestrator included.
+	const orchestrator = { model: "openai/sol", thinking: "medium" as const };
+	const team = { orchestrator, "review-risk": { model: "openai/sol-risk" } };
+	writeStore({ sol: team }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	const before = [readFileSync(storePath, "utf8"), readFileSync(settingsPath, "utf8")];
+	bindSessionProfile("recorded-session", "sol", team, { origin: "global" });
+	assert.equal(readSessionProfileBinding("recorded-session")?.origin, "global", "the record is the session's startup state, not an explicit choice");
+	const routing = __testing.readReviewerModelConfig(fixture.root, "recorded-session");
+	for (const role of ["review-refuter", "review-validator"]) {
+		assert.deepEqual(__testing.reviewHostRelaySelection(role, routing), { selection: "openai/sol", thinking: "medium", routingKey: role });
+	}
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/sol-risk");
+	assert.deepEqual([readFileSync(storePath, "utf8"), readFileSync(settingsPath, "utf8")], before, "reading the record never writes shared state");
+});
+
+// S3: sessions from before A2 never recorded a startup state, so they keep
+// today's behavior; only these sessions still miss the orchestrator on resume.
+test("A3 S3: a pre-A2 session without a startup record keeps the persisted-default reviewer fallback", (t) => {
 	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
-	// #2863: a resume without a startup record cannot recover the original orchestrator.
-	// Matrak's record PR closes this remaining divergence; this is not an own start.
 	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { model: "openai/sol-risk" } } }, "sol");
 	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
 	freezeSessionProfileAtStartup({ sessionId: "inherited-session", cwd: fixture.root, configHome: fixture.configHome });
@@ -4319,7 +4342,7 @@ test("A3 documented divergence: provider review roles skip the orchestrator fall
 	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
 });
 
-// #2863: A3 closes the own-start in-memory half; resume still needs a record.
+// #2863: A3 closes the own-start in-memory half and the resume half through the record.
 for (const role of ["review-refuter", "review-validator"]) {
 	test(`A3 ${role} uses the orchestrator frozen at the session's own start`, (t) => {
 		const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
@@ -4906,7 +4929,8 @@ test("clear after a session's own start goes back to the defaults it started wit
 	await __testing.runProfilesPanelAction(ctx, { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" }, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "fast" }, {});
 	await h.run("clear", ctx);
 	const family = manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === SESSION_PROFILE_CUSTOM_TYPE);
-	assert.equal(family.length, 2, "the clear follows the Use in this session bind");
+	assert.equal(family.length, 3, "the own-start record, the Use bind, then the clear");
+	assert.deepEqual((family[0] as { data?: unknown }).data, createSessionProfileStartupBind("global", "team", TEAM_DEFINITION), "the own start records the profile it began with");
 	assert.deepEqual((family.at(-1) as { data?: unknown }).data, createSessionProfileStartupBind("global", "team", TEAM_DEFINITION));
 	assert.match(h.last().message, /New launches go back to the profile this session started with, "team/);
 });

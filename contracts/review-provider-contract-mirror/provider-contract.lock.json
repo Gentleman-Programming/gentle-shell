@@ -1,16 +1,16 @@
 {
   "schema": "gentle-pi.review-provider-contract-mirror-lock/v1",
   "acquisition": "field-test-local",
-  "contract_semver": "1.6.0",
+  "contract_semver": "1.7.0",
   "source": {
     "kind": "tree"
   },
-  "tree_sha256": "a8dd281c59fddd81df10fcc2db48ac60cf656443d7f756e272fe2e9f4239f9dc",
+  "tree_sha256": "7a24383d94a08054fbd75b67cd52a9f57ec7763c1fe48c3c07a7fe9839f682d7",
   "entries": {
     "README.md": "3a655c2f19aee02636da062f0cae7a189b7e5f691c8ba8010f2ed50e5d8e8d70",
-    "manifest.json": "ef377eb92c2ac86aa888f14149ca0710874012bef0094d9264372804ccd3e859",
+    "manifest.json": "f7f59ad11ab6e9ede8efb18c0dca925bc849024ac7669f6ad7914ec69f6f52e4",
     "orchestration/pi.md": "e0c978bc67eca6db19b0ecb38352e201f7e9f91900d7c3797896d5cd15a5f415",
-    "routing/pi.md": "43d457487317646c20e91109d90ec17dcc621d645cc8ea7f2097e820aaa045d4",
+    "routing/pi.md": "9e38df86c6733672c5b07e3cf6727da254395c8c5d43c1c742d9eae305fc7be4",
     "schemas/lens.schema.json": "9b8a2354a570888486015434501b66b51441a3baf5bf858635e4fff56b2e8298",
     "schemas/refuter.schema.json": "36f8267c6c3f04600b8f1cb77df70d90858611af822cc81922efd6b3502fb646",
     "schemas/targeted-validator.schema.json": "40e397195bdfbc6782fc3090f20c5be082e4d14d2855314f99ecb8506133eddc",
@@ -19,8 +19,8 @@
     "vectors/targeted-validator.json": "7b5a5165e3a913863fb98d2ba5387811860c21333b5c37e6ed3b4e0d121cf2fa"
   },
   "generated": {
-    "generated/provider-capabilities.baseline.json": "65eb6542b95e110907a4b5568a4c478bcbd64380b8f2765675ed9680ed19d9f9",
-    "generated/provider-roles.baseline.json": "05e945986453659180c1111988449a3ab0fb39cd44f3a3b7b9774a42cea47648"
+    "generated/provider-capabilities.baseline.json": "c18032946a13a02deb680a71fbc038af6823de1ff89ad4743dc9e056d56900df",
+    "generated/provider-roles.baseline.json": "ca6edc920323954d3801de459c30cd9ad818670094fddf378eba9291bf54019c"
   },
   "runtimes": [
     "claude-code",

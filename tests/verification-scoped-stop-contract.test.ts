@@ -22,7 +22,7 @@ test("S3/S6: verification stops are scoped partial reports, never the generic te
 });
 
 test("S6: worker, setup, recheck, native, and user budgets stay separate and changed state never resets them", () => {
-	assert.match(verification, /Worker, setup, recheck, native and user budgets stay separate; changed state earns a fresh check, not a reset\./);
+	assert.match(verification, /Worker progress is separate from explicit setup, recheck, native and user limits; changed state earns a fresh check, not a reset\./);
 });
 
 test("S3/S6: the settle reminder asks for the verifier or an honest missing-proof report", () => {

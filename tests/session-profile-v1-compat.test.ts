@@ -154,10 +154,18 @@ for (const [origin, defaults] of Object.entries(startupDefaults) as Array<[keyof
 		assert.ok(notice?.includes(`this session keeps "${name}" (${origin})`), "the inherited drift notice");
 		assert.equal(replay("v1", transcript).notice, undefined, "v1 finds no definition drift");
 	});
-	test(`follow mode routes a ${origin} startup bind as v1 does`, () => {
+	// A3 S4 (gentle-shell#1064), changed on purpose: the documented follow
+	// divergence. Follow ignores the startup bind and resolves the current
+	// defaults; v1 routes the recorded bind.
+	test(`follow mode ignores a ${origin} startup bind and resolves the current defaults, diverging from v1`, () => {
 		const transcript = { records: [record], defaults: { profiles, active: "local", foreignPin: "frontier" }, env: { GENTLE_PI_PROFILE_FOLLOW: "1" } };
-		assert.deepEqual(launchRouting("current", transcript), launchRouting("v1", transcript));
-		assert.deepEqual(launchRouting("current", transcript).foreignRouting, roles(profiles[name]));
+		const current = replay("current", transcript), v1 = launchRouting("v1", transcript);
+		assert.equal(current.kind, "follow");
+		assert.equal(current.notice, undefined, "follow sessions are never compared");
+		assert.deepEqual(launchRouting("current", transcript).routing, roles(LOCAL), "the current defaults outrank the startup bind");
+		assert.deepEqual(launchRouting("current", transcript).foreignRouting, roles(FRONTIER), "a foreign launch reads that repository's own pin");
+		assert.deepEqual(v1.routing, roles(profiles[name]), "v1 still routes the recorded startup bind");
+		assert.deepEqual(v1.foreignRouting, roles(profiles[name]));
 	});
 }
 

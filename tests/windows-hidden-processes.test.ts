@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire, syncBuiltinESMExports } from "node:module";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -37,8 +37,6 @@ function fakeGitResult(command: string, args: readonly string[], cwd: string): s
 	if (args.includes("--git-common-dir")) return `${cwd}/.git`;
 	if (args.includes("--show-object-format")) return "sha1";
 	if (args.includes("--is-shallow-repository")) return "false";
-	if (args.includes("--is-inside-work-tree")) return "true";
-	if (args.includes("info/exclude")) return join(cwd, ".git", "info", "exclude");
 	if (args.includes("--git-path")) return join(cwd, ".git", "gentle-ai", "reviews");
 	if (args.includes("--max-parents=0")) return "a".repeat(40);
 	if (args[0] === "cat-file" && args[1] === "-t") return "tree";
@@ -113,16 +111,11 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 	}) as unknown as typeof cp.execFileSync;
 	const fakeAsync = function(command: string, args: readonly string[], options: Options, callback: (error: null, stdout: string, stderr: string) => void) {
 		captures.push({ kind: "execFile", command, args, options });
-		if (process.platform === "win32" && command === "codegraph") {
-			callback(Object.assign(new Error("fixture shim missing"), { code: "ENOENT" }) as never, "", "");
-		} else {
-			callback(null, "indexed", "");
-		}
+		callback(null, "indexed", "");
 		return undefined;
 	} as unknown as typeof cp.execFile;
 	(fakeAsync as unknown as { [promisify.custom]?: unknown })[promisify.custom] = async (command: string, args: readonly string[], options: Options) => {
 		captures.push({ kind: "execFile", command, args, options });
-		if (process.platform === "win32" && command === "codegraph") throw Object.assign(new Error("fixture shim missing"), { code: "ENOENT" });
 		return { stdout: "indexed", stderr: "" };
 	};
 	const fakeSpawn = ((command: string, args: readonly string[], options: Options = {}) => {
@@ -136,27 +129,8 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		cp.execFile = fakeAsync;
 		cp.spawnSync = fakeSpawn;
 		syncBuiltinESMExports();
-		let fallbackRoot: string | undefined;
-		let fallbackCalls: ExpectedCall[] = [];
-	if (process.platform === "win32") {
-		fallbackRoot = mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-contract-"));
-		t.after(() => rmSync(fallbackRoot!, { recursive: true, force: true }));
-		const packageRoot = join(fallbackRoot, "node_modules", "@colbymchenry", "codegraph");
-		mkdirSync(packageRoot, { recursive: true });
-		writeFileSync(join(fallbackRoot, "codegraph.cmd"), "@ECHO off\n");
-		writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ bin: { codegraph: "entry.js" } }));
-		writeFileSync(join(packageRoot, "entry.js"), "// fixture entry\n");
-		const previousPath = process.env.Path;
-		const previousUpperPath = process.env.PATH;
-		t.after(() => { if (previousPath === undefined) delete process.env.Path; else process.env.Path = previousPath; });
-		t.after(() => { if (previousUpperPath === undefined) delete process.env.PATH; else process.env.PATH = previousUpperPath; });
-		process.env.Path = fallbackRoot;
-		process.env.PATH = fallbackRoot;
-		fallbackCalls = [{ kind: "execFile", command: process.execPath, args: [join(fallbackRoot, "node_modules", "@colbymchenry", "codegraph", "entry.js"), "init", cwd] }];
-	}
-	// The fixed query prevents accidental cache misses from becoming a fake proof.
+		// The fixed query prevents accidental cache misses from becoming a fake proof.
 		const query = "?windows-hidden-contract";
-		const codegraph = await import(`../extensions/codegraph-tools.ts${query}`);
 		const repository = await import(`../lib/review-repository.ts${query}`);
 		const snapshot = await import(`../lib/review-snapshot.ts${query}`);
 		const transaction = await import(`../lib/review-transaction.ts${query}`);
@@ -167,9 +141,7 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		const scratch = await import(`../lib/session-scratch.ts${query}`);
 		const skills = await import(`../extensions/skill-registry.ts${query}`);
 
-		// The init route is parent-session-owned: a runner itself flagged as a subagent child
-		// (GENTLE_PI_AGENTS_CHILD=1) would be refused before any CLI call, so the fixture clears
-		// the inherited flag and runs as a parent session, keeping the real default runner under test.
+		// Exercise parent-session adapters even when the runner is itself a delegated child.
 		const previousChildFlag = process.env.GENTLE_PI_AGENTS_CHILD;
 		delete process.env.GENTLE_PI_AGENTS_CHILD;
 		t.after(() => {
@@ -177,19 +149,6 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 			else process.env.GENTLE_PI_AGENTS_CHILD = previousChildFlag;
 		});
 		const traces: Trace[] = [];
-		const graph = codegraph.createCodeGraphTool();
-		assert.equal(typeof graph.execute, "function", "CodeGraph public handler must be registered");
-		const graphResult = await trace(captures, traces, "CodeGraph init", () => graph.execute("capture", { operation: "init" }, undefined, undefined, { cwd } as never), [
-			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--show-toplevel"] },
-			{ kind: "execFile", command: "codegraph", args: ["init", cwd] },
-			...fallbackCalls,
-			// A successful init keeps .codegraph/ out of git through the local exclude file.
-			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--is-inside-work-tree"] },
-			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--git-path", "info/exclude"] },
-		]);
-		const graphText = String((graphResult as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? "");
-		assert.match(graphText, /indexed/, "CodeGraph must return the fixture command result");
-
 		const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
 		gentleAi.createGentleAiExtension({ nativeReviewCli: { targetStatus: async () => ({}) } as never })({
 			registerTool(definition: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) { tools.set(definition.name, definition); },
@@ -302,7 +261,6 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 test("owned public adapters pass windowsHide at every mapped Node child-process boundary", async (t) => {
 	const { traces } = await captureOwnedRoutes(t);
 	assert.deepEqual(traces.map(({ label }) => label), [
-		"CodeGraph init",
 		"gentle_review inspect",
 		"repository authority",
 		"snapshot untracked discovery",
@@ -318,7 +276,7 @@ test("owned public adapters pass windowsHide at every mapped Node child-process 
 		"scratch artifact check",
 		"profile declaration sharing",
 		"skill registry tracking probe",
-	], "all sixteen mapped public actions must complete before flag assertions");
+	], "all fifteen mapped public actions must complete before flag assertions");
 	for (const trace of traces) {
 		for (const capture of trace.captures) {
 			assert.equal(capture.options.windowsHide, true, `${trace.label}: ${capture.kind} ${capture.command} must hide Windows consoles`);

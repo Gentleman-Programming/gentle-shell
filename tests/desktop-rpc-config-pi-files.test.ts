@@ -8,10 +8,10 @@ import { getPackageDir, ModelRegistry, ModelRuntime, type ExtensionContext } fro
 import { DesktopConfigBridge } from "../lib/desktop-rpc-config.ts";
 import { SECRET_MARKER } from "../lib/pi-user-config.ts";
 
-// Pi's own custom models (`<agentHome>/models.json`) and MCP servers
-// (`<agentHome>/mcp.json`, `<cwd>/.pi/mcp.json`) as config stores: clients read
-// and write them through get_config/set_config, never the files, and never see a
-// secret. Every home is a temp directory.
+// Pi's own custom models (`<agentHome>/models.json`, `custom_models`) and MCP
+// servers (`<agentHome>/mcp.json`, `<cwd>/.pi/mcp.json`, `mcp`) as config
+// stores: clients read and write them through get_config/set_config, never the
+// files, and never see a secret. Every home is a temp directory.
 
 type Watch = { dir: string; onChange: (filename: string | undefined) => void };
 
@@ -68,7 +68,7 @@ function env(t: test.TestContext, context: Record<string, unknown> = {}) {
 			return (await this.read(store)).writeTargets.find((entry: any) => entry.target === target).writeRevision;
 		},
 		async write(store: string, data: unknown, expectedRevision?: string): Promise<any> {
-			const target = store === "mcp_servers" && (data as any)?.source === "project" ? "project" : "global";
+			const target = store === "mcp" && (data as any)?.source === "project" ? "project" : "global";
 			return bridge.handle("set_config", { store, data, expectedRevision: expectedRevision ?? await this.revision(store, target) });
 		},
 	};
@@ -206,7 +206,7 @@ test("a custom models write refreshes the session's model registry before answer
 
 test("an outside models.json edit emits config_changed and refreshes the registry; an outside mcp.json edit emits config_changed", async (t) => {
 	let refreshes = 0;
-	const e = env(t, { modelRegistry: { refresh: async () => { refreshes += 1; } } });
+	const e = env(t, { modelRegistry: { refresh: async () => { refreshes += 1; } }, isProjectTrusted: () => true });
 	const events: any[] = [];
 	mkdirSync(join(e.workspace, ".pi"), { recursive: true });
 	e.bridge.wire((event, data) => events.push({ event, data }));
@@ -219,11 +219,11 @@ test("an outside models.json edit emits config_changed and refreshes the registr
 	writeJson(e.projectMcp, { mcpServers: { tool: { command: "node" } } });
 	for (const watch of e.watches.filter((entry) => entry.dir === join(e.workspace, ".pi"))) watch.onChange("mcp.json");
 	await e.elapse();
-	assert.deepEqual(events.slice(1).map((entry) => [entry.data.store, entry.data.scope, entry.data.source]), [["mcp_servers", "global+project", "external"]]);
+	assert.deepEqual(events.slice(1).map((entry) => [entry.data.store, entry.data.scope, entry.data.source]), [["mcp", "global+project", "external"]]);
 	assert.equal(refreshes, 1, "only a models change refreshes the registry");
 });
 
-// ---- mcp_servers ----
+// ---- mcp ----
 
 const GLOBAL_MCP = {
 	autoEnableCodemode: false,
@@ -233,32 +233,43 @@ const GLOBAL_MCP = {
 	},
 };
 
-test("MCP servers read both layers whole, secrets redacted, and whether Pi reads the project one", async (t) => {
+test("the mcp store lists the servers Pi loads and each layer Pi reads whole, secrets redacted", async (t) => {
 	const e = env(t);
-	const empty = await e.read("mcp_servers");
+	const empty = await e.read("mcp");
 	assert.deepEqual([empty.status, empty.scope, empty.readOnly, empty.value], ["missing", "global+project", false, undefined]);
-	assert.deepEqual(empty.writeTargets.map((entry: any) => [entry.target, entry.status]), [["global", "missing"], ["project", "missing"]]);
+	assert.deepEqual(empty.writeTargets.map((entry: any) => [entry.target, entry.status]), [["global", "missing"]], "an untrusted project's file is no write target");
 	writeJson(e.globalMcp, GLOBAL_MCP);
-	const read = await e.read("mcp_servers");
+	writeJson(e.projectMcp, { mcpServers: { files: { enabled: false } } });
+	const read = await e.read("mcp");
 	assert.equal(read.status, "ok");
 	assert.deepEqual(read.value, {
-		projectTrusted: false,
-		global: {
-			autoEnableCodemode: false,
-			mcpServers: {
-				files: { ...GLOBAL_MCP.mcpServers.files, env: { TOKEN: SECRET_MARKER, HOME_DIR: SECRET_MARKER } },
-				docs: { ...GLOBAL_MCP.mcpServers.docs, headers: { Authorization: SECRET_MARKER }, oauth: { clientId: "id", clientSecret: SECRET_MARKER } },
+		servers: [{ name: "files", transport: "stdio", enabled: true }, { name: "docs", transport: "http", enabled: true }],
+		truncated: false,
+		omitted: 0,
+		documents: {
+			global: {
+				autoEnableCodemode: false,
+				mcpServers: {
+					files: { ...GLOBAL_MCP.mcpServers.files, env: { TOKEN: SECRET_MARKER, HOME_DIR: SECRET_MARKER } },
+					docs: { ...GLOBAL_MCP.mcpServers.docs, headers: { Authorization: SECRET_MARKER }, oauth: { clientId: "id", clientSecret: SECRET_MARKER } },
+				},
 			},
 		},
-	});
-	assert.deepEqual(read.layers, [{ source: "global", status: "ok" }, { source: "project", status: "missing" }]);
+	}, "Pi does not read an untrusted project's mcp.json, so neither does the store");
+	assert.deepEqual(read.layers, [{ source: "global", status: "ok" }]);
 	const trusted = env(t, { isProjectTrusted: () => true });
 	writeJson(trusted.projectMcp, { mcpServers: { files: { enabled: false } } });
-	const project = await trusted.read("mcp_servers");
-	assert.deepEqual(project.value, { projectTrusted: true, project: { mcpServers: { files: { enabled: false } } } });
+	const project = await trusted.read("mcp");
+	assert.deepEqual(project.value, { servers: [], truncated: false, omitted: 0, documents: { project: { mcpServers: { files: { enabled: false } } } } });
+	assert.deepEqual(project.writeTargets.map((entry: any) => [entry.target, entry.status]), [["global", "missing"], ["project", "ok"]]);
 	writeFileSync(trusted.globalMcp, JSON.stringify({ mcpServers: [] }));
-	const layers = (await trusted.read("mcp_servers")).layers;
+	const layers = (await trusted.read("mcp")).layers;
 	assert.deepEqual(layers, [{ source: "global", status: "invalid" }, { source: "project", status: "ok" }]);
+	// A secret changed outside moves the revision even though the client never sees it.
+	writeJson(e.globalMcp, { ...GLOBAL_MCP, mcpServers: { ...GLOBAL_MCP.mcpServers, files: { ...GLOBAL_MCP.mcpServers.files, env: { TOKEN: "rotated", HOME_DIR: "${HOME}" } } } });
+	const rotated = await e.read("mcp");
+	assert.deepEqual(rotated.value, read.value);
+	assert.notEqual(rotated.revision, read.revision);
 });
 
 test("an MCP write replaces one layer, keeps redacted secrets of the same server, and reloads the session once idle", async (t) => {
@@ -266,12 +277,12 @@ test("an MCP write replaces one layer, keeps redacted secrets of the same server
 	let idleWaits = 0;
 	const e = env(t, { waitForIdle: async () => { idleWaits += 1; }, reload: async () => { reloads += 1; } });
 	writeJson(e.globalMcp, GLOBAL_MCP);
-	const read = await e.read("mcp_servers");
-	const document = structuredClone(read.value.global);
+	const read = await e.read("mcp");
+	const document = structuredClone(read.value.documents.global);
 	document.mcpServers.files.env.EXTRA = "extra-value";
 	document.mcpServers.docs.headers = { Authorization: SECRET_MARKER, "X-New": "new" };
 	document.mcpServers.search = { url: "https://search.example/mcp", exposure: "direct" };
-	const outcome = await e.write("mcp_servers", { source: "global", document });
+	const outcome = await e.write("mcp", { source: "global", document });
 	assert.equal(outcome.ok, true, JSON.stringify(outcome));
 	assert.deepEqual([outcome.data.writeTarget, outcome.data.changed, outcome.event?.data.writeTarget], ["global", true, "global"]);
 	const written = JSON.parse(readFileSync(e.globalMcp, "utf8"));
@@ -288,18 +299,22 @@ test("an MCP write replaces one layer, keeps redacted secrets of the same server
 	assert.deepEqual(loaded.errors, []);
 	assert.deepEqual(loaded.servers.map((server: any) => server.name), ["files", "docs", "search"]);
 	assert.equal(loaded.servers.find((server: any) => server.name === "docs").config.headers.Authorization, "Bearer header-secret");
-	const same = await e.write("mcp_servers", { source: "global", document: outcome.data.value.global });
+	const same = await e.write("mcp", { source: "global", document: outcome.data.value.documents.global });
 	assert.deepEqual([same.ok, same.data.changed], [true, false]);
 	await ticks();
 	assert.equal(reloads, 1, "no change, no reload");
 	// A marker moved to another server has nothing to keep there.
-	const moved = await e.write("mcp_servers", { source: "global", document: { mcpServers: { other: { command: "x", env: { TOKEN: SECRET_MARKER } } } } });
+	const moved = await e.write("mcp", { source: "global", document: { mcpServers: { other: { command: "x", env: { TOKEN: SECRET_MARKER } } } } });
 	assert.equal(moved.error?.code, "invalid_data");
 	assert.match(moved.error.message, /mcpServers\.other\.env\.TOKEN/);
 });
 
-test("an MCP write is checked as Pi loads each layer", async (t) => {
-	const e = env(t);
+test("an MCP write is checked as Pi loads each layer, and a project layer only for a trusted project", async (t) => {
+	const untrusted = env(t);
+	const refused = await untrusted.bridge.handle("set_config", { store: "mcp", data: { source: "project", document: { mcpServers: {} } }, expectedRevision: "sha256:any" });
+	assert.deepEqual(refused, { ok: false, error: { code: "project_untrusted", message: "Pi reads this project's files only once the project is trusted" } });
+	assert.equal(existsSync(untrusted.projectMcp), false);
+	const e = env(t, { isProjectTrusted: () => true });
 	writeJson(e.globalMcp, GLOBAL_MCP);
 	for (const [data, message] of [
 		[{ source: "global", document: { mcpServers: { broken: { args: ["x"] } } } }, /broken/],
@@ -311,18 +326,18 @@ test("an MCP write is checked as Pi loads each layer", async (t) => {
 		[{ source: "project", document: { mcpServers: { files: { enabled: false, description: "x" } } } }, /an override can only set/],
 		[{ source: "project", document: { mcpServers: { api: { url: "https://api.example/mcp", auth: { provider: "anthropic" } } } } }, /auth is only allowed in the global/],
 	] as const) {
-		const outcome = await e.write("mcp_servers", data);
+		const outcome = await e.write("mcp", data);
 		assert.equal(outcome.error?.code, "invalid_data", JSON.stringify(data));
 		assert.match(outcome.error.message, message);
 	}
 	for (const data of [{ document: {} }, { source: "local", document: {} }, { source: "global" }, { source: "global", document: {}, path: "/tmp/x" }]) {
-		assert.equal((await e.write("mcp_servers", data)).error?.code, "invalid_data", JSON.stringify(data));
+		assert.equal((await e.write("mcp", data)).error?.code, "invalid_data", JSON.stringify(data));
 	}
 	assert.equal(existsSync(e.projectMcp), false);
-	const override = await e.write("mcp_servers", { source: "project", document: { mcpServers: { files: { enabled: false, exposure: "direct" } } } });
+	const override = await e.write("mcp", { source: "project", document: { mcpServers: { files: { enabled: false, exposure: "direct" } } } });
 	assert.equal(override.ok, true, JSON.stringify(override));
 	assert.deepEqual(JSON.parse(readFileSync(e.projectMcp, "utf8")), { mcpServers: { files: { enabled: false, exposure: "direct" } } });
 	// Each layer has its own write revision: a global token cannot write the project file.
-	const globalToken = await e.revision("mcp_servers", "global");
-	assert.equal((await e.write("mcp_servers", { source: "project", document: { mcpServers: {} } }, globalToken)).error?.code, "revision_conflict");
+	const globalToken = await e.revision("mcp", "global");
+	assert.equal((await e.write("mcp", { source: "project", document: { mcpServers: {} } }, globalToken)).error?.code, "revision_conflict");
 });

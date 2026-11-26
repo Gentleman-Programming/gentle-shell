@@ -354,7 +354,7 @@ S9. Everything Gentle AI and gentle-pi keep lives in the prefix, except Engram's
 
 What stays the user's:
 
-- `git`, `gh` and `codegraph`, which the agent runs for the user's work, from the user's `PATH`.
+- `git` and `gh`, which the agent runs for the user's work, from the user's `PATH`.
 - Engram's memory data in `~/.engram`, shared with the user's other agents.
 - pi-pretty's reads of `$HOME/.pi/agent/settings.json` (its `index.js` and `render.js` look for its settings there whatever the agent home is). This needs an upstream pi-pretty change; `node_modules` is not patched.
 - `GENTLE_SHELL_PREFIX` and `ENGRAM_BIN` reach the agent's shell, like the agent home variables. A gentle-pi the user runs there is not bundled and ignores the prefix (see above).

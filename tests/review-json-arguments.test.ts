@@ -82,7 +82,13 @@ test("public Anthropic non-strict adapter preserves the complete review tool dec
 		for (const input of inputs) {
 			const args = validateToolArguments({ ...tools.get("gentle_review"), parameters: controller }, { type: "toolCall", id: "provider-shell", name: "gentle_review", arguments: { operation, input } });
 			assert.deepEqual(args.input, input, "provider-shell validation accepts and retains this input");
-			await assert.rejects(__testing.executeReviewControllerOperation(args, process.cwd(), native));
+			if (input === null) {
+				await assert.rejects(__testing.executeReviewControllerOperation(args, process.cwd(), native));
+			} else {
+				const outcome: any = await __testing.executeReviewControllerOperation(args, process.cwd(), native);
+				assert.equal(outcome.status, "blocked", `${operation}: a foreign object is refused by the operation's own input validation`);
+				assert.equal(outcome.mutation_performed, false);
+			}
 		}
 	}
 	assert.equal(nativeCalls, 0);
@@ -242,18 +248,33 @@ test("validation and facade keep arrays, primitives and null fail-closed", async
 	assert.equal(calls, 0);
 });
 
-test("all other controller operations keep object input fail-closed at the facade boundary (#1698)", async () => {
-	const operations = (tools.get("gentle_review").parameters.properties.operation.enum as string[]).filter((operation) => operation !== "start" && operation !== "assess" && operation !== "answer-consent" && operation !== "abandon" && operation !== "status" && operation !== "select-intended-untracked");
-	let calls = 0;
-	const native = new Proxy({}, { get() { return async () => { calls++; throw new Error("unexpected native execution"); }; } }) as NativeReviewCli;
+test("every controller operation serializes a schema-admitted object input like its string form (#3023)", () => {
+	const input = { actor: "maintainer", reason: "operator_disposition", nested: { values: [1, "two", null] } };
+	const operations = (tools.get("gentle_review").parameters.properties.operation.enum as string[]).filter((operation) => operation !== "select-intended-untracked");
 	for (const operation of operations) {
-		const args = { operation, lineageId: "l", input: { consentBinding: "opaque", answer: "granted" } };
-		await assert.rejects(
-			__testing.executeReviewControllerOperation(args, process.cwd(), native),
-			/Review controller input must be a string/,
+		const args = validate("gentle_review", { operation, lineageId: "review-1", input });
+		assert.deepEqual(args.input, input, `${operation}: the tool schema admits the object`);
+		assert.equal(__testing.parseReviewControllerParameters(args).input, JSON.stringify(input), `${operation}: the facade must not reject what its schema admitted`);
+	}
+	for (const operation of ["inspect", "reset", "recover"]) {
+		assert.equal(
+			__testing.parseReviewControllerParameters({ operation, lineageId: "review-1", input: JSON.stringify(input) }).input,
+			__testing.parseReviewControllerParameters({ operation, lineageId: "review-1", input }).input,
+			`${operation}: object and serialized forms reach native validation as the same bytes`,
 		);
 	}
-	assert.equal(calls, 0);
+});
+
+test("repair names the input it never reads instead of silently ignoring it (#3023)", async () => {
+	let statusCalls = 0;
+	const native = { targetStatus: async () => { statusCalls++; return { targetIdentity: "t1" }; } } as unknown as NativeReviewCli;
+	for (const input of [{ repairAuthorization: "caller-supplied" }, JSON.stringify({ repairAuthorization: "caller-supplied" })]) {
+		await assert.rejects(
+			__testing.executeReviewControllerOperation(validate("gentle_review", { operation: "repair", lineageId: "review-1", input }), process.cwd(), native),
+			/Review repair does not accept input; call it with only lineageId and optional workspaceRoot/,
+		);
+	}
+	assert.equal(statusCalls, 0);
 });
 
 test("facade rejects non-JSON runtime objects without lossy serialization or native execution", async () => {

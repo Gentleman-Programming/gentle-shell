@@ -482,15 +482,67 @@ test("S9: the snapshot lists the session's slash commands: pi's built-ins first,
 	const items = snapshot.commands.items;
 	assert.deepEqual(items.slice(0, DESKTOP_FEED_BUILTIN_COMMANDS.length).map((item) => item.source), DESKTOP_FEED_BUILTIN_COMMANDS.map(() => "builtin"));
 	assert.deepEqual(items.slice(DESKTOP_FEED_BUILTIN_COMMANDS.length), [
-		{ name: "gentle:status", description: "Show the Gentle status", args: null, terminal: true, source: "extension" },
-		{ name: "review", description: `${"x".repeat(DESKTOP_FEED_LIMITS.commandText - 1)}…`, args: null, terminal: false, source: "prompt" },
-		{ name: "skill:odd", description: null, args: null, terminal: false, source: "skill" },
-		{ name: "badname", description: "control characters", args: null, terminal: true, source: "extension" },
+		{ name: "gentle:status", description: "Show the Gentle status", args: null, terminal: true, rpc: true, source: "extension" },
+		{ name: "review", description: `${"x".repeat(DESKTOP_FEED_LIMITS.commandText - 1)}…`, args: null, terminal: false, rpc: true, source: "prompt" },
+		{ name: "skill:odd", description: null, args: null, terminal: false, rpc: true, source: "skill" },
+		{ name: "badname", description: "control characters", args: null, terminal: true, rpc: false, source: "extension" },
 	], "the desktop RPC channel and nameless entries are left out; prompts and skills answer in the chat");
 	assert.equal(snapshot.commands.truncated, false);
 	const many = buildDesktopFeedSnapshot(fixtureInput({ commands: Array.from({ length: 400 }, (_, i) => ({ name: `c${i}`, description: "d", source: "extension" as const })) }));
 	assert.equal(many.commands.items.length, DESKTOP_FEED_LIMITS.commands);
 	assert.equal(many.commands.truncated, true);
+});
+
+test("S4: `terminal` keeps its Herdr meaning for every command after `rpc` is added", () => {
+	// Herdr (gentle-chat, gentle-palette) types every command into the TUI and reads `terminal`
+	// to decide whether to show the Terminal afterwards: these values must not move.
+	const builtinTerminal: Record<string, boolean> = {
+		new: false, resume: true, fork: true, clone: false, tree: true, compact: true, name: false, export: true,
+		session: true, copy: false, model: true, thinking: true, "scoped-models": true, settings: true, hotkeys: true,
+		reload: true, import: true, share: true, changelog: true, trust: true, login: true, logout: true, bug: true,
+	};
+	const snapshot = buildDesktopFeedSnapshot(fixtureInput({
+		commands: [
+			{ name: "gentle:status", description: "declared", source: "extension" },
+			{ name: "gentle:panel", description: "TUI sheet", source: "extension" },
+			{ name: "third-party:thing", description: "undeclared", source: "extension" },
+			{ name: "review", description: "template", source: "prompt" },
+			{ name: "skill:odd", description: "skill", source: "skill" },
+		],
+	}));
+	const terminal = Object.fromEntries(snapshot.commands.items.map((item) => [item.name, item.terminal]));
+	assert.deepEqual(terminal, { ...builtinTerminal, "gentle:status": true, "gentle:panel": true, "third-party:thing": true, review: false, "skill:odd": false });
+});
+
+test("S4: `rpc` is true only for declared commands; undeclared extension commands stay false", () => {
+	const snapshot = buildDesktopFeedSnapshot(fixtureInput({
+		commands: [
+			{ name: "gentle:status", description: "notify only", source: "extension" },
+			{ name: "gentle:persona", description: "select + notify", source: "extension" },
+			{ name: "gentle:panel", description: "ui.custom sheet", source: "extension" },
+			{ name: "gentle:customize", description: "refuses outside the TUI", source: "extension" },
+			{ name: "gentle:guide", description: "TUI only", source: "extension" },
+			{ name: "third-party:thing", description: "undeclared", source: "extension" },
+			{ name: "gentle:status:2", description: "a renamed duplicate is not the declared command", source: "extension" },
+			{ name: "review", description: "template", source: "prompt" },
+			{ name: "skill:odd", description: "skill", source: "skill" },
+		],
+	}));
+	const rpc = Object.fromEntries(snapshot.commands.items.filter((item) => item.source !== "builtin").map((item) => [item.name, item.rpc]));
+	assert.deepEqual(rpc, {
+		"gentle:status": true, "gentle:persona": true,
+		"gentle:panel": false, "gentle:customize": false, "gentle:guide": false, "third-party:thing": false, "gentle:status:2": false,
+		review: true, "skill:odd": true,
+	});
+	for (const item of snapshot.commands.items) assert.equal(typeof item.rpc, "boolean", item.name);
+});
+
+test("S4: built-ins carry `rpc` only where Pi's RPC protocol has a matching command", () => {
+	const rpc = Object.fromEntries(DESKTOP_FEED_BUILTIN_COMMANDS.map((command) => [command.name, command.rpc]));
+	assert.deepEqual(Object.entries(rpc).filter(([, value]) => value).map(([name]) => name).sort(),
+		["clone", "compact", "copy", "export", "fork", "model", "name", "new", "session", "thinking"]);
+	const items = buildDesktopFeedSnapshot(fixtureInput()).commands.items;
+	assert.deepEqual(items, DESKTOP_FEED_BUILTIN_COMMANDS.map((command) => ({ ...command, source: "builtin" })));
 });
 
 test("S9: session operations are listed with the screen they open", () => {
@@ -518,7 +570,7 @@ test("S9: the extension publishes pi's command registry and keeps working withou
 	];
 	await h.start();
 	const extension = h.read().commands.items.filter((item) => item.source !== "builtin");
-	assert.deepEqual(extension, [{ name: "gentle:changes", description: "Open the changes panel", args: null, terminal: true, source: "extension" }]);
+	assert.deepEqual(extension, [{ name: "gentle:changes", description: "Open the changes panel", args: null, terminal: true, rpc: false, source: "extension" }]);
 	assert.ok(!readFileSync(h.file, "utf8").includes("/secret/ext.ts"), "source paths never reach the snapshot");
 	const bare = feedHarness(t);
 	await bare.start();

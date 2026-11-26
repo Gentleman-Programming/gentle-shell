@@ -539,7 +539,7 @@ test("get_config rejects unknown stores, unsupported params, and physical paths"
 
 	assert.deepEqual(DESKTOP_CONFIG_METHODS, ["get_config", "set_config"]);
 	assert.deepEqual([...DESKTOP_CONFIG_EVENTS], ["config_changed"]);
-	assert.deepEqual([...DESKTOP_CONFIG_STORES], ["profiles", "models", "profile_fallbacks", "subagents", "pins", "managed_assets", "persona", "banner", "notifications", "model_defaults", "custom_models", "mcp_servers"]);
+	assert.deepEqual([...DESKTOP_CONFIG_STORES], ["profiles", "models", "profile_fallbacks", "subagents", "pins", "managed_assets", "persona", "banner", "notifications", "mcp", "pi_settings", "claude_bridge", "custom_models"]);
 });
 
 test("reads never mutate any store", async (t) => {
@@ -599,9 +599,10 @@ test("stores carry the documented read-only split", async (t) => {
 		persona: false,
 		banner: false,
 		notifications: false,
-		model_defaults: false,
+		mcp: false,
+		pi_settings: false,
+		claude_bridge: true,
 		custom_models: false,
-		mcp_servers: false,
 	});
 });
 
@@ -885,7 +886,7 @@ test("read-only and unknown stores reject writes without creating anything", asy
 	const bridge = bridgeFor(env);
 	const before = snapshotTree(env.root);
 
-	for (const store of ["models", "subagents", "managed_assets"]) {
+	for (const store of ["models", "subagents", "managed_assets", "claude_bridge"]) {
 		const outcome = await setConfig(bridge, { store, data: {}, expectedRevision: "sha256:x" });
 		assertError(outcome, "read_only");
 	}

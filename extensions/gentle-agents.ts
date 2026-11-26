@@ -5,6 +5,7 @@ import type { ThinkingLevel } from "../lib/model-routing-authority.ts";
 import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
 import { loadKeymaps } from "../lib/keymaps.ts";
 import { CHILD_TIER_ENV } from "../lib/openai-fast-tier.ts";
+import { CONTROLLED_ENGINEERING_ENV, workflowFromProfile, type ControlledEngineeringRole } from "../lib/orchestrator-mode-policy.ts";
 import { spawn } from "node:child_process";
 import { Type } from "typebox";
 import { recordReviewMutation } from "../lib/review-reminder-receipt.ts";
@@ -196,6 +197,13 @@ export interface SessionTransportFactory {
 	createListener(registry: SessionTransportRegistry, sessionId: string, onNotification: (notification: ReceivedNotification) => Promise<void>): SessionTransportListener;
 	createClient(registry: SessionTransportRegistry, sessionId: string): SessionTransportClient;
 }
+
+/** Which Controlled Engineering section each child agent gets (controlled-engineering S3). */
+const CONTROLLED_ENGINEERING_AGENT_ROLES: Partial<Record<string, ControlledEngineeringRole>> = {
+	"gentle-ai-worker": "writer",
+	"jd-fix-agent": "writer",
+	"gentle-ai-verify": "verify",
+};
 
 export interface AgentsDeps extends RunnerDeps {
 	home: string;
@@ -1531,7 +1539,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (tasks + running === 0) return undefined;
 		return {
 			block: true,
-			reason: `Standalone sleep is blocked while background work is active (${tasks} task(s), ${running} job(s)). End the turn now; each completion arrives automatically as a session message and starts a new turn.`,
+			reason: `Standalone sleep is blocked while background work is active (${tasks} task(s), ${running} job(s)). Continue independent in-scope work; end the turn to wait only when none remains. Each completion arrives automatically as a session message and starts a new turn.`,
 		};
 	});
 	let activeAgentRuns = 0;
@@ -2801,12 +2809,24 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (profile.tier && childModel?.provider && childModel.id) {
 			childEnv[CHILD_TIER_ENV] = JSON.stringify({ tier: profile.tier, model: `${childModel.provider}/${childModel.id}` });
 		}
+		// controlled-engineering S3: only the writers and the verifier, and only when
+		// the launching session's profile enables the option; read live per launch.
+		const sessionProfileName = sessionProfile.kind === "explicit" ? sessionProfile.name : sessionProfile.profile?.name;
+		delete childEnv[CONTROLLED_ENGINEERING_ENV];
+		const controlledRole = CONTROLLED_ENGINEERING_AGENT_ROLES[agent.name];
+		if (controlledRole !== undefined && sessionProfileName !== undefined
+			&& workflowFromProfile(profileConfigHome, sessionProfileName).controlledEngineering === true) {
+			childEnv[CONTROLLED_ENGINEERING_ENV] = controlledRole;
+		}
 		if (foreign) for (const key of inheritedUnsafeGitEnvironmentKeys(childEnv)) delete childEnv[key];
 		const extensions = childExtensionRequest(deps.env, deps.childExtensionPaths);
 		if (profile.tier && !parseChildPackageInjection(deps.env)) {
 			const fastPath = fileURLToPath(new URL("./gentle-fast.ts", import.meta.url));
 			if (existsSync(fastPath)) extensions.extensionPaths = [...new Set([...(extensions.extensionPaths ?? []), fastPath])];
 		}
+		const activeMcpTools = typeof pi.getAllTools === "function"
+			? pi.getAllTools().map((tool) => tool.name).filter((name) => name.startsWith("mcp__"))
+			: undefined;
 		const request: TaskRequest = {
 			agent,
 			prompt,
@@ -2815,6 +2835,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			mode,
 			cwd: target ?? parentWorktreeRoot,
 			parentSessionId,
+			...(activeMcpTools && activeMcpTools.length > 0 ? { mcpTools: activeMcpTools } : {}),
 			...(admittedModel === undefined ? {} : { beforeSpawn: () => {
 				if (!current()) throw new Error("Writer session changed before spawn.");
 				registry.validate(originalCwd);
@@ -2832,8 +2853,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			thinking: profile.thinking,
 			...(() => {
 				// The chain of the profile this launch resolved, else the active profile's.
-				const name = sessionProfile.kind === "explicit" ? sessionProfile.name : sessionProfile.profile?.name;
-				const fallbacks = profileFallbackChain(profileConfigHome, name, agent.name);
+				const fallbacks = profileFallbackChain(profileConfigHome, sessionProfileName, agent.name);
 				return fallbacks.length ? { fallbacks } : {};
 			})(),
 			sessionDir,

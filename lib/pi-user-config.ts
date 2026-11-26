@@ -1,7 +1,8 @@
 // Pi's own user configuration files that Desktop clients edit through config
 // stores instead of the file endpoints: the custom models file
-// `<agentHome>/models.json` and the MCP servers files `<agentHome>/mcp.json` and
-// `<cwd>/.pi/mcp.json` (read by Pi only in a trusted project).
+// `<agentHome>/models.json` (`custom_models`) and the MCP servers files
+// `<agentHome>/mcp.json` and `<cwd>/.pi/mcp.json` (`mcp`; the project one is
+// read by Pi only in a trusted project, paths from `mcp-config.ts`).
 //
 // Validation is Pi's own: models documents are checked against the JSON schema
 // Pi publishes with its package (`schemas/models.schema.json`, generated from the
@@ -16,7 +17,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { CONFIG_DIR_NAME, getPackageDir } from "@earendil-works/pi-coding-agent";
+import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { Compile } from "typebox/compile";
 import { writeJsonFileAtomicallySync } from "./agent-profiles.ts";
@@ -214,10 +215,6 @@ export function restoreCustomModels(document: unknown, current: JsonRecord | und
 
 export type McpLayer = "global" | "project";
 
-export function mcpConfigPaths(agentHome: string, cwd: string): Record<McpLayer, string> {
-	return { global: join(agentHome, "mcp.json"), project: join(cwd, CONFIG_DIR_NAME, "mcp.json") };
-}
-
 type McpServerValidator = (name: string, raw: unknown) => unknown;
 
 let mcpValidator: McpServerValidator | null | undefined;
@@ -256,16 +253,24 @@ export function readMcpLayer(path: string): PiConfigFileRead {
 	return { status: "valid", document: parsed };
 }
 
+/** A server URL carrying userinfo or a query string may hold a credential, so it crosses only as the marker. */
+function urlMayHoldSecret(url: string): boolean {
+	if (!URL.canParse(url)) return false;
+	const parsed = new URL(url);
+	return parsed.username !== "" || parsed.password !== "" || parsed.search !== "";
+}
+
 function redactMcpServer(server: unknown): unknown {
 	if (!isJsonRecord(server)) return server;
 	return mapRecord(server, (key, value) => {
 		if (key === "env" || key === "headers") return redactStringMap(value);
+		if (key === "url" && typeof value === "string" && urlMayHoldSecret(value)) return SECRET_MARKER;
 		if (key === "oauth" && isJsonRecord(value)) return mapRecord(value, (field, entry) => (field === "clientSecret" && typeof entry === "string" ? SECRET_MARKER : entry));
 		return value;
 	});
 }
 
-/** The document a client sees: `env` and `headers` values and `oauth.clientSecret` become the marker. */
+/** The document a client sees: `env` and `headers` values, `oauth.clientSecret`, and a URL with userinfo or a query become the marker. */
 export function redactMcpDocument(document: JsonRecord): JsonRecord {
 	return mapRecord(document, (key, value) => (key === "mcpServers" && isJsonRecord(value) ? mapRecord(value, (_name, server) => redactMcpServer(server)) : value));
 }
@@ -274,6 +279,7 @@ function restoreMcpServer(server: unknown, current: unknown, where: string): unk
 	if (!isJsonRecord(server)) return server;
 	return mapRecord(server, (key, value) => {
 		if (key === "env" || key === "headers") return restoreStringMap(value, own(current, key), `${where}.${key}`);
+		if (key === "url") return restoreSecret(value, own(current, key), `${where}.url`);
 		if (key === "oauth" && isJsonRecord(value)) {
 			return mapRecord(value, (field, entry) => field === "clientSecret" ? restoreSecret(entry, own(own(current, "oauth"), "clientSecret"), `${where}.oauth.clientSecret`) : entry);
 		}

@@ -57,7 +57,7 @@ function tempRoutingMirror(text: string, entrySha256 = createHash("sha256").upda
 	return root;
 }
 
-test("the rendered primary-session prompt is byte-identical to the golden captured from the base", () => {
+test("the rendered primary-session prompt is byte-identical to its golden", () => {
 	const rendered = renderPrimaryPrompt();
 	if (process.env.UPDATE_PRIMARY_SESSION_PROMPT_GOLDEN === "1") writeFileSync(GOLDEN_PATH, rendered, "utf8");
 	assert.equal(rendered, readFileSync(GOLDEN_PATH, "utf8"));
@@ -75,15 +75,17 @@ test("the ODD steps, phase reporting, and resume lines come from the mirrored ro
 
 test("S3: the mirrored routing Close owns the authorized-work boundary without a generic terminal license", () => {
 	const routing = mirroredRoutingText();
+	const close = routing.split("\n").find((line) => line.startsWith("7. **Close.**"));
+	assert.ok(close, "mirrored routing must carry Close");
 	for (const clause of [
-		"Authorized work continues: runnable in-scope steps run, a pending child is a wait event whose completion resumes the turn without asking the human",
-		"only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work",
-		"A tracked task ends the turn pending only while it waits on already-launched work, for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to, or for a genuine human decision still outstanding",
-		"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step",
-		"while a required authorized check the existing budget still allows keeps running",
+		"Run authorized in-scope steps. Work through failures with a permitted route. A pending child is a wait: completion resumes the turn without asking.",
+		"Only a real human decision, explicit user stop, denial, missing consent, exhausted limit, or failure without a permitted route stops only affected work.",
+		"A tracked task ends the turn pending only for launched work still running, a real human decision, denial, missing consent, explicit stop, or exhausted limit.",
+		"Report failures without a permitted route as incomplete. Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
+		"Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget.",
 		"Never turn a report into a blind self-reprompt loop.",
 		"Hedged wording is not a stop.",
-	]) assert.ok(routing.includes(clause), `mirrored routing Close is missing: ${clause}`);
+	]) assert.ok(close.includes(clause), `mirrored routing Close is missing: ${clause}`);
 	assert.ok(!routing.includes("Needs your decision"), "the canonical Close must not license a generic terminal phrase");
 	assert.ok(!routing.includes("never more verification"), "the canonical Close must not license a broad verification stop");
 });

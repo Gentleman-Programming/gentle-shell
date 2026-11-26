@@ -715,13 +715,13 @@ test("regenerateRegistry carries a skill resolved from a non-default PI_CODING_A
 	const cwd = join(tmpdir(), `gentle-pi-agentdir-cwd-${Date.now()}`);
 	const isolatedHome = join(tmpdir(), `gentle-pi-agentdir-home-${Date.now()}`);
 	const agentDir = join(tmpdir(), `gentle-pi-agentdir-root-${Date.now()}`);
-	const skillPath = join(agentDir, "skills", "codegraph", "SKILL.md");
+	const skillPath = join(agentDir, "skills", "external-tool", "SKILL.md");
 	mkdirSync(dirname(skillPath), { recursive: true });
-	writeFileSync(skillPath, "---\nname: codegraph\ndescription: Trigger: agent-dir skill.\n---\n");
+	writeFileSync(skillPath, "---\nname: external-tool\ndescription: Trigger: agent-dir skill.\n---\n");
 
 	const resolved: ResolvedSkill[] = [
 		{
-			name: "codegraph",
+			name: "external-tool",
 			description: "Trigger: agent-dir skill.",
 			filePath: skillPath,
 			sourceInfo: { scope: "user" },

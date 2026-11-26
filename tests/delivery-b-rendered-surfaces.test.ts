@@ -23,7 +23,7 @@ test("S6/S8: no rendered prompt, lazy module, or generic agent licenses the reti
 		assert.ok(!text.includes("Key Learnings"));
 	}
 	const verification = readFileSync(join(ROOT, "assets", "orchestrator-verification.md"), "utf8");
-	assert.ok(verification.includes("Worker, setup, recheck, native and user budgets stay separate; changed state earns a fresh check, not a reset."));
+	assert.ok(verification.includes("Worker progress is separate from explicit setup, recheck, native and user limits; changed state earns a fresh check, not a reset."));
 });
 
 test("S9: the provider-defect stub stays safe when the report skill is unavailable", () => {

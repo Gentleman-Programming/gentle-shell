@@ -90,20 +90,20 @@ test("P6 (X9): full delegation reaches tracking and verification, not the organi
 	assert.ok(prompt.includes("tracked work: `orchestrator-tracking.md`"));
 	assert.ok(prompt.includes("verification, handoffs, verifier setup failure: `orchestrator-verification.md`"));
 	assert.ok(prompt.includes(PARALLEL_LAUNCH_RULE), "the parallel-launch sentence");
-	assert.ok(prompt.includes("In-limit fixes continue the worker (`subagent_continue`), never a new worker per fix."));
+	assert.ok(prompt.includes("Continue a progressing worker (`subagent_continue`), never a new worker per fix."));
 });
 
 // cost-speed P6b: "in one message with no other tool call" read as "each call in a message of its own" (F3: three
 // writers in three messages, no overlap, 887-1,092 s vs 393-478 s from one codemode script). Both routes are admitted
 // and overlap in full delegation (real Pi probes); the sequential tools are those declaring `executionMode: "sequential"`.
-const PARALLEL_LAUNCH_RULE = "Independent units with disjoint surfaces launch together: all their `subagent_run` calls in the same assistant message or one `codemode` script, never one launch per message nor beside a sequential `todo`, `ask_user_*`, `codegraph` or `gentle_review*` (it serializes them); units needing the same file run one at a time.";
+const PARALLEL_LAUNCH_RULE = "Independent units with disjoint surfaces launch together: all their `subagent_run` calls in the same assistant message or one `codemode` script, never one launch per message nor beside a sequential `todo`, `ask_user_*` or `gentle_review*` (it serializes them); units needing the same file run one at a time.";
 
 test("P6b: full delegation launches independent units in the same assistant message or one codemode script, never one per message", () => {
 	const prompt = render("full-delegation");
 	assert.ok(prompt.includes("in the same assistant message"), "same assistant message");
 	assert.ok(prompt.includes("or one `codemode` script"), "codemode route");
 	assert.ok(prompt.includes("never one launch per message"), "never one launch per message");
-	for (const tool of ["`todo`", "`ask_user_*`", "`codegraph`", "`gentle_review*`"]) assert.ok(prompt.includes(tool), `sequential tool ${tool}`);
+	for (const tool of ["`todo`", "`ask_user_*`", "`gentle_review*`"]) assert.ok(prompt.includes(tool), `sequential tool ${tool}`);
 	assert.ok(!prompt.includes("in one message with no other tool call"), "the ambiguous clause is gone");
 	assert.ok(!prompt.includes("as direct `subagent_run` calls"), "codemode is no longer excluded");
 });
@@ -142,19 +142,29 @@ test("S2: the projected ODD steps keep every unchanged step and the shared tail 
 	}
 });
 
+test("turn-end-coherence S8: both modes gate Close on runnable work before giving the report format", () => {
+	for (const mode of ["organic", "full-delegation"] as const) {
+		const close = render(mode).split("\n").find((line) => line.startsWith("7. **Close.**"));
+		assert.ok(close?.startsWith("7. **Close.** Close only when no runnable authorized step remains. Then report the verified outcome, every failed, skipped, or pending check, and the next step."),
+			`[${mode}] Close must put the runnable-work condition before the report format`);
+	}
+});
+
 test("S3: both modes keep the canonical authorized-work boundary and a legitimate pending child", () => {
 	const canonical = [
-		"Authorized work continues: runnable in-scope steps run, a pending child is a wait event whose completion resumes the turn without asking the human",
-		"only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work",
-		"A tracked task ends the turn pending only while it waits on already-launched work, for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to, or for a genuine human decision still outstanding",
-		"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step",
-		"while a required authorized check the existing budget still allows keeps running",
+		"Run authorized in-scope steps. Work through failures with a permitted route. A pending child is a wait: completion resumes the turn without asking.",
+		"Only a real human decision, explicit user stop, denial, missing consent, exhausted limit, or failure without a permitted route stops only affected work.",
+		"A tracked task ends the turn pending only for launched work still running, a real human decision, denial, missing consent, explicit stop, or exhausted limit.",
+		"Report failures without a permitted route as incomplete. Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
+		"Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget.",
 		"Never turn a report into a blind self-reprompt loop.",
 		"Hedged wording is not a stop.",
 	];
 	for (const mode of ["organic", "full-delegation"] as const) {
 		const prompt = render(mode);
-		for (const clause of canonical) assert.ok(prompt.includes(clause), `[${mode}] canonical Close is missing: ${clause}`);
+		const close = prompt.split("\n").find((line) => line.startsWith("7. **Close.**"));
+		assert.ok(close, `[${mode}] canonical Close is missing`);
+		for (const clause of canonical) assert.ok(close.includes(clause), `[${mode}] canonical Close is missing: ${clause}`);
 		assert.ok(prompt.includes("An explicit user stop applies only to the work it names."), `[${mode}] explicit-stop coverage`);
 		assert.ok(!prompt.includes("Needs your decision"), `[${mode}] no generic terminal phrase`);
 		assert.ok(!prompt.includes("never more verification"), `[${mode}] no broad verification stop`);

@@ -67,7 +67,10 @@ test("S3: setup failures do not trigger repair loops or automatic relaunch", () 
 		"A verifier's self-fix of its own setup error (one correction in the same verification) needs no decision; if it made none, relaunch once with the corrected command, unasked.",
 		"If setup still fails or lacks prerequisites, stop verifying: name the blocker and exact unrun checks as unverified",
 		"never repair helpers more or auto-relaunch for it",
-		"Setup/infrastructure failures aren't code findings; tooling defects keep the correction bound.",
+		"Setup/infrastructure failures aren't code findings.",
+		"does not reset the prior attempt or unrelated budgets",
+		"Auxiliary verifier tooling defects have a separate correction bound: one fix per failing check, a second only if it still fails after a real fix.",
+		"If still failing, report `status: partial` with command and output. Setup failure never resets it.",
 	], "parent setup");
 });
 
@@ -238,17 +241,26 @@ test("#3009: a failed extractor cannot run probes", () => {
 test("#3009: the prescribed tar copy skips a live Unix socket and keeps candidate input", { skip: process.platform === "win32" }, async (t) => {
 	const command = verify.match(SCRATCH_COPY)?.[1];
 	assert.ok(command);
-	const workspace = mkdtempSync(join(scratch, "socket-source-"));
-	mkdirSync(join(workspace, ".codegraph"));
-	writeFileSync(join(workspace, "intended-untracked.txt"), "candidate\n");
-	const socket = join(workspace, ".codegraph", "daemon.sock");
+	// Keep the socket under the OS pathname limit even with a nested TMPDIR.
+	const workspace = mkdtempSync(join(tmpdir(), "sock-"));
 	const server = createServer();
+	t.after(async () => {
+		try {
+			if (server.listening) {
+				await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+			}
+		} finally {
+			rmSync(workspace, { recursive: true, force: true });
+		}
+	});
+	mkdirSync(join(workspace, ".cache"));
+	writeFileSync(join(workspace, "intended-untracked.txt"), "candidate\n");
+	const socket = join(workspace, ".cache", "socket");
 	await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socket, resolve); });
-	t.after(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
 	const s = mkdtempSync(join(scratch, "socket-copy-"));
 	const result = spawnSync("bash", ["-c", command], { cwd: workspace, env: { ...process.env, s }, encoding: "utf8" });
 	assert.equal(result.status, 0, result.stderr);
-	assert.equal(existsSync(join(s, "work", ".codegraph", "daemon.sock")), false);
+	assert.equal(existsSync(join(s, "work", ".cache", "socket")), false);
 	assert.equal(readFileSync(join(s, "work", "intended-untracked.txt"), "utf8"), "candidate\n");
 	assert.equal(existsSync(socket), true, "the live source socket is untouched");
 });

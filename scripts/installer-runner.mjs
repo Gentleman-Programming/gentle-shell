@@ -770,7 +770,14 @@ export async function runStandardInstall(request, adapters) {
 	const child = childEnvironment(env, platform, globalBin, { privateHome });
 	const pnpm = await pnpmInvocation(env, platform, adapters.fs).catch(() => null);
 	if (!pnpm) return blocked("pnpm-unavailable");
-	const runPnpm = (args, deadlineMs, environment = child, options = {}) => adapters.run(pnpm.command, [...pnpm.prefix, ...args], { env: environment, deadlineMs, ...options });
+	const runPnpm = (args, deadlineMs, environment = child, options = {}) => {
+		try {
+			if (globalBin?.pnpmHome) {
+				adapters.fs?.mkdirSync?.(globalBin.pnpmHome, { recursive: true });
+			}
+		} catch {}
+		return adapters.run(pnpm.command, [...pnpm.prefix, ...args], { env: environment, deadlineMs, cwd: globalBin.pnpmHome, ...options });
+	};
 	const home = adapters.home ?? (platform === "win32" ? env.USERPROFILE : env.HOME);
 	let setupDetail = null;
 	// pnpm prints its own errors, such as ERR_PNPM_UNKNOWN_SHELL or a failed postinstall, on stdout.

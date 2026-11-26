@@ -483,6 +483,8 @@ export default class GentleInspector extends View {
     const c = tokens();
     // The shown session, wherever it runs (snapshot.js targetSession, T11).
     const shown = this.source.target(this.last);
+    // A refusal or notice belongs to the session it came from.
+    if ((shown?.key ?? null) !== this.last) { this.error = null; this.notice = null; }
     if (shown) this.last = shown.key;
     this.address = shown?.terminal?.address ?? null;
     const f = shown?.feed ?? null;

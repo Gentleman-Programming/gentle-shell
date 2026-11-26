@@ -112,7 +112,7 @@ chosen in Herdr's Settings still wins, as for any layout.
 
 | Control | Does |
 |---|---|
-| Project row | Click selects the project; drag reorders; right-click opens Herdr's space menu. |
+| Project row | Click selects the project and every region follows it, even when a session in another terminal was shown; drag reorders; right-click opens Herdr's space menu. |
 | **+** next to Projects | Opens a new project (Herdr's `space.new`). |
 | Agent row | **Herdr** section: focuses that agent's pane. **TUI** section: shows that session in every region. |
 | Project row of a project no space holds | Shows its session that needs you, else its newest one. |
@@ -120,7 +120,7 @@ chosen in Herdr's Settings still wins, as for any layout.
 | **Add machine** (sidebar footer) | Herdr's own Add machine dialog (`mod.open machine-add`, as in Herdr's sidebar): lists your ssh-config hosts and says what each needs. |
 | Machine header in Projects | Shown once a machine other than this computer exists. **+** opens a new project on that machine; an unavailable machine opens Settings › Machines (its login guidance). |
 | Gear in Plan usage | Opens Herdr's settings. |
-| Tab | Click selects; drag reorders; double-click renames; right-click opens the tab menu; the wheel moves between tabs. A TUI session's tab: click shows it. |
+| Tab | Click selects and every region follows it; a tab with no Gentle Shell session shows no session (the chat says "No Gentle Shell session"), never the session shown before. Drag reorders; double-click renames; right-click opens the tab menu; the wheel moves between tabs. A TUI session's tab: click shows it. |
 | **+** after the tabs | Starts a new Gentle Shell session in the project's folder. |
 | Window buttons (Windows, Linux) | Minimise, maximise (restore when maximised) and close, at the end of the tab bar, as in Herdr's own layout. On macOS the traffic lights stay at the top left. |
 
@@ -182,6 +182,9 @@ from another session, until the next Expand all / Collapse all.
 | Paperclip | Pastes the clipboard (an image, or files on macOS) into the session's draft, as `Ctrl+V` does in the TUI. It goes with your next message. |
 | **Stop** | Replaces Send while the agent works and the draft is empty. Stops the turn, as `Esc Esc` does in the TUI. Typing brings Send back: the message is queued, as in the TUI. |
 
+Send, answers, **Apply** and the chat's other actions go to the session the window shows at that
+moment, also while the chat still reads the session shown before.
+
 ### Inspector
 
 | Tab | Controls |
@@ -192,6 +195,9 @@ from another session, until the next Expand all / Collapse all.
 | **Jobs** | **Cancel** stops a running job; **Output** (on a failed job) opens `/gentle:jobs` in the Terminal. |
 | **Review** | **Start review** and **Skip for this change** show the Terminal, where you answer the review consent. The **RDD** row turns receipt-driven review on or off **for every repository**, after a dialog that says so. |
 | **Session** | Read only: stats, cost by model, integrations. |
+
+A refusal or notice under the panel belongs to the session it came from: it is cleared when
+the window shows another session.
 
 ### Status bar
 

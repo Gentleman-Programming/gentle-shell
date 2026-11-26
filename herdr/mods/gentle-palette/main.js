@@ -4,7 +4,7 @@
 // 1px line-strong, radius 12, 6px padding, rows 7px 8px radius 6 with a hover fill), .eyebrow
 // group titles, kbd hints and the i-search / i-cmd symbols (l.305, l.314).
 //
-// What it lists, for the Gentle Shell session the window is about (snapshot.js targetTerminal):
+// What it lists, for the Gentle Shell session the window is about (snapshot.js targetSession):
 //   Needs you      every session (any agent) waiting for the person → focuses it
 //   Session        Stop the agent (while it works), then pi's session commands (new, resume,
 //                  fork, compact, name, export, …) from the session's snapshot `commands`

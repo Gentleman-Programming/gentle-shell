@@ -43,6 +43,7 @@ const REQUEST_MS = 10000; // a palette request older than this is ignored (share
 const NO_COMMANDS = "Open that session's terminal to run /commands.";
 const KEPT = 30; // sessions whose opened rows are remembered when another session shows
 const DOUBLE_MS = 300; // one ⌘O that reaches both the chat's key and the layout's key toggles once
+const READ_FAILED = ["Cannot read this conversation", "Its session file could not be read. The chat tries again when the session updates."];
 
 // The composer's "/" menu: open while the draft is one "/word" (no space or line break yet).
 // Names that start with the word come first, then names and descriptions that contain it.
@@ -98,6 +99,7 @@ export default class GentleChat extends View {
     // A session that publishes a feed without a Pi session file (another agent): there is no
     // transcript this view can read, and falling back to the folder would show a different one.
     this.foreign = false;
+    this.readFailed = false; // the last read of the session file failed (#3537): never shown as an empty conversation
     this.open = new Map(); // row id -> open, when flipped from its default (S11: per row, kept across reads)
     this.hunkAt = new Map(); // diff card id -> shown hunk
     this.kept = new Map(); // session file -> { open, hunkAt } of a session shown before
@@ -392,6 +394,7 @@ export default class GentleChat extends View {
     this.limit = PAGE;
     this.stick = true;
     this.error = null;
+    this.readFailed = false;
   }
 
   // Watches the session folder. With the snapshot's exact file, only a write to that file reads
@@ -438,7 +441,8 @@ export default class GentleChat extends View {
 
   // Reads only the complete lines added since `pos` (a long session: first its tail, readTail).
   // The file only grows; if it shrank, start over. A big file is read through `sh`, which gives
-  // its size and only the new bytes; a small one is read whole and sliced (session.js).
+  // its size and only the new bytes; a small one is read whole and sliced (session.js). A read
+  // from the start that fails is shown as a failure; `pos` stays 0, so the next refresh reads again.
   async load(cx) {
     if (this.loading) { this.again = true; return; }
     this.loading = true;
@@ -452,7 +456,8 @@ export default class GentleChat extends View {
           const first = !this.feed.items.length;
           const t = await readTail(file, TAIL * this.back, LINES * this.back, TAIL_MAX * this.back);
           if (file !== this.file) return;
-          if (!t) continue;
+          if (!t) { this.readFailed = true; cx.notify(); continue; }
+          this.readFailed = false;
           const feed = createFeed();
           ingest(feed, t.text);
           this.feed = feed;
@@ -468,8 +473,10 @@ export default class GentleChat extends View {
         if (Number.isFinite(size)) this.size = size;
         if (text === null) {
           if (this.pos > 0) { this.reset(file); this.again = true; }
+          else { this.readFailed = true; cx.notify(); }
           continue;
         }
+        if (this.readFailed) { this.readFailed = false; cx.notify(); }
         if (text) {
           ingest(this.feed, text);
           this.pos = end;
@@ -935,9 +942,9 @@ export default class GentleChat extends View {
       const busy = live && (live.status === "working" || live.status === "waiting");
       if (working || busy) rows.push(lane(stateLabel(p, "work", busy ? live.label : "Working")));
     }
-    // A foreign session can still have a status row; the explanation has to appear anyway.
-    if (this.foreign && rows.length > 0) {
-      const [title, about] = this.foreignText();
+    // A foreign session or a failed read can still have a status row; the explanation has to appear anyway.
+    if ((this.foreign || this.readFailed) && rows.length > 0) {
+      const [title, about] = this.foreign ? this.foreignText() : READ_FAILED;
       rows.push(lane(v_flex().id("foreign").flex_none().self_center().items_center().px(28).py(24).gap(4)
         .child(div().text_size(14).font_semibold().text_color(p.text).child(title))
         .child(div().text_size(12.5).text_color(p.muted).text_center().child(about))));
@@ -984,9 +991,9 @@ export default class GentleChat extends View {
     return ["No transcript for this session", `It publishes a desktop feed but no Pi session file. ${where}`];
   }
 
-  empty(p) {
+  emptyText() {
     const machine = machineOf(this.address);
-    const [title, about] = machine
+    return machine
       ? [`Runs on ${machine}`, `Herdr shows its state and its Terminal (⌘J). Its conversation and desktop feed stay on ${machine}: this window reads this computer's.`]
       : this.foreign
       ? this.foreignText()
@@ -994,7 +1001,13 @@ export default class GentleChat extends View {
       ? ["No Gentle Shell session", "Start one with + in the tab bar, or run gentle-shell in a terminal."]
       : !this.file
         ? ["Waiting for the first message", "This session has not written its conversation yet."]
+        : this.readFailed
+        ? READ_FAILED
         : ["No messages yet", this.address ? "Type below to start. ⌘J shows the Terminal." : "Type below to start."];
+  }
+
+  empty(p) {
+    const [title, about] = this.emptyText();
     return v_flex().id("log").flex_1().min_h(0).items_center().justify_center().gap(6).px(28).pb(40)
       .on_mouse_down("left", () => this.focus.focus())
       .child(icon("mark", 26).text_color(p.faint).mb(4))

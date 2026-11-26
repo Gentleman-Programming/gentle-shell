@@ -284,6 +284,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 					realCwd: session.realCwd,
 					pid: process.pid,
 					ppid: process.ppid,
+					platform: process.platform,
 					ancestors: session.ancestors,
 					mode: ctx.mode,
 					agentDir,

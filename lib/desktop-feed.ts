@@ -127,6 +127,8 @@ export interface DesktopFeedIdentity {
 	realCwd: string | null;
 	pid: number;
 	ppid: number;
+	/** `process.platform` of the publishing process, so readers pick the key that process understands (paste-image: Alt+V on win32). */
+	platform?: string;
 	/** Best-effort process ancestors above ppid (nearest first), for terminal matching. */
 	ancestors: number[];
 	mode: string;
@@ -354,6 +356,7 @@ export interface DesktopFeedInput {
 		realCwd: string | undefined;
 		pid: number;
 		ppid: number;
+		platform?: string;
 		ancestors: readonly number[];
 		mode: string;
 		agentDir: string;
@@ -638,6 +641,7 @@ export function buildDesktopFeedSnapshot(input: DesktopFeedInput): DesktopFeedSn
 			realCwd: optionalText(identity.realCwd, 4096),
 			pid: identity.pid,
 			ppid: identity.ppid,
+			...(typeof identity.platform === "string" && identity.platform ? { platform: clipText(identity.platform, 32) } : {}),
 			ancestors: identity.ancestors.filter((pid) => Number.isInteger(pid) && pid > 0).slice(0, DESKTOP_FEED_LIMITS.ancestors),
 			mode: clipText(identity.mode),
 			agentDir: resolve(identity.agentDir),

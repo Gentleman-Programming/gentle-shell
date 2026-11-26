@@ -12,7 +12,7 @@ export interface DestructiveCommandMatch {
 	 */
 	removalTargets?: readonly string[];
 }
-interface Token {
+export interface Token {
 	value: string;
 	raw: string;
 	operator: boolean;
@@ -33,7 +33,7 @@ function blankHeredocs(command: string): string {
 }
 
 /** Keep quoted arguments intact so harmless prose is never treated as a command. */
-function tokenize(command: string, blank = true): Token[] {
+export function tokenize(command: string, blank = true): Token[] {
 	const tokens: Token[] = [];
 	if (blank) command = blankHeredocs(command);
 	const pattern = /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
@@ -62,17 +62,19 @@ const WRAPPERS = ["env", "sudo", "command", "exec", "nohup", "timeout", "xargs"]
 const RESERVED_WORDS = new Set(["then", "else", "elif", "do", "{", "!", "if", "while", "until"]);
 
 /** Index of the executable token after reserved words, assignments and familiar wrappers. */
-function headCursor(segment: readonly Token[]): number {
+export function headCursor(segment: readonly Token[], onAssignment?: (token: Token) => void, onWrapper?: (name: string) => void): number {
 	let cursor = 0;
 	while (cursor < segment.length && segment[cursor].raw === segment[cursor].value && RESERVED_WORDS.has(segment[cursor].value)) cursor++;
 	while (cursor < segment.length) {
 		const value = segment[cursor].value;
 		if (/^[A-Za-z_][A-Za-z_0-9]*=/.test(value)) {
+			onAssignment?.(segment[cursor]);
 			cursor++;
 			continue;
 		}
 		const name = executable(value);
 		if (!WRAPPERS.includes(name)) break;
+		onWrapper?.(name);
 		cursor++;
 		while (cursor < segment.length && segment[cursor].value.startsWith("-")) {
 			const flag = segment[cursor++].value;

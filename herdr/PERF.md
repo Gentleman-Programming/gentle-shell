@@ -54,7 +54,8 @@ Measured by turning things off one at a time:
 ## What changed
 
 - **One reader** (`snapshot.js`, byte-identical in every mod): only the status bar's FeedSource
-  (`gentle-status`, always mounted) watches the snapshot folders, reads them and runs `ps`; it
+  (`gentle-status`, always mounted) watches the snapshot folders, reads them and runs `ps`
+  (`tasklist` where `ps` cannot start or does not answer); it
   publishes `gentle-shell.feeds` (`{ digest, at, feeds }`) and then `gentle-shell.feeds.digest`
   in shared state only when the digest (each live session's agent dir, id and `updatedAt`)
   changes. Setting shared state re-renders every mod, so the others have no timer, watch or `ps`:

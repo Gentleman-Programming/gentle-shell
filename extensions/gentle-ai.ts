@@ -7642,6 +7642,8 @@ function isSessionOwnStart(event: { reason: string }, manager: ExtensionContext[
 	if (event.reason !== "startup" && event.reason !== "new") return false;
 	const seen = new Set<string>();
 	for (const entry of manager.getEntries()) {
+		// Pi can record the CLI session name before emitting session_start.
+		if (entry.type === "session_info") continue;
 		if ((entry.type !== "model_change" && entry.type !== "thinking_level_change") || seen.has(entry.type)) return false;
 		seen.add(entry.type);
 	}

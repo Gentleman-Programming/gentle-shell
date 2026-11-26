@@ -56,6 +56,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  agents?: boolean;
  routing?: Record<string, AgentRoutingEntry>;
  headless?: boolean;
+ name?: string;
 }) {
  const root = mkdtempSync(join(tmpdir(), "u3-public-"));
  const config = join(root, "config"),
@@ -320,6 +321,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  const manager = memory
   ? SessionManager.inMemory(root)
   : SessionManager.create(root, join(root, "sessions"));
+ if (startup?.name) manager.appendSessionInfo(startup.name);
  if (flushed)
   manager.appendMessage({ role: "user", content: "fixture", timestamp: 1 });
  const first = await make(manager, {
@@ -822,8 +824,17 @@ for (const reason of ["new", "resume", "fork"] as const)
   f.settingsUnchanged();
  });
 
+test("#3417 a fresh named session applies and announces its worktree profile", async (t) => {
+ const f = await fixture(t, false, false, "team", { env: {}, layer: "repo", name: "test" });
+ assert.deepEqual({
+  model: f.runtime.session.model?.id,
+  thinking: f.runtime.session.thinkingLevel,
+  announced: f.notices.some((n) => n.text.includes('profile "live"') && n.text.includes("This session now runs on openai/gpt-5.2 · high.")),
+ }, { model: "gpt-5.2", thinking: "high", announced: true });
+});
+
 test("A3 an existing conversation does not switch at process startup", async (t) => {
- const f = await fixture(t, false, true, "live", { env: {} });
+ const f = await fixture(t, false, true, "live", { env: {}, name: "test" });
  assert.equal(f.runtime.session.model?.id, "gpt-4o");
  assert.equal(f.authCalls(), 0);
  assert.equal(f.family().length, 0, "A3 S3: a session from before A2 writes nothing");

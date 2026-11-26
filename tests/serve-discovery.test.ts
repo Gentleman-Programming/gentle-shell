@@ -3,10 +3,10 @@ import { createSocket, type Socket } from "node:dgram";
 import { mkdtempSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { DISCOVERY_MAX_DATAGRAM, DiscoveryRateLimiter, isDiscoveryQuery, startDiscoveryResponder } from "../lib/serve-discovery.ts";
 import { startServeServer } from "../lib/serve-server.ts";
+import { test } from "./serve-test-client.ts";
 
 const QUERY = Buffer.from(JSON.stringify({ t: "gentle-shell/discover", v: 1 }));
 

@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
-import test, { after, before } from "node:test";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { searchScore } from "../lib/serve-files.ts";
 import { startServeServer, type ServeServer } from "../lib/serve-server.ts";
-import { call, pairDevice, stream } from "./serve-test-client.ts";
+import { after, before, call, pairDevice, stream, test } from "./serve-test-client.ts";
 
 const ADMIN = "gsa_test-admin-token";
 const savedHome = process.env.HOME;

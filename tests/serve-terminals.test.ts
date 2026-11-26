@@ -3,12 +3,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test, { after, before } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { startServeServer, type ServeServer, type ServeServerOptions } from "../lib/serve-server.ts";
 import { HostConnection, termHostAsset, termHostTransport, type TermHostEndpoint } from "../lib/serve-terminals.ts";
-import { call, pairDevice, stream } from "./serve-test-client.ts";
+import { after, before, call, pairDevice, stream, test } from "./serve-test-client.ts";
 
 const FAKE_HOST = fileURLToPath(new URL("./fixtures/serve-fake-term-host.mjs", import.meta.url));
 const ADMIN = "gsa_test-admin-token";
@@ -18,6 +17,8 @@ const serveDir = join(root, "serve");
 const project = join(root, "project");
 // Echoes its input back, so a test sees a round trip through the terminal.
 const ECHO = [process.execPath, "-e", "process.stdout.write('ready\\n'); process.stdin.on('data', (d) => process.stdout.write('echo:' + d))"];
+// Input sent before `ready` is out may come back in one chunk with it: tests wait for it (live or in the snapshot) first.
+const READY = Buffer.from("ready\n").toString("base64");
 let server: ServeServer;
 let auth: ServeAuth;
 let phone: { id: string; token: string };
@@ -104,7 +105,7 @@ test("stream: attached first, then output; input round-trips; resize is announce
 	assert.equal(live.status, 200);
 	await live.waitFor("event: attached");
 	assert.ok(live.text.indexOf("event: attached") < Math.max(0, live.text.indexOf("event: output")) || !live.text.includes("event: output"));
-	await live.waitFor(/event: output|"snapshot"/);
+	await live.waitFor(READY);
 	const input = await call(server.url, "POST", `/api/terminals/${id}/input`, { token: phone.token, body: { data: Buffer.from("hi\n").toString("base64") } });
 	assert.equal(input.status, 200, JSON.stringify(input.body));
 	await live.waitFor(/event: output\ndata: [^\n]*"data":"ZWNobzpoaQo="/);
@@ -275,7 +276,7 @@ test("the transport and the release asset follow the server's system", () => {
 	assert.equal(termHostAsset("freebsd", "x64"), null);
 });
 
-test("over TCP (Windows' transport): a port file with a token, the host reused across restarts and replaced once it died", async () => {
+test("over TCP (Windows' transport): a port file with a token, the host reused across restarts and replaced once it died", async (t) => {
 	const tcpRoot = realpathSync(mkdtempSync(join(dirname(root), "gst-")));
 	const tcpServe = join(tcpRoot, "serve");
 	const tcpAuth = new ServeAuth({ devicesFile: join(tcpServe, "devices.json"), adminToken: ADMIN });
@@ -283,49 +284,50 @@ test("over TCP (Windows' transport): a port file with a token, the host reused a
 	const portFile = join(tcpServe, "term", "term-host.json");
 	const written = () => JSON.parse(readFileSync(portFile, "utf8")) as { port: number; token: string; pid: number };
 	let tcpServer = await start();
-	try {
-		const device = await pairDevice(tcpServer.url, ADMIN, ["terminal"], "tcp");
-		const opened = await call(tcpServer.url, "POST", "/api/terminals", { token: device.token, body: { cwd: project, cols: 80, rows: 24, argv: ECHO } });
-		assert.equal(opened.status, 201, JSON.stringify(opened.body));
-		const id = opened.body.terminal.id;
-		assert.deepEqual(JSON.parse(readFileSync(join(tcpServe, "term", "argv.json"), "utf8")), ["--tcp", "--state-dir", join(tcpServe, "term")]);
-		assert.equal(existsSync(join(tcpServe, "term.sock")), false);
-		const first = written();
-		assert.equal(statSync(portFile).mode & 0o777, 0o600);
-		const refused = await HostConnection.open({ port: first.port, token: "not-the-token" }, 2000).then(() => undefined, (error: unknown) => error);
-		assert.equal((refused as { code?: string } | undefined)?.code, "unauthorized");
-
-		const live = await stream(tcpServer.url, `/api/terminals/${id}/stream`, device.token);
-		await live.waitFor("event: attached");
-		assert.equal((await call(tcpServer.url, "POST", `/api/terminals/${id}/input`, { token: device.token, body: { data: Buffer.from("hi\n").toString("base64") } })).status, 200);
-		await live.waitFor(/"data":"ZWNobzpoaQo="/);
-		live.close();
-		const status = (await call(tcpServer.url, "GET", "/api/term-host", { token: device.token })).body;
-		assert.equal(status.transport, "tcp");
-		assert.equal(status.running, true);
-		assert.equal(status.pid, first.pid);
-
-		// A restarted serve finds the same host through the port file.
-		await tcpServer.close();
-		tcpServer = await start();
-		assert.equal((await call(tcpServer.url, "GET", "/api/term-host", { token: device.token })).body.pid, first.pid);
-
-		// A host that died leaves its port file: nothing answers there, so serve starts another.
-		process.kill(first.pid, "SIGKILL");
-		// Another process's exit has no event to await here: poll until it's gone.
-		for (let i = 0; i < 100; i += 1) {
-			try { process.kill(first.pid, 0); } catch { break; }
-			await sleep(20);
-		}
-		assert.equal((await call(tcpServer.url, "GET", "/api/terminals", { token: device.token })).status, 200);
-		const second = written();
-		assert.notEqual(second.pid, first.pid);
-		assert.notEqual(second.token, first.token);
-		assert.equal((await call(tcpServer.url, "GET", "/api/term-host", { token: device.token })).body.pid, second.pid);
-	} finally {
+	// An after hook, not a finally: it also runs when the test times out, so its server cannot keep the run alive.
+	t.after(async () => {
 		await tcpServer.close();
 		const left = existsSync(portFile) ? written() : undefined;
 		if (left) await shutdownHost({ port: left.port, token: left.token });
 		rmSync(tcpRoot, { recursive: true, force: true });
+	});
+	const device = await pairDevice(tcpServer.url, ADMIN, ["terminal"], "tcp");
+	const opened = await call(tcpServer.url, "POST", "/api/terminals", { token: device.token, body: { cwd: project, cols: 80, rows: 24, argv: ECHO } });
+	assert.equal(opened.status, 201, JSON.stringify(opened.body));
+	const id = opened.body.terminal.id;
+	assert.deepEqual(JSON.parse(readFileSync(join(tcpServe, "term", "argv.json"), "utf8")), ["--tcp", "--state-dir", join(tcpServe, "term")]);
+	assert.equal(existsSync(join(tcpServe, "term.sock")), false);
+	const first = written();
+	assert.equal(statSync(portFile).mode & 0o777, 0o600);
+	const refused = await HostConnection.open({ port: first.port, token: "not-the-token" }, 2000).then(() => undefined, (error: unknown) => error);
+	assert.equal((refused as { code?: string } | undefined)?.code, "unauthorized");
+
+	const live = await stream(tcpServer.url, `/api/terminals/${id}/stream`, device.token);
+	await live.waitFor("event: attached");
+	await live.waitFor(READY);
+	assert.equal((await call(tcpServer.url, "POST", `/api/terminals/${id}/input`, { token: device.token, body: { data: Buffer.from("hi\n").toString("base64") } })).status, 200);
+	await live.waitFor(/"data":"ZWNobzpoaQo="/);
+	live.close();
+	const status = (await call(tcpServer.url, "GET", "/api/term-host", { token: device.token })).body;
+	assert.equal(status.transport, "tcp");
+	assert.equal(status.running, true);
+	assert.equal(status.pid, first.pid);
+
+	// A restarted serve finds the same host through the port file.
+	await tcpServer.close();
+	tcpServer = await start();
+	assert.equal((await call(tcpServer.url, "GET", "/api/term-host", { token: device.token })).body.pid, first.pid);
+
+	// A host that died leaves its port file: nothing answers there, so serve starts another.
+	process.kill(first.pid, "SIGKILL");
+	// Another process's exit has no event to await here: poll until it's gone.
+	for (let i = 0; i < 100; i += 1) {
+		try { process.kill(first.pid, 0); } catch { break; }
+		await sleep(20);
 	}
+	assert.equal((await call(tcpServer.url, "GET", "/api/terminals", { token: device.token })).status, 200);
+	const second = written();
+	assert.notEqual(second.pid, first.pid);
+	assert.notEqual(second.token, first.token);
+	assert.equal((await call(tcpServer.url, "GET", "/api/term-host", { token: device.token })).body.pid, second.pid);
 });

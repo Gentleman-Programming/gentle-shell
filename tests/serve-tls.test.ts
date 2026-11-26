@@ -6,9 +6,8 @@ import { connect as netConnect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer as createTlsServer } from "node:tls";
-import test, { after } from "node:test";
 import { ServeAuth } from "../lib/serve-auth.ts";
-import { callOver as overSocket } from "./serve-test-client.ts";
+import { after, callOver as overSocket, test } from "./serve-test-client.ts";
 import { discoveryReply } from "../lib/serve-discovery.ts";
 import { startServeServer, type ServeServer } from "../lib/serve-server.ts";
 import { certificateFingerprint, connectPinned, createSelfSignedCertificate, createServeListener, ipBytes, isLocalPeer, loadOrCreateServeTls, PAIR_PROOF, pairProof, pairProofKey,

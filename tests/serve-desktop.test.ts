@@ -7,11 +7,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test, { after } from "node:test";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { startServeServer, type ServeServer, type ServeServerOptions } from "../lib/serve-server.ts";
 import { keeperAlive, type KeeperRecord } from "../lib/serve-session-keeper.ts";
-import { call, endServeLeftovers, pairDevice, serveLeftovers, stream } from "./serve-test-client.ts";
+import { after, call, endServeLeftovers, pairDevice, remainingServeLeftovers, stream, test } from "./serve-test-client.ts";
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
 const ADMIN = "gsa_test-admin-token";
@@ -245,6 +244,6 @@ test("the control session survives a server restart and stays hidden", { timeout
 	assert.equal(controlOf(dir), undefined);
 });
 
-test("no session keeper or fake Pi outlives the tests above", () => {
-	assert.deepEqual(serveLeftovers(sessionDirs(), roots), []);
+test("no session keeper or fake Pi outlives the tests above", async () => {
+	assert.deepEqual(await remainingServeLeftovers(sessionDirs(), roots), []);
 });

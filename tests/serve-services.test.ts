@@ -3,10 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after, before } from "node:test";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { startServeServer, type ServeServer } from "../lib/serve-server.ts";
-import { call, pairDevice } from "./serve-test-client.ts";
+import { after, before, call, pairDevice, test } from "./serve-test-client.ts";
 
 const ADMIN = "gsa_test-admin-token";
 let root: string;

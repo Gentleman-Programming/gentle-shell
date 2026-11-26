@@ -5,14 +5,13 @@ import { createServer as createHttpServer } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after } from "node:test";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { relaySecret } from "../lib/serve-cli.ts";
 import { connectThroughRelay, parseRelayUrl, RELAY_SIGNATURE_PREFIX, RelayError, startRelay, startRelayLink, type Relay } from "../lib/serve-relay.ts";
 import { parseRelayArgs, relayServerSecret, runRelayCommand } from "../lib/serve-relay-cli.ts";
 import { startServeServer, type ServeServer } from "../lib/serve-server.ts";
 import { connectPinned, createSelfSignedCertificate, loadOrCreateServeTls, peekFingerprint, verifyPairProof } from "../lib/serve-tls.ts";
-import { callOver } from "./serve-test-client.ts";
+import { after, callOver, test } from "./serve-test-client.ts";
 
 const ADMIN = "gsa_relay-test-admin";
 const SECRET = "relay-test-secret";

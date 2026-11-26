@@ -6,11 +6,10 @@ import { createServer, type Server } from "node:net";
 import { hostname, tmpdir, type NetworkInterfaceInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test, { after } from "node:test";
 import { liveServer, parseServeArgs, readServerFile, runServeCommand, serveFiles, type ServeCommandContext } from "../lib/serve-cli.ts";
 import { autostartCommand, autostartFile, autostartInstalled, encodeConnectionCode, firewallHint, installAutostart, launchAgentPlist, ownHostNames,
 	removeAutostart, SHARE_FORWARD_PORTS, shareAddresses, systemdUnit, type ShareSystem } from "../lib/serve-share.ts";
-import { endServeLeftovers, serveLeftovers } from "./serve-test-client.ts";
+import { after, endServeLeftovers, remainingServeLeftovers, test } from "./serve-test-client.ts";
 
 const binPath = fileURLToPath(new URL("../bin/gentle-shell.mjs", import.meta.url));
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
@@ -456,6 +455,6 @@ test("serve share --always is refused on Windows before anything starts", async 
 	assert.equal(liveServer(ctx.agentHome), undefined);
 });
 
-test("no server, session keeper, or fake Pi outlives the tests above", () => {
-	assert.deepEqual(serveLeftovers(sessionDirs(), roots), []);
+test("no server, session keeper, or fake Pi outlives the tests above", async () => {
+	assert.deepEqual(await remainingServeLeftovers(sessionDirs(), roots), []);
 });

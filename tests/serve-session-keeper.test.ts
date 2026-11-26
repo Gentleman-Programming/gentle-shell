@@ -3,12 +3,11 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test, { after } from "node:test";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { startServeServer, type ServeServer, type ServeServerOptions } from "../lib/serve-server.ts";
 import { KeeperLink, SERVE_SESSION_LIMITS } from "../lib/serve-session.ts";
 import { keeperAlive, keeperEndpoint, type KeeperRecord } from "../lib/serve-session-keeper.ts";
-import { call, endServeLeftovers, pairDevice, serveLeftovers, stream, type Stream } from "./serve-test-client.ts";
+import { after, call, endServeLeftovers, pairDevice, remainingServeLeftovers, stream, test, type Stream } from "./serve-test-client.ts";
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
 const ADMIN = "gsa_test-admin-token";
@@ -262,6 +261,6 @@ test("a keeper answers only a server holding its token", { timeout: 30_000 }, as
 	}
 });
 
-test("no session keeper or fake Pi outlives the tests above", () => {
-	assert.deepEqual(serveLeftovers(sessionDirs(), roots), []);
+test("no session keeper or fake Pi outlives the tests above", async () => {
+	assert.deepEqual(await remainingServeLeftovers(sessionDirs(), roots), []);
 });

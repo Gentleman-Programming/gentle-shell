@@ -3,11 +3,10 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test, { after, before } from "node:test";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { printLaunch } from "../lib/serve-cli.ts";
 import { startServeServer, type ServeServer } from "../lib/serve-server.ts";
-import { call, pairDevice } from "./serve-test-client.ts";
+import { after, before, call, pairDevice, test } from "./serve-test-client.ts";
 
 const FAKE_PRINT = fileURLToPath(new URL("./fixtures/serve-fake-print.mjs", import.meta.url));
 const ADMIN = "gsa_test-admin-token";

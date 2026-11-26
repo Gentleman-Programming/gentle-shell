@@ -3,13 +3,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test, { after } from "node:test";
 import { DESKTOP_RPC_WIDGET, JsonlDecoder, KeeperLink, ReplayRing, SERVE_SESSION_LIMITS, ServeSession, SessionLog, type ServeSessionLimits, type SessionLaunch, type StreamSink } from "../lib/serve-session.ts";
 import { keeperEndpoint, SessionKeeper } from "../lib/serve-session-keeper.ts";
+import { after, endServeLeftovers, remainingServeLeftovers, test } from "./serve-test-client.ts";
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
 const roots: string[] = [];
-after(() => roots.forEach((root) => rmSync(root, { recursive: true, force: true })));
+after(async () => {
+	// A failed test must not leave a fake Pi (started by a keeper running in this process) behind.
+	await endServeLeftovers([], []);
+	roots.forEach((root) => rmSync(root, { recursive: true, force: true }));
+});
 
 /** An SSE sink that records what it was sent; `backlog` simulates unsent bytes. */
 class FakeSink implements StreamSink {
@@ -385,4 +389,8 @@ test("a cancel or a settled result forgets a call; revoking the device fails its
 	await until(() => serverAnswer(watcher, "c3") !== undefined, "the revoked device's call fails");
 	assert.equal(serverAnswer(watcher, "c1"), undefined);
 	assert.equal(serverAnswer(watcher, "c2"), undefined);
+});
+
+test("no fake Pi outlives the tests above", async () => {
+	assert.deepEqual(await remainingServeLeftovers([], []), []);
 });

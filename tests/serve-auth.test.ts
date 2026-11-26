@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after } from "node:test";
 import { normalizePairingCode, parseScopes, readDevicesFile, sameSecret, SERVE_SCOPES, ServeAuth } from "../lib/serve-auth.ts";
+import { after, test } from "./serve-test-client.ts";
 
 const roots: string[] = [];
 after(() => roots.forEach((r) => rmSync(r, { recursive: true, force: true })));

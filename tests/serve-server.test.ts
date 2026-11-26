@@ -4,9 +4,9 @@ import { request as httpRequest, type IncomingMessage } from "node:http";
 import { homedir, hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test, { after, before } from "node:test";
 import { ServeAuth, type ServeScope } from "../lib/serve-auth.ts";
 import { allowedHosts, carriesHostToolRequest, desktopMethodScope, rpcCommandScope, startServeServer, type ServeServer } from "../lib/serve-server.ts";
+import { after, before, endServeLeftovers, remainingServeLeftovers, test } from "./serve-test-client.ts";
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
 const ADMIN = "gsa_test-admin-token";
@@ -35,8 +35,13 @@ before(async () => {
 		limits: { rpcTimeoutMs: 2000, maxSessions: 3 },
 	});
 });
+// Sessions end with the server: no serve folder, so their keepers live in a private temp folder.
+let closing: Promise<void> | undefined;
+const closeServer = () => (closing ??= server?.close({ endSessions: true }));
 after(async () => {
-	await server?.close();
+	await closeServer();
+	// A failed test must not leave a keeper (or its fake Pi) behind.
+	await endServeLeftovers([], roots);
 	roots.forEach((r) => rmSync(r, { recursive: true, force: true }));
 });
 
@@ -291,7 +296,11 @@ test("sessions need an existing absolute folder and a plain Pi session id; the c
 
 test("dialogs: a late subscriber gets the pending dialog, the first answer wins", async () => {
 	const id = await startSession();
+	// The RPC answer may reach the server ahead of the dialog Pi sends after it: an early stream sees when it is pending.
+	const early = await stream(`/api/sessions/${id}/events`, ADMIN);
 	await call("POST", `/api/sessions/${id}/rpc`, { token: ADMIN, body: { type: "fake_dialog" } });
+	await early.waitFor('"id":"dlg-1"');
+	early.close();
 	const late = await stream(`/api/sessions/${id}/events`, ADMIN);
 	await late.waitFor("event: dialog\n");
 	assert.match(late.text, /"id":"dlg-1"/);
@@ -484,4 +493,9 @@ test("several devices may provide one host tool: the session learns which are co
 	assert.equal((await call("POST", `/api/sessions/${id}/rpc`, { token: laptop.token, body: { type: "prompt", message: viaRpc } })).body.error.code, "use_desktop_endpoint");
 	laptopStream.close();
 	assert.equal((await call("DELETE", `/api/sessions/${id}`, { token: phone.token })).status, 200);
+});
+
+test("no session keeper or fake Pi outlives the tests above", async () => {
+	await closeServer();
+	assert.deepEqual(await remainingServeLeftovers([], roots), []);
 });

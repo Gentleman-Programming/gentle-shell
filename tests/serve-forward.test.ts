@@ -6,10 +6,10 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test, { after, before } from "node:test";
 import { ServeAuth, type ServeScope } from "../lib/serve-auth.ts";
 import { ForwardManager, splitTicket, stripForwardCookies } from "../lib/serve-forward.ts";
 import { allowedHosts, startServeServer, type ServeServer } from "../lib/serve-server.ts";
+import { after, before, endServeLeftovers, remainingServeLeftovers, test } from "./serve-test-client.ts";
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
 const ADMIN = "gsa_test-admin-token";
@@ -103,8 +103,13 @@ before(async () => {
 		},
 	});
 });
+// Sessions end with the server: no serve folder, so their keepers live in a private temp folder.
+let closing: Promise<void> | undefined;
+const closeServer = () => (closing ??= server?.close({ endSessions: true }));
 after(async () => {
-	await server?.close();
+	await closeServer();
+	// A failed test must not leave a keeper (or its fake Pi) behind.
+	await endServeLeftovers([], root ? [root] : []);
 	page?.close();
 	page?.closeAllConnections();
 	rmSync(root, { recursive: true, force: true });
@@ -463,4 +468,9 @@ test("forward manager: tickets expire, idle forwards close, connections are boun
 	} finally {
 		manager.closeAll();
 	}
+});
+
+test("no session keeper or fake Pi outlives the tests above", async () => {
+	await closeServer();
+	assert.deepEqual(await remainingServeLeftovers([], [root]), []);
 });

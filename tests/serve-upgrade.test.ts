@@ -4,13 +4,12 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test, { after } from "node:test";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { parseServeArgs, readServerFile, runServeCommand, SERVE_RESTART_EXIT, serveFiles, setupLaunch, supervisedServe, upgradeLaunch } from "../lib/serve-cli.ts";
 import { desktopMethodScope, startServeServer, type ServeServer, type ServeServerOptions } from "../lib/serve-server.ts";
 import { keeperAlive, type KeeperRecord } from "../lib/serve-session-keeper.ts";
 import { upgradeLines } from "../lib/serve-upgrade.ts";
-import { call, endServeLeftovers, pairDevice, serveLeftovers, stream } from "./serve-test-client.ts";
+import { after, call, endServeLeftovers, pairDevice, remainingServeLeftovers, stream, test } from "./serve-test-client.ts";
 
 // `POST /api/upgrade`: the server runs the upgrade command (a fake one here:
 // no npm, no network), streams its output to admin clients, and on success
@@ -356,6 +355,6 @@ test("under a service manager the upgraded server exits for the manager to resta
 	assert.equal(readServerFile(files.server), undefined, "no server left behind for the manager's one to find");
 });
 
-test("no server, session keeper, or fake Pi outlives the tests above", () => {
-	assert.deepEqual(serveLeftovers(sessionDirs(), roots), []);
+test("no server, session keeper, or fake Pi outlives the tests above", async () => {
+	assert.deepEqual(await remainingServeLeftovers(sessionDirs(), roots), []);
 });

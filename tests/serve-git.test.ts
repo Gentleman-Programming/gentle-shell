@@ -3,11 +3,10 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after, before } from "node:test";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { classifyGitArgs } from "../lib/serve-git.ts";
 import { startServeServer, type ServeServer } from "../lib/serve-server.ts";
-import { call, pairDevice } from "./serve-test-client.ts";
+import { after, before, call, pairDevice, test } from "./serve-test-client.ts";
 
 const ADMIN = "gsa_test-admin-token";
 const IDENTITY = { GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.com" };

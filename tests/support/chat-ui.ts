@@ -17,7 +17,7 @@ function stubSource(names: string[]): string {
 
 let loads = 0;
 
-export async function loadChatUi(t: TestContext, home: string | undefined) {
+export async function loadChatUi(t: TestContext) {
 	const dir = mkdtempSync(join(tmpdir(), "chat-ui-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	cpSync(MOD, dir, { recursive: true });
@@ -29,18 +29,11 @@ export async function loadChatUi(t: TestContext, home: string | undefined) {
 		}
 	}
 	const urls = new Map<string, string>();
-	for (const [name, names] of wanted) {
-		const stubbed = [...names].filter((n) => !(name === "herdr" && n === "home"));
-		urls.set(name, "data:text/javascript," + encodeURIComponent(stubSource(stubbed)
-			+ (name === "herdr" ? "\nexport const home = () => globalThis.__chatUiHome;" : "")));
-	}
+	for (const [name, names] of wanted) urls.set(name, "data:text/javascript," + encodeURIComponent(stubSource([...names])));
 	for (const file of files) {
 		let source = readFileSync(join(dir, file), "utf8");
 		for (const [name, url] of urls) source = source.replaceAll(`from "${name}"`, `from "${url}"`);
 		writeFileSync(join(dir, file), source);
 	}
-	const g = globalThis as Record<string, unknown>;
-	g.__chatUiHome = home;
-	t.after(() => { delete g.__chatUiHome; });
 	return import(`${pathToFileURL(join(dir, "ui.js")).href}?load=${++loads}`);
 }

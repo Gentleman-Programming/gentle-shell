@@ -220,7 +220,7 @@ export interface DesktopFeedSnapshot {
 		effort: string | null;
 		profile: { name: string | null; tier: "standard" | "fast" | null };
 	};
-	/** The active persona (lib/persona-config.ts), or null while the session has not resolved one. */
+	/** The active persona (lib/persona-config.ts), or null when it could not be read. */
 	persona: PersonaMode | null;
 	context: { percent: number | null; tokens: number | null; window: number | null } | null;
 	cost: { total: number; subscription: boolean };
@@ -650,7 +650,7 @@ export function buildDesktopFeedSnapshot(input: DesktopFeedInput): DesktopFeedSn
 			effort: optionalText(effort),
 			profile: { name: optionalText(input.profile.name), tier: input.profile.tier ?? null },
 		},
-		persona: input.persona === "neutral" || input.persona === "gentleman" ? input.persona : null,
+		persona: input.persona ?? null,
 		context: input.context ? { percent: finiteOrNull(input.context.percent), tokens: finiteOrNull(input.context.tokens), window: finiteOrNull(input.context.contextWindow) } : null,
 		cost: { total: finite(input.stats.cost), subscription: input.subscription },
 		usage: usageSection(input.usage, input.usageProviders),

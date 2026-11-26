@@ -82,7 +82,7 @@ with the session's name, its Herdr badge, its folder and the same **Chat \| Term
 (Terminal active; on a narrow card the switch keeps only its icons). Click **Chat** or press `⌘J` to
 go back. Nothing is copied: the chat and the TUI are two views of one session.
 
-Some facts are not published yet and show as empty: the persona ("No persona"), integrations
+Some facts are not published yet and show as empty: integrations
 ("Engram and MCP status are not published by this session yet"), and plan usage for providers
 that report none (the usage panel's own note, such as "usage arrives with the first response").
 

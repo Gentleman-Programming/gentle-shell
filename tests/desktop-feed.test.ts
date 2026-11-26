@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -151,6 +151,7 @@ function feedHarness(t: test.TestContext, options: Partial<DesktopFeedOptions> =
 		git: () => async () => ({ stdout: "", code: 128 }),
 		parentOf: async () => undefined,
 		profile: () => ({ name: "work (session)", tier: "fast" }),
+		persona: () => undefined,
 		realpath: (path) => `/private${path}`,
 		sweep: () => {},
 		store: (dir, sessionId) => {
@@ -233,6 +234,46 @@ test("S2: unknown sources stay null instead of guessed values", () => {
 	for (const key of ["context", "usage", "permission", "changes", "agents", "jobs", "review", "persona", "statuses", "integrations"] as const) assert.equal(snapshot[key], null, key);
 	assert.equal(snapshot.identity.herdr, null);
 	assert.equal(buildDesktopFeedSnapshot(fixtureInput({ activity: { working: true, blocked: 2, blockedLabel: "Choice awaiting input", streaming: false, phase: undefined } })).activity.state, "blocked");
+});
+
+test("should publish the persona the input carries", () => {
+	assert.equal(buildDesktopFeedSnapshot(fixtureInput({ persona: "neutral" })).persona, "neutral");
+	assert.equal(buildDesktopFeedSnapshot(fixtureInput({ persona: "gentleman" })).persona, "gentleman");
+	assert.equal(buildDesktopFeedSnapshot(fixtureInput()).persona, null);
+});
+
+test("should publish the persona the extension resolves for the session cwd", async (t) => {
+	const seen: string[] = [];
+	const h = feedHarness(t, { persona: (cwd) => { seen.push(cwd); return "neutral"; } });
+	await h.start();
+	assert.equal(h.read().persona, "neutral");
+	assert.ok(seen.includes("/w"));
+});
+
+test("should publish the persona resolved from the project file, then the global one, with the default resolver", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "desktop-feed-persona-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const configHome = join(root, "config");
+	const project = join(root, "project");
+	mkdirSync(configHome, { recursive: true });
+	mkdirSync(join(project, ".pi", "gentle-ai"), { recursive: true });
+	writeFileSync(join(configHome, "persona.json"), JSON.stringify({ mode: "neutral" }));
+	const env = { ...GENTLE_ENV, GENTLE_PI_CONFIG_HOME: configHome };
+
+	const fromGlobal = feedHarness(t, { persona: undefined }, env);
+	await fromGlobal.start(fakeCtx({ cwd: project }));
+	assert.equal(fromGlobal.read().persona, "neutral");
+
+	writeFileSync(join(project, ".pi", "gentle-ai", "persona.json"), JSON.stringify({ mode: "gentleman" }));
+	const fromProject = feedHarness(t, { persona: undefined }, env);
+	await fromProject.start(fakeCtx({ cwd: project }));
+	assert.equal(fromProject.read().persona, "gentleman");
+});
+
+test("should keep the persona null when resolving it throws", async (t) => {
+	const h = feedHarness(t, { persona: () => { throw new Error("unreadable"); } });
+	await h.start();
+	assert.equal(h.read().persona, null);
 });
 
 test("S3: the snapshot names its agent dir as an absolute path, bundled, Pi extension or custom home", () => {

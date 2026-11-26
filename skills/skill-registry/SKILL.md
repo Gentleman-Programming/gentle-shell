@@ -25,7 +25,7 @@ Use this skill after installing, removing, creating, moving, or renaming skills,
 | Situation | Action |
 | --- | --- |
 | Same skill exists globally and in project | Keep the project-level skill |
-| Pi-resolved skill and loose scan share a path | In the effective view use the active Pi record, or suppress the path when disabled; the shared disk index remains independent |
+| Pi-resolved skill and loose scan share a path, or the loose path is a symlink to it | In the effective view use the active Pi record, or suppress the path when disabled; the shared disk index remains independent |
 | Same skill exists in multiple global locations | Keep the first source in scan order |
 | No skills found | Write an empty registry so agents stop searching blindly |
 | Agent will delegate work | Select matching effective-view rows and pass their exact `SKILL.md` paths |

@@ -150,6 +150,7 @@ function feedHarness(t: test.TestContext, options: Partial<DesktopFeedOptions> =
 		timers: clock.timers,
 		git: () => async () => ({ stdout: "", code: 128 }),
 		parentOf: async () => undefined,
+		processStart: async () => undefined,
 		profile: () => ({ name: "work (session)", tier: "fast" }),
 		persona: () => undefined,
 		realpath: (path) => `/private${path}`,
@@ -268,6 +269,36 @@ test("should publish the persona resolved from the project file, then the global
 	const fromProject = feedHarness(t, { persona: undefined }, env);
 	await fromProject.start(fakeCtx({ cwd: project }));
 	assert.equal(fromProject.read().persona, "gentleman");
+});
+
+test("should publish the publisher start time only when the input carries a valid one", () => {
+	const base = fixtureInput().identity;
+	assert.equal(buildDesktopFeedSnapshot(fixtureInput({ identity: { ...base, startedAt: 1_700_000_000_000 } })).identity.startedAt, 1_700_000_000_000);
+	for (const bad of [undefined, 0, -5, Number.NaN]) {
+		assert.equal("startedAt" in buildDesktopFeedSnapshot(fixtureInput({ identity: { ...base, startedAt: bad } })).identity, false, String(bad));
+	}
+});
+
+test("should stamp the session feed with the time the agent process started", async (t) => {
+	const before = Date.now();
+	const h = feedHarness(t);
+	await h.start();
+	const startedAt = (h.read().identity as { startedAt?: number }).startedAt;
+	assert.ok(typeof startedAt === "number" && startedAt > 0 && startedAt <= before, `startedAt=${startedAt}`);
+});
+
+test("should publish the OS creation time as the start time once it is read", async (t) => {
+	const h = feedHarness(t, { processStart: async () => 1_700_000_123_456 });
+	await h.start();
+	const identity = h.read().identity as { startedAt?: number; startedAtSource?: string };
+	assert.equal(identity.startedAt, 1_700_000_123_456);
+	assert.equal(identity.startedAtSource, "os");
+});
+
+test("should not claim an OS start time when only the estimate is known", async (t) => {
+	const h = feedHarness(t);
+	await h.start();
+	assert.equal("startedAtSource" in (h.read().identity as object), false);
 });
 
 test("should keep the persona null when resolving it throws", async (t) => {

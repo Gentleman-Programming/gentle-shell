@@ -35,6 +35,27 @@ export function desktopFeedGitRunner(root: string, env: NodeJS.ProcessEnv = proc
 
 export type ParentOf = (pid: number) => Promise<number | undefined>;
 
+const WINDOWS_START_TIMEOUT_MS = 8000;
+
+export type ProcessStartRunner = (file: string, args: string[], options: { encoding: "utf8"; windowsHide: boolean; timeout: number }, callback: (error: Error | null, stdout: string) => void) => unknown;
+
+/** The OS creation time of `pid` (epoch ms, as the readers compute it); undefined off Windows or when unreadable. */
+export function readProcessStartMs(pid: number = process.pid, run: ProcessStartRunner = execFile, platform: NodeJS.Platform = process.platform): Promise<number | undefined> {
+	if (platform !== "win32" || !Number.isInteger(pid) || pid <= 0) return Promise.resolve(undefined);
+	const script = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { [int64](($p.CreationDate.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds) }`;
+	return new Promise((resolve) => {
+		try {
+			run("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: WINDOWS_START_TIMEOUT_MS }, (error, stdout) => {
+				const text = String(stdout).trim();
+				const ms = !error && /^\d+$/.test(text) ? Number(text) : Number.NaN;
+				resolve(Number.isFinite(ms) && ms > 0 ? ms : undefined);
+			});
+		} catch {
+			resolve(undefined);
+		}
+	});
+}
+
 /** `ps -o ppid=` for one pid; undefined when unknown (Windows, exited, no ps). */
 export const psParentOf: ParentOf = (pid) => new Promise((resolve) => {
 	if (process.platform === "win32") { resolve(undefined); return; }

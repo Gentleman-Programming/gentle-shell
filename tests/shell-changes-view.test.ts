@@ -160,17 +160,23 @@ test("changes rows lead with the file name and the diff pane shows the full path
 	assert.match(single[2]!, /│ \+x +│$/);
 });
 
-test("worktree accordion selects a clicked file without opening its editor", () => {
+test("worktree accordion toggles a clicked header and selects files without opening the editor", () => {
 	const opened: string[] = [];
 	const component = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0), file("b.ts", 1, 0)]) }], {
 		theme: plainTheme, rows: 8, loadDiff: async () => "+preview",
 		onOpen: (_root, target) => { opened.push(target.path); }, onClose() {}, onRefresh() {}, requestRender() {},
 	});
-	component.handleInput("\r");
 	component.render(80);
+	const header = mouseButton("click", "left", 3, 1, 8);
+	assert.deepEqual(component.handleMouse(header), { handled: true, render: true });
+	assert.match(component.render(80)[1], /▾ main/);
 	const result = component.handleMouse({ type: "click", button: "left", x: 3, y: 3, screenX: 3, screenY: 3, width: 80, height: 8, shift: false, alt: false, ctrl: false });
 	assert.deepEqual(result, { handled: true, render: true });
 	assert.match(component.render(80)[3], /▸   M b\.ts/);
+	assert.deepEqual(component.handleMouse(header), { handled: true, render: true });
+	const folded = component.render(80).join("\n");
+	assert.match(folded, /▸ ▸ main/);
+	assert.doesNotMatch(folded, /b\.ts/);
 	assert.deepEqual(opened, []);
 });
 

@@ -11,14 +11,15 @@ import test, { after } from "node:test";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { startServeServer, type ServeServer, type ServeServerOptions } from "../lib/serve-server.ts";
 import { keeperAlive, type KeeperRecord } from "../lib/serve-session-keeper.ts";
-import { call, pairDevice, stream } from "./serve-test-client.ts";
+import { call, endServeLeftovers, pairDevice, serveLeftovers, stream } from "./serve-test-client.ts";
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
 const ADMIN = "gsa_test-admin-token";
 const roots: string[] = [];
-const keepers = new Set<number>();
-after(() => {
-	for (const pid of keepers) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+const sessionDirs = () => roots.map((root) => join(root, "serve", "sessions"));
+after(async () => {
+	// A failed test must not leave a keeper (or its fake Pi) behind.
+	await endServeLeftovers(sessionDirs(), roots);
 	roots.forEach((root) => rmSync(root, { recursive: true, force: true }));
 });
 
@@ -50,7 +51,6 @@ function controlOf(dir: string): { id: string; record: KeeperRecord } | undefine
 	if (!existsSync(file)) return undefined;
 	const id = readFileSync(file, "utf8").trim();
 	const record = JSON.parse(readFileSync(join(dir, "sessions", `${id}.json`), "utf8")) as KeeperRecord;
-	keepers.add(record.keeperPid);
 	return { id, record };
 }
 
@@ -243,4 +243,8 @@ test("the control session survives a server restart and stays hidden", { timeout
 	}
 	await until(() => !keeperAlive(control.record.keeperPid), "the keeper to end with its session");
 	assert.equal(controlOf(dir), undefined);
+});
+
+test("no session keeper or fake Pi outlives the tests above", () => {
+	assert.deepEqual(serveLeftovers(sessionDirs(), roots), []);
 });

@@ -8,10 +8,15 @@ import test, { after } from "node:test";
 import { helpText, parseLauncherArgs } from "../lib/gentle-shell-launcher.ts";
 import { acquireServeLock, parseListen, parseServeArgs, readServerFile, serveFiles, sessionLaunch } from "../lib/serve-cli.ts";
 import { isLoopbackHost } from "../lib/serve-server.ts";
+import { endServeLeftovers, serveLeftovers } from "./serve-test-client.ts";
 
 const binPath = fileURLToPath(new URL("../bin/gentle-shell.mjs", import.meta.url));
 const roots: string[] = [];
-after(() => roots.forEach((r) => rmSync(r, { recursive: true, force: true })));
+after(async () => {
+	// A failed test must not leave a server daemon behind.
+	await endServeLeftovers([], roots);
+	roots.forEach((r) => rmSync(r, { recursive: true, force: true }));
+});
 function scratch(): string {
 	const r = mkdtempSync(join(tmpdir(), "gentle-serve-cli-"));
 	roots.push(r);
@@ -209,4 +214,8 @@ test("gentle-shell serve with a bad argument exits 2", () => {
 	const result = cli(scratch(), ["--port", "1"]);
 	assert.equal(result.status, 2);
 	assert.equal(result.stderr, `gentle-shell serve: unknown serve argument "--port"\nRun 'gentle-shell serve --help' for usage.\n`);
+});
+
+test("no server daemon outlives the tests above", () => {
+	assert.deepEqual(serveLeftovers([], roots), []);
 });

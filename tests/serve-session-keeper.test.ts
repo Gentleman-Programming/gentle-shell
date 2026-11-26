@@ -8,15 +8,15 @@ import { ServeAuth } from "../lib/serve-auth.ts";
 import { startServeServer, type ServeServer, type ServeServerOptions } from "../lib/serve-server.ts";
 import { KeeperLink, SERVE_SESSION_LIMITS } from "../lib/serve-session.ts";
 import { keeperAlive, keeperEndpoint, type KeeperRecord } from "../lib/serve-session-keeper.ts";
-import { call, pairDevice, stream, type Stream } from "./serve-test-client.ts";
+import { call, endServeLeftovers, pairDevice, serveLeftovers, stream, type Stream } from "./serve-test-client.ts";
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
 const ADMIN = "gsa_test-admin-token";
 const roots: string[] = [];
-const keepers = new Set<number>();
-after(() => {
+const sessionDirs = () => roots.map((root) => join(root, "serve", "sessions"));
+after(async () => {
 	// A failed test must not leave keepers (and their fake Pi) behind.
-	for (const pid of keepers) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+	await endServeLeftovers(sessionDirs(), roots);
 	roots.forEach((root) => rmSync(root, { recursive: true, force: true }));
 });
 
@@ -46,7 +46,6 @@ function record(serveDir: string, id: string): KeeperRecord {
 async function startSession(server: ServeServer, serveDir: string, project: string, token = ADMIN): Promise<string> {
 	const created = await call(server.url, "POST", "/api/sessions", { token, body: { cwd: project } });
 	assert.equal(created.status, 201, JSON.stringify(created.body));
-	keepers.add(record(serveDir, created.body.session.id).keeperPid);
 	return created.body.session.id;
 }
 
@@ -261,4 +260,8 @@ test("a keeper answers only a server holding its token", { timeout: 30_000 }, as
 	} finally {
 		await server.close({ endSessions: true });
 	}
+});
+
+test("no session keeper or fake Pi outlives the tests above", () => {
+	assert.deepEqual(serveLeftovers(sessionDirs(), roots), []);
 });

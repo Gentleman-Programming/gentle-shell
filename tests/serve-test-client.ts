@@ -1,11 +1,62 @@
 // A tiny HTTP client for the `gentle-shell serve` tests: JSON or raw calls,
-// SSE streams that collect their text, device pairing, and HTTPS over a pinned socket.
+// SSE streams that collect their text, device pairing, and HTTPS over a pinned
+// socket. Plus the teardown of tests that start sessions: the session keepers
+// (and their Pi) a test leaves running, and ending them.
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { Socket } from "node:net";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { ServeScope } from "../lib/serve-auth.ts";
+import { keeperAlive, readKeeperRecords } from "../lib/serve-session-keeper.ts";
+
+/** A process a test left running. */
+export interface Leftover { pid: number; command: string }
+
+interface ProcessRow extends Leftover { ppid: number }
+
+function processTable(): ProcessRow[] {
+	return execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" }).split("\n").flatMap((line) => {
+		const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+		return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), command: m[3]! }] : [];
+	});
+}
+
+/**
+ * What a test's serve folders left running: the live keepers their session
+ * records (`<serve dir>/sessions`) name and the Pi each one runs, plus every
+ * process whose command line names one of `roots` (a server daemon, or a fake Pi
+ * started with `--home <root>/agent`). A keeper is matched by its recorded pid
+ * and its entry point, so a reused pid is never taken for one. Windows has no
+ * `ps`: there only recorded keepers of running sessions that are alive count.
+ */
+export function serveLeftovers(sessionDirs: readonly string[], roots: readonly string[] = []): Leftover[] {
+	const records = sessionDirs.flatMap((dir) => readKeeperRecords(dir));
+	if (process.platform === "win32") {
+		return records.filter((record) => record.state === "running" && keeperAlive(record.keeperPid)).map((record) => ({ pid: record.keeperPid, command: `session keeper ${record.id}` }));
+	}
+	const recorded = new Set(records.map((record) => record.keeperPid));
+	const table = processTable();
+	const keepers = new Set(table.filter((row) => recorded.has(row.pid) && row.command.includes("serve-session-keeper-main")).map((row) => row.pid));
+	return table
+		.filter((row) => row.pid !== process.pid && (keepers.has(row.pid) || keepers.has(row.ppid) || roots.some((root) => row.command.includes(root))))
+		.map(({ pid, command }) => ({ pid, command }));
+}
+
+/**
+ * The teardown of tests that start sessions: kills what `serveLeftovers` finds
+ * and waits until it is gone, so no keeper outlives the run (a keeper with no
+ * server stops its session only after a day). Returns what it ended.
+ */
+export async function endServeLeftovers(sessionDirs: readonly string[], roots: readonly string[] = []): Promise<Leftover[]> {
+	const leftovers = serveLeftovers(sessionDirs, roots);
+	for (const { pid } of leftovers) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+	const deadline = Date.now() + 5000;
+	while (leftovers.some(({ pid }) => keeperAlive(pid)) && Date.now() < deadline) await sleep(20);
+	return leftovers;
+}
 
 export interface Reply { status: number; body: any; headers: IncomingMessage["headers"]; bytes: Buffer }
 

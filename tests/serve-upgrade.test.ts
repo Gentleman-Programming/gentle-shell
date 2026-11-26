@@ -10,7 +10,7 @@ import { parseServeArgs, readServerFile, runServeCommand, SERVE_RESTART_EXIT, se
 import { desktopMethodScope, startServeServer, type ServeServer, type ServeServerOptions } from "../lib/serve-server.ts";
 import { keeperAlive, type KeeperRecord } from "../lib/serve-session-keeper.ts";
 import { upgradeLines } from "../lib/serve-upgrade.ts";
-import { call, pairDevice, stream } from "./serve-test-client.ts";
+import { call, endServeLeftovers, pairDevice, serveLeftovers, stream } from "./serve-test-client.ts";
 
 // `POST /api/upgrade`: the server runs the upgrade command (a fake one here:
 // no npm, no network), streams its output to admin clients, and on success
@@ -20,9 +20,11 @@ const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.met
 const BIN = fileURLToPath(new URL("../bin/gentle-shell.mjs", import.meta.url));
 const ADMIN = "gsa_test-admin-token";
 const roots: string[] = [];
-const pids = new Set<number>();
-after(() => {
-	for (const pid of pids) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+// Sessions of in-process servers keep their records in `<root>/serve`, the CLI's in `<root>/agent/serve`.
+const sessionDirs = () => roots.flatMap((root) => [join(root, "serve", "sessions"), join(serveFiles(join(root, "agent")).dir, "sessions")]);
+after(async () => {
+	// A failed test must not leave a keeper, its fake Pi, or a restarted server behind.
+	await endServeLeftovers(sessionDirs(), roots);
 	roots.forEach((root) => rmSync(root, { recursive: true, force: true }));
 });
 
@@ -90,7 +92,6 @@ test("an admin upgrades the server: lines, finished, then a restart that keeps t
 		assert.equal(created.status, 201, JSON.stringify(created.body));
 		const sessionId = created.body.session.id;
 		const record = JSON.parse(readFileSync(join(root, "serve", "sessions", `${sessionId}.json`), "utf8")) as KeeperRecord;
-		pids.add(record.keeperPid);
 
 		// Only an admin token; a known channel only.
 		const device = await pairDevice(first.url, ADMIN, ["sessions:read", "sessions:operate", "terminal"]);
@@ -302,7 +303,6 @@ test("gentle-shell serve restarts itself after an upgrade: the next server takes
 	assert.equal(await running, 0, output);
 	assert.match(output, /restarted on the upgraded version as pid (\d+)/);
 	const pid = Number(/as pid (\d+)/.exec(output)![1]);
-	pids.add(pid);
 
 	let next = readServerFile(files.server);
 	while (next?.pid !== pid) {
@@ -354,4 +354,8 @@ test("under a service manager the upgraded server exits for the manager to resta
 	assert.equal(await running, SERVE_RESTART_EXIT);
 	assert.match(output, /the service manager starts the upgraded server/);
 	assert.equal(readServerFile(files.server), undefined, "no server left behind for the manager's one to find");
+});
+
+test("no server, session keeper, or fake Pi outlives the tests above", () => {
+	assert.deepEqual(serveLeftovers(sessionDirs(), roots), []);
 });

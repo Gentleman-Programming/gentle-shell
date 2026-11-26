@@ -10,11 +10,17 @@ import test, { after } from "node:test";
 import { liveServer, parseServeArgs, readServerFile, runServeCommand, serveFiles, type ServeCommandContext } from "../lib/serve-cli.ts";
 import { autostartCommand, autostartFile, autostartInstalled, encodeConnectionCode, firewallHint, installAutostart, launchAgentPlist, ownHostNames,
 	removeAutostart, SHARE_FORWARD_PORTS, shareAddresses, systemdUnit, type ShareSystem } from "../lib/serve-share.ts";
+import { endServeLeftovers, serveLeftovers } from "./serve-test-client.ts";
 
 const binPath = fileURLToPath(new URL("../bin/gentle-shell.mjs", import.meta.url));
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
 const roots: string[] = [];
-after(() => roots.forEach((r) => rmSync(r, { recursive: true, force: true })));
+const sessionDirs = () => roots.map((root) => join(serveFiles(join(root, "agent")).dir, "sessions"));
+after(async () => {
+	// A failed test must not leave a server, a session keeper, or its fake Pi behind.
+	await endServeLeftovers(sessionDirs(), roots);
+	roots.forEach((r) => rmSync(r, { recursive: true, force: true }));
+});
 function scratch(): string {
 	const r = realpathSync(mkdtempSync(join(tmpdir(), "gentle-serve-share-")));
 	roots.push(r);
@@ -374,6 +380,12 @@ test("serve share leaves a loopback server with running sessions alone and says 
 		const list = await (await fetch(`${server.url}/api/sessions`, { headers: { Authorization: `Bearer ${server.adminToken}` } })).json();
 		assert.deepEqual(list.sessions.map((s: { state: string }) => s.state), ["running"]);
 	} finally {
+		// The session ends with its server: what `gentle-shell serve stop --sessions` asks (this server runs in the test's own process, so no pid to wait on).
+		const server = liveServer(owner.agentHome);
+		if (server) {
+			const stopped = await fetch(`${server.url}/api/server/stop`, { method: "POST", headers: { Authorization: `Bearer ${server.adminToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ endSessions: true }) });
+			assert.equal(stopped.status, 202);
+		}
 		release.resolve();
 		assert.equal(await running, 0);
 	}
@@ -442,4 +454,8 @@ test("serve share --always is refused on Windows before anything starts", async 
 	assert.equal(await runServeCommand({ action: "share", port: 8787, always: true, json: false }, ctx), 1);
 	assert.equal(ctx.err.join(""), "gentle-shell serve share: --always (start at login) is not supported on Windows yet; run 'gentle-shell serve share' without it.\n");
 	assert.equal(liveServer(ctx.agentHome), undefined);
+});
+
+test("no server, session keeper, or fake Pi outlives the tests above", () => {
+	assert.deepEqual(serveLeftovers(sessionDirs(), roots), []);
 });

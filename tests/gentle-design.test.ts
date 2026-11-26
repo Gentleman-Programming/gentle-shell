@@ -258,6 +258,33 @@ test("when the browser cannot open, the URL is still printed with a manual hint"
 	assert.equal(notices[0].message, "Design canvas: http://127.0.0.1:4100/tok/d/login/\nThe browser could not be opened (spawn xdg-open ENOENT). Open the URL manually.");
 });
 
+test("GENTLE_DESIGN_OPEN_BROWSER=0 shows the canvas without opening the system browser and still prints the URL", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	const { pi, command } = fakePi();
+	const canvas = fakeCanvas();
+	gentleDesign(pi, { ...canvas, env: { GENTLE_DESIGN_OPEN_BROWSER: "0" } });
+	const { ctx, notices } = fakeContext(cwd);
+	await command().handler("open login", ctx);
+	assert.equal(canvas.starts.length, 1, "the canvas server still starts");
+	assert.deepEqual(canvas.opens, [], "the system browser is not opened");
+	assert.equal(notices.length, 1);
+	assert.equal(notices[0].level, "info");
+	assert.equal(notices[0].message, "Design canvas: http://127.0.0.1:4100/tok/d/login/\nThe system browser was not opened (GENTLE_DESIGN_OPEN_BROWSER=0).");
+});
+
+test("any GENTLE_DESIGN_OPEN_BROWSER value other than 0 keeps opening the system browser", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	const { pi, command } = fakePi();
+	const canvas = fakeCanvas();
+	gentleDesign(pi, { ...canvas, env: { GENTLE_DESIGN_OPEN_BROWSER: "1" } });
+	const { ctx, notices } = fakeContext(cwd);
+	await command().handler("open login", ctx);
+	assert.deepEqual(canvas.opens, ["http://127.0.0.1:4100/tok/d/login/"]);
+	assert.equal(notices[0].message, "Design canvas: http://127.0.0.1:4100/tok/d/login/");
+});
+
 test("an unknown or invalid slug warns with the available slugs and starts nothing", async () => {
 	const cwd = scratchCwd();
 	writeDesign(cwd, "pricing-page", "Pricing page", 2000);
@@ -1064,6 +1091,18 @@ test("gentle_design open starts the canvas once, returns its URL, and /gentle:de
 	await fake.command().handler("stop", ctx);
 	assert.equal(canvas.closes(), 1);
 	assert.equal(fake.sent.length, 0);
+});
+
+test("gentle_design open with GENTLE_DESIGN_OPEN_BROWSER=0 returns the URL with opened false and browserDisabled", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	const fake = fakePi();
+	const canvas = fakeCanvas();
+	gentleDesign(fake.pi, { ...canvas, env: { GENTLE_DESIGN_OPEN_BROWSER: "0" } });
+	const opened = await designTool(fake)({ action: "open", slug: "login" }, fakeContext(cwd).ctx);
+	assert.equal(toolText(opened), "Design canvas: http://127.0.0.1:4100/tok/d/login/\nThe system browser was not opened (GENTLE_DESIGN_OPEN_BROWSER=0).");
+	assert.deepEqual(opened.details, { url: "http://127.0.0.1:4100/tok/d/login/", opened: false, browserDisabled: true });
+	assert.deepEqual(canvas.opens, []);
 });
 
 test("gentle_design open refreshes a connected canvas page, and opens the browser once none is connected", async () => {

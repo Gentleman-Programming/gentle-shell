@@ -6,7 +6,7 @@ import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
 import gentleAgents, { type SessionTransportFactory } from "../extensions/gentle-agents.ts";
-import { createJobRegistry, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
+import { createJobRegistry, createOutputTail, MAX_TAIL_LINE_CHARS, TAIL_LINES, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
 import { createMonitorController, type MonitorController } from "../lib/background-monitor.ts";
 import { registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
 import {
@@ -20,10 +20,15 @@ import {
 	isDesktopJobsServiceShape,
 	JOB_NOT_FOUND,
 	JOBS_UNAVAILABLE,
+	DESKTOP_JOB_OUTPUT_MAX_CHARS,
 	parseCancelJobParams,
 	parseDesktopJobEntry,
+	parseDesktopJobOutput,
+	parseJobOutputParams,
 	parseListJobsParams,
+	plainJobOutput,
 	projectDesktopJob,
+	projectDesktopJobOutput,
 	selectDesktopJobs,
 	type DesktopJobEntry,
 	type DesktopJobsOwnerRead,
@@ -114,6 +119,12 @@ function makeOwnerService(fixture: RegistryFixture, sessionId = "session-a") {
 			fixture.monitors.cancel(job.id);
 			fixture.registry.stop(job.id);
 			return { kind: "ok", job: projectDesktopJob(job), changed: wasRunning };
+		},
+		output: (id: string) => {
+			if (disposed) return { kind: "not_found" };
+			const job = fixture.registry.get(id);
+			if (!job || job.ownerSessionId !== sessionId) return { kind: "not_found" };
+			return { kind: "ok", view: projectDesktopJobOutput(job) };
 		},
 		observe: (onChange) => {
 			observers.add(onChange);
@@ -592,11 +603,29 @@ test("the Desktop transport advertises the jobs methods and event", (t) => {
 		"get_design_canvas",
 		"list_jobs",
 		"cancel_job",
+		"get_job_output",
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",
+		"get_subagent_thread",
+		"list_sessions",
+		"switch_session",
+		"get_changes",
+		"get_change_diff",
+		"get_review_mode",
+		"set_review_mode",
+		"get_usage_stats",
+		"get_update_status",
+		"list_agent_definitions",
+		"get_status",
+		"get_background_subagents",
+		"set_background_subagents",
+		"get_profile_binding",
+		"clear_profile_binding",
+		"get_auth_status",
+		"reload_credentials",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
 });
 
 test("list_jobs answers jobs_unavailable through the transport without an owner extension", async (t) => {
@@ -623,6 +652,10 @@ interface RealOwnerHarness {
 	service: DesktopJobsService;
 	events: Array<{ event: string; data: Record<string, unknown> }>;
 	fireTimeout(ms?: number): void;
+	/** The host session id the harness context reports; changeable to model a session switch. */
+	session: { id: string };
+	/** Advance the owner clock. */
+	tick(ms: number): void;
 }
 
 function recordedSchedule() {
@@ -649,7 +682,7 @@ function recordedSchedule() {
  * the real owner service and subscribes a Desktop bridge. This is the same
  * production wiring the maintainer probe loads, driven in-process.
  */
-async function realOwnerHarness(t: test.TestContext): Promise<RealOwnerHarness> {
+async function realOwnerHarness(t: test.TestContext, session: { id: string } = { id: "session-a" }): Promise<RealOwnerHarness> {
 	const root = mkdtempSync(join(tmpdir(), "desktop-rpc-jobs-real-"));
 	t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }));
 	const home = join(root, "home");
@@ -695,7 +728,7 @@ async function realOwnerHarness(t: test.TestContext): Promise<RealOwnerHarness> 
 		hasUI: true,
 		mode: "tui",
 		sessionManager: {
-			getSessionId: () => "session-a",
+			getSessionId: () => session.id,
 			getCwd: () => cwd,
 			getEntries: () => [],
 			getBranch: () => [],
@@ -746,7 +779,7 @@ async function realOwnerHarness(t: test.TestContext): Promise<RealOwnerHarness> 
 	bridge.wire((event, data) => events.push({ event, data }));
 	await bridge.start();
 
-	return { pi, ctx, tools, fake, scheduled, service, events, fireTimeout: (ms = 1000) => scheduled.fire(ms), handlers, listeners };
+	return { pi, ctx, tools, fake, scheduled, service, events, fireTimeout: (ms = 1000) => scheduled.fire(ms), handlers, listeners, session, tick: (ms: number) => { clock += ms; } };
 }
 
 test("the real owner notifies a monitor self-timeout exactly once and suppresses duplicate lists", async (t) => {
@@ -793,4 +826,376 @@ test("a shut-down owner leaves the jobs service channel and never answers discov
 	let answered = 0;
 	harness.pi.events.emit(DESKTOP_JOBS_SERVICE_CHANNEL, { context: harness.ctx, respond: () => { answered += 1; } });
 	assert.equal(answered, 0, "a replaced runtime is never discovered through the old owner");
+});
+
+// ---- get_job_output: the bounded, owner-verified tail read ----
+
+function errorOf(outcome: unknown): unknown {
+	assert.equal((outcome as { ok: boolean }).ok, false, JSON.stringify(outcome));
+	return (outcome as { error: unknown }).error;
+}
+
+function outputData(outcome: unknown): { job: DesktopJobEntry; output: string; truncated: boolean } {
+	assert.equal((outcome as { ok: boolean }).ok, true, JSON.stringify(outcome));
+	return (outcome as { ok: true; data: { job: DesktopJobEntry; output: string; truncated: boolean } }).data;
+}
+
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+test("plainJobOutput strips terminal control sequences and keeps the visible text", () => {
+	assert.equal(plainJobOutput(["\u001b[1;32mPASS\u001b[0m tests/a.test.ts"]), "PASS tests/a.test.ts", "CSI colors are stripped");
+	assert.equal(plainJobOutput(["\u001b]0;window title\u0007build ok"]), "build ok", "BEL-terminated OSC is stripped");
+	assert.equal(plainJobOutput(["\u001b]8;;https://example.test\u001b\\link\u001b]8;;\u001b\\"]), "link", "ST-terminated OSC hyperlinks are stripped");
+	assert.equal(plainJobOutput(["\u001b]0;unterminated title"]), "", "an unterminated OSC never leaks its payload");
+	assert.equal(plainJobOutput(["\u001b(Bplain\u001b7"]), "plain", "two-character escapes are stripped");
+	assert.equal(plainJobOutput(["\u009b31mred"]), "red", "8-bit CSI is stripped");
+	assert.equal(plainJobOutput(["10%\r55%\r100%"]), "100%", "a carriage-return progress line shows its final state");
+	assert.equal(plainJobOutput(["done\r"]), "done", "a trailing carriage return keeps the last visible text");
+	assert.equal(plainJobOutput(["a\u0007b\u0008c\u0000d\u007fe\tf"]), "abcde\tf", "other control characters are removed, tabs kept");
+	assert.equal(plainJobOutput(["\udc00tail ✓ \u{1F680}", "end \ud83d"]), "tail ✓ \u{1F680}\nend ", "lone surrogates from a cut line are removed, whole characters kept");
+	assert.equal(plainJobOutput(["one", "two"]), "one\ntwo", "lines are joined with newlines");
+	assert.equal(plainJobOutput([]), "");
+});
+
+test("projectDesktopJobOutput carries only the job projection, the plain tail text, and truncated", () => {
+	const job: JobRecord = {
+		id: "job-1", kind: "command", label: "CI", command: "make ci SECRET=1", cwd: "/home/devel/secret-repo", ownerSessionId: "session-a",
+		outputPath: "/tmp/gentle-jobs/job-1.log", startedAt: 1000, status: "failed", endedAt: 2000, error: "spawn /bin/secret ENOENT",
+		tail: ["\u001b[31mFAIL\u001b[0m", "line 2"],
+	};
+	const view = projectDesktopJobOutput(job);
+	assert.deepEqual(view, { job: { id: "job-1", label: "CI", status: "failed", startedAt: 1000, endedAt: 2000 }, output: "FAIL\nline 2", truncated: false });
+	const serialized = JSON.stringify(view);
+	for (const secret of ["make ci", "secret-repo", "gentle-jobs", "ENOENT", "session-a"]) assert.equal(serialized.includes(secret), false, secret);
+	assert.equal(projectDesktopJobOutput({ ...job, tailTruncated: true }).truncated, true);
+});
+
+test("parseJobOutputParams accepts exactly { id }", () => {
+	assert.deepEqual(parseJobOutputParams({ id: "job-1" }), { id: "job-1" });
+	for (const params of [{}, { id: "" }, { id: 1 }, { id: "job-1", extra: true }, { job_id: "job-1" }, { id: "job-1", lines: 5 }]) {
+		assert.deepEqual(parseJobOutputParams(params), { error: INVALID_JOBS_PARAMS }, JSON.stringify(params));
+	}
+});
+
+test("parseDesktopJobOutput re-validates, bounds, and re-normalizes the owner answer", () => {
+	const job = { id: "j", label: "l", status: "running", startedAt: 1 };
+	assert.deepEqual(parseDesktopJobOutput({ job, output: "\u001b[1mok\u001b[0m", truncated: false, outputPath: "/secret" }), { job, output: "ok", truncated: false });
+	for (const bad of [null, { job, output: 1, truncated: false }, { job, output: "x" }, { job: { id: "" }, output: "x", truncated: false }, { output: "x", truncated: false }]) {
+		assert.equal(parseDesktopJobOutput(bad), undefined, JSON.stringify(bad));
+	}
+	// An oversized owner answer is cut to the documented bound and marked truncated.
+	const oversized = parseDesktopJobOutput({ job, output: Array.from({ length: TAIL_LINES + 5 }, (_, i) => `line ${i}`).join("\n"), truncated: false })!;
+	assert.equal(oversized.truncated, true);
+	assert.equal(oversized.output.split("\n").length, TAIL_LINES);
+	assert.equal(oversized.output.split("\n").at(-1), `line ${TAIL_LINES + 4}`);
+	const huge = parseDesktopJobOutput({ job, output: `\u{1F680}${"x".repeat(DESKTOP_JOB_OUTPUT_MAX_CHARS)}`, truncated: false })!;
+	assert.equal(huge.truncated, true);
+	assert.ok(huge.output.length <= DESKTOP_JOB_OUTPUT_MAX_CHARS);
+	assert.equal(LONE_SURROGATE.test(huge.output), false, "the bound never splits a character");
+});
+
+test("get_job_output answers the owned job's plain bounded tail and emits nothing", async () => {
+	const fixture = makeRegistry();
+	try {
+		const { service } = makeOwnerService(fixture);
+		const job = fixture.registry.start({ command: "make ci TOKEN=abc", cwd: "/repo/secret", ownerSessionId: "session-a", label: "CI" });
+		fixture.fake.runs[0]!.onData(Buffer.from("\u001b[32mstep 1 ok\u001b[0m\r\nprogress 10%\rprogress 100%\n"));
+		const { bridge, events } = makeBridge(service);
+		const outcome = await bridge.handle("get_job_output", { id: job.id });
+		assert.deepEqual(outputData(outcome), {
+			job: { id: "job-1", label: "CI", status: "running", startedAt: 1000 },
+			output: "step 1 ok\nprogress 100%",
+			truncated: false,
+		});
+		assert.equal("event" in (outcome as object), false, "a read carries no event");
+		assert.equal(events.length, 0, "a read emits nothing");
+		assert.equal(fixture.registry.get(job.id)!.status, "running", "a read never stops or changes the job");
+		const serialized = JSON.stringify(outcome);
+		for (const secret of ["make ci", "TOKEN", "/repo/secret", ".log", "session-a"]) assert.equal(serialized.includes(secret), false, secret);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test("get_job_output keeps the owner bounds and reports truncation", async () => {
+	const fixture = makeRegistry();
+	try {
+		const { service } = makeOwnerService(fixture);
+		const job = fixture.registry.start({ command: "noisy", cwd: "/", ownerSessionId: "session-a", label: "noisy" });
+		const { bridge } = makeBridge(service);
+		fixture.fake.runs[0]!.onData(Buffer.from("short\n"));
+		assert.equal(outputData(await bridge.handle("get_job_output", { id: job.id })).truncated, false, "a complete short tail is not truncated");
+
+		const lines = Array.from({ length: TAIL_LINES + 10 }, (_, i) => `line ${i}`);
+		fixture.fake.runs[0]!.onData(Buffer.from(`${lines.join("\n")}\n`));
+		const many = outputData(await bridge.handle("get_job_output", { id: job.id }));
+		assert.equal(many.truncated, true, "dropped earlier lines are reported");
+		assert.deepEqual(many.output.split("\n"), lines.slice(-TAIL_LINES), "only the owner's last TAIL_LINES lines cross");
+
+		// A single endless line keeps only its newest characters, whole code points only.
+		const job2 = fixture.registry.start({ command: "bar", cwd: "/", ownerSessionId: "session-a", label: "bar" });
+		// The odd trailing character makes the owner's fixed-length cut land inside a UTF-16 pair.
+		fixture.fake.runs[1]!.onData(Buffer.from(`${"\u{1F680}".repeat(MAX_TAIL_LINE_CHARS)}z\n`));
+		assert.equal(LONE_SURROGATE.test(fixture.registry.get(job2.id)!.tail[0]!), true, "the owner tail itself holds a half character");
+		const long = outputData(await bridge.handle("get_job_output", { id: job2.id }));
+		assert.equal(long.truncated, true, "a shortened line is reported");
+		assert.ok(long.output.length <= MAX_TAIL_LINE_CHARS + 1);
+		assert.equal(LONE_SURROGATE.test(long.output), false, "no half character crosses the wire");
+		assert.ok(long.output.startsWith("…\u{1F680}"));
+		assert.ok(long.output.endsWith("\u{1F680}z"));
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test("get_job_output answers not_found for unknown and foreign-session ids", async () => {
+	const fixture = makeRegistry();
+	try {
+		const { service } = makeOwnerService(fixture, "session-a");
+		fixture.registry.start({ command: "b", cwd: "/", ownerSessionId: "session-b", label: "theirs" });
+		fixture.fake.runs[0]!.onData(Buffer.from("their secret output\n"));
+		const { bridge, events } = makeBridge(service, "session-a");
+		const foreign = await bridge.handle("get_job_output", { id: "job-1" });
+		assert.equal(foreign.ok, false);
+		assert.deepEqual(foreign.error, JOB_NOT_FOUND);
+		assert.equal(JSON.stringify(foreign).includes("their secret"), false);
+		const unknown = await bridge.handle("get_job_output", { id: "job-99" });
+		assert.equal(unknown.ok, false);
+		assert.deepEqual(unknown.error, JOB_NOT_FOUND);
+		assert.equal(events.length, 0);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test("get_job_output rejects invalid params before any owner discovery", async () => {
+	let discoveries = 0;
+	const bridge = new DesktopJobsBridge({} as ExtensionAPI, { discover: async () => { discoveries += 1; return undefined; } });
+	bridge.attach({ sessionManager: { getSessionId: () => "session-a" } } as unknown as ExtensionContext);
+	for (const params of [{}, { id: "" }, { id: 1 }, { id: "job-1", extra: true }, { job_id: "job-1" }]) {
+		const bad = await bridge.handle("get_job_output", params);
+		assert.equal(bad.ok, false);
+		assert.deepEqual(bad.error, INVALID_JOBS_PARAMS);
+	}
+	assert.equal(discoveries, 0, "invalid params never reach discovery");
+});
+
+test("get_job_output answers jobs_unavailable for an absent, outdated, throwing, or malformed owner", async () => {
+	const absent = new DesktopJobsBridge({} as ExtensionAPI, { discover: async () => undefined });
+	absent.attach({ sessionManager: { getSessionId: () => "session-a" } } as unknown as ExtensionContext);
+	assert.deepEqual(errorOf(await absent.handle("get_job_output", { id: "job-1" })), JOBS_UNAVAILABLE);
+
+	const base = { schema: DESKTOP_JOBS_SERVICE_SCHEMA, read: () => ({ sessionId: "session-a", jobs: [] }), cancel: () => ({ kind: "not_found" as const }), observe: () => () => {}, dispose: () => {} };
+	// An owner adapter without the output read (an older owner) is still a valid
+	// list/cancel owner, but cannot answer this method.
+	const outdated = makeBridge(base as DesktopJobsService);
+	assert.deepEqual(errorOf(await outdated.bridge.handle("get_job_output", { id: "job-1" })), JOBS_UNAVAILABLE);
+	assert.equal((await outdated.bridge.handle("list_jobs", {})).ok, true, "list_jobs still works against that owner");
+
+	const throwing = makeBridge({ ...base, output: () => { throw new Error("secret /tmp/job-1.log make deploy"); } } as DesktopJobsService);
+	const thrown = await throwing.bridge.handle("get_job_output", { id: "job-1" });
+	assert.deepEqual(errorOf(thrown), JOBS_UNAVAILABLE);
+	assert.equal(JSON.stringify(thrown).includes("secret"), false);
+
+	const malformed = makeBridge({ ...base, output: () => ({ kind: "ok", view: { job: { id: "j" }, output: "x", truncated: false } }) } as unknown as DesktopJobsService);
+	assert.deepEqual(errorOf(await malformed.bridge.handle("get_job_output", { id: "job-1" })), JOBS_UNAVAILABLE);
+});
+
+test("the real owner answers get_job_output for its own job and not_found otherwise", async (t) => {
+	const harness = await realOwnerHarness(t);
+	const monitor = harness.tools.get("monitor");
+	await monitor.execute(undefined, { command: "tail -f app.log", timeout_seconds: 60, label: "app log" }, undefined, undefined, harness.ctx);
+	harness.fake.runs[0]!.onData(Buffer.from("\u001b[33mwarn\u001b[0m disk 91%\n"));
+	assert.equal(typeof harness.service.output, "function", "the real owner exposes the output read");
+	assert.deepEqual(harness.service.output!("job-1"), {
+		kind: "ok",
+		view: { job: { id: "job-1", label: "app log", status: "running", startedAt: 1000 }, output: "warn disk 91%", truncated: false },
+	});
+	assert.deepEqual(harness.service.output!("job-99"), { kind: "not_found" });
+	const eventsBefore = harness.events.length;
+	harness.service.output!("job-1");
+	assert.equal(harness.events.length, eventsBefore, "the owner read notifies no observer");
+	harness.service.dispose();
+	assert.deepEqual(harness.service.output!("job-1"), { kind: "not_found" }, "a disposed adapter answers nothing");
+});
+
+test("get_job_output answers jobs_unavailable through the transport without an owner extension", async (t) => {
+	const app = desktopHarness(t);
+	await app.commands.get("gentle:desktop")!.handler(
+		JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "out-1", method: "get_job_output", params: { id: "job-1" } }),
+		app.ctx,
+	);
+	const response = JSON.parse(app.widgets[0]!.lines[0]!);
+	assert.equal(response.requestId, "out-1");
+	assert.equal(response.ok, false);
+	assert.deepEqual(response.error, JOBS_UNAVAILABLE);
+});
+
+// ---- get_job_output: independent-verifier probes pinned as regressions ----
+
+const HAS_ESC_OR_CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/;
+
+test("the real owner never reads one session's output into another session's adapter", async (t) => {
+	const harness = await realOwnerHarness(t);
+	await harness.tools.get("monitor").execute(undefined, { command: "tail -f app.log", timeout_seconds: 60, label: "app log" }, undefined, undefined, harness.ctx);
+	harness.fake.runs[0]!.onData(Buffer.from("SECRET_TOKEN=abc\n"));
+	assert.equal(harness.service.output!("job-1").kind, "ok", "the owning session reads its own job");
+
+	// The host switches to another session; its adapter is discovered fresh.
+	harness.session.id = "session-b";
+	for (const handler of harness.handlers.get("session_start") ?? []) await handler({ reason: "new" }, harness.ctx);
+	const other = await discoverDesktopJobsService(harness.pi, harness.ctx);
+	assert.ok(other, "the new session's adapter is discovered");
+	assert.deepEqual(other.output!("job-1"), { kind: "not_found" });
+
+	const bridge = new DesktopJobsBridge(harness.pi, { discover: async () => other });
+	bridge.attach(harness.ctx);
+	const outcome = await bridge.handle("get_job_output", { id: "job-1" });
+	assert.deepEqual(errorOf(outcome), JOB_NOT_FOUND);
+	assert.equal(JSON.stringify(outcome).includes("SECRET"), false, "no byte of the other session's output crosses");
+});
+
+test("a reset during discovery answers get_job_output with jobs_unavailable and never reads output", async () => {
+	let release: () => void = () => {};
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	let outputCalls = 0;
+	const service: DesktopJobsService = {
+		schema: DESKTOP_JOBS_SERVICE_SCHEMA,
+		read: () => ({ sessionId: "session-a", jobs: [] }),
+		cancel: () => ({ kind: "not_found" }),
+		output: () => {
+			outputCalls += 1;
+			return { kind: "ok", view: { job: { id: "j", label: "l", status: "running", startedAt: 1 }, output: "old secret", truncated: false } };
+		},
+		observe: () => () => {},
+		dispose: () => {},
+	};
+	const bridge = new DesktopJobsBridge({} as ExtensionAPI, { discover: async () => { await gate; return service; } });
+	bridge.attach({ sessionManager: { getSessionId: () => "session-a" } } as unknown as ExtensionContext);
+	const pending = bridge.handle("get_job_output", { id: "j" });
+	bridge.reset();
+	release();
+	const outcome = await pending;
+	assert.deepEqual(errorOf(outcome), JOBS_UNAVAILABLE);
+	assert.equal(outputCalls, 0, "a superseded session's owner is never read");
+	assert.equal(JSON.stringify(outcome).includes("old secret"), false);
+});
+
+test("get_job_output keeps answering a finished owned job after it leaves list_jobs", async (t) => {
+	const harness = await realOwnerHarness(t);
+	await harness.tools.get("monitor").execute(undefined, { command: "tail -f app.log", timeout_seconds: 60, label: "app log" }, undefined, undefined, harness.ctx);
+	harness.fake.runs[0]!.onData(Buffer.from("done line\n"));
+	harness.fake.runs[0]!.resolve(0);
+	await settle();
+	assert.equal(harness.service.output!("job-1").kind, "ok", "readable within the list linger");
+
+	harness.tick(JOBS_FINISHED_TTL_MS + 1);
+	assert.deepEqual(harness.service.read().jobs, [], "the finished job has left list_jobs");
+	const past = harness.service.output!("job-1");
+	assert.equal(past.kind, "ok", "the owner registry still holds it, so its output stays readable");
+	assert.equal((past as { kind: "ok"; view: { output: string } }).view.output, "done line");
+});
+
+test("plainJobOutput strips string, 8-bit, lone, and redraw sequences idempotently", () => {
+	const cases: Array<[string, string]> = [
+		["\u001bP1$r0m\u001b\\after", "after"],
+		["\u001b_apc payload\u001b\\x", "x"],
+		["trailing lone esc\u001b", "trailing lone esc"],
+		["a\u0085b\u009cc", "abc"],
+		["\u001b[2K\u001b[1Gprogress 40%", "progress 40%"],
+		["col1\tcol2", "col1\tcol2"],
+		["50%\r\r", "50%"],
+		["\u001b]0;t\u0007\u001b[31m10%\u001b[0m\r\u001b[31m20%\u001b[0m", "20%"],
+		["abc\r\u001b[K", "abc"],
+		["\u001b[?25l\u001b[?25hhidden cursor", "hidden cursor"],
+	];
+	for (const [input, expected] of cases) {
+		const once = plainJobOutput([input]);
+		assert.equal(once, expected, JSON.stringify(input));
+		assert.equal(plainJobOutput([once]), once, `idempotent: ${JSON.stringify(input)}`);
+	}
+});
+
+test("an owner line cut inside an escape sequence leaves no ESC byte or control character", () => {
+	// Known cosmetic limit: the owner's fixed-length cut can land inside an
+	// escape sequence, so a fragment of its parameters can remain visible text.
+	// What must never remain is the ESC byte or any control character but tab.
+	const tail = createOutputTail();
+	tail.push(`\u001b[38;5;196m${"x".repeat(MAX_TAIL_LINE_CHARS - 5)}\n`);
+	assert.equal(tail.truncated(), true);
+	const plain = plainJobOutput(tail.lines());
+	assert.equal(plain.includes("\u001b"), false);
+	assert.equal(HAS_ESC_OR_CONTROL.test(plain), false);
+	assert.ok(plain.endsWith("x".repeat(MAX_TAIL_LINE_CHARS - 5)));
+});
+
+test("the owner tail truncation flag holds at its exact boundaries", () => {
+	const lines = (count: number) => Array.from({ length: count }, (_, i) => `l${i}`).join("\n");
+
+	const exact = createOutputTail();
+	exact.push(`${lines(TAIL_LINES)}\n`);
+	assert.equal(exact.lines().length, TAIL_LINES);
+	assert.equal(exact.truncated(), false, "exactly TAIL_LINES complete lines is complete");
+
+	const plus = createOutputTail();
+	plus.push(`${lines(TAIL_LINES)}\npartial`);
+	assert.equal(plus.lines().length, TAIL_LINES);
+	assert.equal(plus.lines().at(-1), "partial");
+	assert.equal(plus.truncated(), true, "TAIL_LINES complete lines plus a partial drops the oldest");
+
+	const atLimit = createOutputTail();
+	atLimit.push(`${"y".repeat(MAX_TAIL_LINE_CHARS)}\n`);
+	assert.equal(atLimit.truncated(), false, "a line of exactly MAX_TAIL_LINE_CHARS is not cut");
+
+	const overLimit = createOutputTail();
+	overLimit.push(`${"y".repeat(MAX_TAIL_LINE_CHARS + 1)}\n`);
+	assert.equal(overLimit.truncated(), true, "one character more is cut");
+
+	const crlf = createOutputTail();
+	crlf.push("a\r\nb\r\n");
+	assert.deepEqual(crlf.lines(), ["a", "b"]);
+	assert.equal(crlf.truncated(), false, "CRLF line endings lose nothing");
+});
+
+test("an owner without a callable output read keeps list and cancel working", async () => {
+	const base = {
+		schema: DESKTOP_JOBS_SERVICE_SCHEMA,
+		read: () => ({ sessionId: "session-a", jobs: [{ id: "j", label: "l", status: "running" as const, startedAt: 1 }] }),
+		cancel: () => ({ kind: "ok" as const, job: { id: "j", label: "l", status: "stopped" as const, startedAt: 1, endedAt: 2 }, changed: true }),
+		observe: () => () => {},
+		dispose: () => {},
+	};
+	const { bridge } = makeBridge(base as DesktopJobsService);
+	assert.equal((await bridge.handle("list_jobs", {})).ok, true);
+	const cancelled = await bridge.handle("cancel_job", { id: "j" });
+	assert.equal(cancelled.ok, true, JSON.stringify(cancelled));
+	assert.deepEqual(errorOf(await bridge.handle("get_job_output", { id: "j" })), JOBS_UNAVAILABLE);
+
+	const notCallable = makeBridge({ ...base, output: 5 } as unknown as DesktopJobsService);
+	assert.deepEqual(errorOf(await notCallable.bridge.handle("get_job_output", { id: "j" })), JOBS_UNAVAILABLE);
+});
+
+test("get_job_output drops every extra owner key and rejects non-string ids", async () => {
+	const service = {
+		schema: DESKTOP_JOBS_SERVICE_SCHEMA,
+		read: () => ({ sessionId: "session-a", jobs: [] }),
+		cancel: () => ({ kind: "not_found" }),
+		output: () => ({
+			kind: "ok",
+			view: {
+				job: { id: "j", label: "l", status: "exited", startedAt: 1, endedAt: 2, exitCode: 3, command: "rm -rf", cwd: "/x", ownerSessionId: "session-a" },
+				output: "o", truncated: false, outputPath: "/p", env: { A: 1 }, error: "boom",
+			},
+		}),
+		observe: () => () => {},
+		dispose: () => {},
+	} as unknown as DesktopJobsService;
+	const { bridge } = makeBridge(service);
+	assert.deepEqual(await bridge.handle("get_job_output", { id: "j" }), {
+		ok: true,
+		data: { job: { id: "j", label: "l", status: "exited", startedAt: 1, endedAt: 2, exitCode: 3 }, output: "o", truncated: false },
+	});
+	for (const params of [{ id: null }, { id: ["j"] }, { id: { toString: () => "j" } }, { id: "j", id2: "k" }]) {
+		assert.deepEqual(errorOf(await bridge.handle("get_job_output", params as Record<string, unknown>)), INVALID_JOBS_PARAMS);
+	}
 });

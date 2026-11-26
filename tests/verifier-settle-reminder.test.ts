@@ -38,12 +38,12 @@ test("S1: the final assistant text is the last assistant message's text", () => 
 	assert.equal(declaredHighRiskItem(split!), undefined);
 });
 
-test("S2: the reminder names the item, the launch, the approval rule, and the Needs your decision close", () => {
+test("S2: the reminder names the item, the launch, the approval rule, and the missing-proof report", () => {
 	const text = verifierSettleReminderText(4);
 	assert.match(text, /`Risk: item 4`/);
 	assert.match(text, /launch `gentle-ai-verify` with the `Risk: item 4` line in its `task`/);
 	assert.match(text, /a user's visual or manual approval does not replace technical verification/i);
-	assert.match(text, /close with \*\*Needs your decision\*\* naming the missing proof/);
+	assert.match(text, /If verification is unavailable, report the missing proof and do not claim the change complete/);
 });
 
 test("S1/S3: one reminder per user prompt, none for Risk: none or after a verifier attempt", () => {
@@ -167,7 +167,7 @@ test("S5: the gentle_review input description documents the ASSESS escalate shap
 	const description = source.split("\n").find(line => line.includes("ASSESS accepts an optional object with baseRef"));
 	assert.ok(description, "the gentle_review input description exists");
 	assert.match(description, /writerEffort, nativeReviewOutcome, and escalate/);
-	assert.match(description, /escalate is \{\\"item\\":N,\\"reason\\":\\"\.\.\.\\"\} with item an integer from 1 to 6 and a non-empty reason of at most 500 characters; any other shape is rejected, and omitting it means no escalation/);
+	assert.match(description, /escalate is \{\\"item\\":N,\\"reason\\":\\"\.\.\.\\"\} with item an integer from 1 to 6 and a non-empty reason of at most 500 UTF-8 bytes; any other shape is rejected, and omitting it means no escalation/);
 });
 
 test("S6: the reference docs describe the settle reminder", () => {

@@ -39,6 +39,8 @@ export const requiredPaths = [
   ...installerPaths,
   "extensions/gentle-notifications.ts",
   "extensions/gentle-star-prompt.ts",
+  "extensions/gentle-tower.ts",
+  "lib/tower-server.ts",
   "lib/notification-audio.ts",
   "lib/notification-audio-native.ts",
   "lib/notification-audio-windows.ts",
@@ -92,6 +94,7 @@ export const requiredPaths = [
   "assets/orchestrator-tracking.md",
   "assets/orchestrator-verification.md",
   "assets/orchestrator-quota-recovery.md",
+  "assets/orchestrator-maintenance.md",
   "assets/orchestrator-writer.md",
   "assets/orchestrator-prompts.md",
   "assets/orchestrator-memory.md",
@@ -123,6 +126,7 @@ export const requiredPaths = [
   "lib/child-package-injection.ts",
   "lib/gentle-ai-binary.ts",
   "lib/gentle-shell-launcher.ts",
+  "lib/gentle-shell-desktop.ts",
   "lib/gentle-shell-bundled.ts",
   "lib/gentle-shell-startup-update.ts",
   "lib/gentle-shell-update-panel.ts",
@@ -131,7 +135,6 @@ export const requiredPaths = [
   "lib/gentle-shell-import-pi.ts",
   "lib/native-review-cli.ts",
   "lib/review-coordinator.ts",
-  "lib/review-delivery-preflight.ts",
 	"lib/review-candidate-symlink-scan.ts",
   "lib/status-timing-diagnostics.ts",
   "lib/provider-contract-bundle.ts",
@@ -145,6 +148,7 @@ export const requiredPaths = [
 	"runtime/child-package-injection.mjs",
 	"runtime/gentle-ai-binary.mjs",
 	"runtime/gentle-shell-launcher.mjs",
+	"runtime/gentle-shell-desktop.mjs",
 	"runtime/gentle-shell-bundled.mjs",
 	"runtime/gentle-shell-startup-update.mjs",
 	"runtime/gentle-shell-update-panel.mjs",
@@ -158,6 +162,14 @@ export const requiredPaths = [
 	"runtime/review-risk-assessment.mjs",
 	"runtime/review-relay-contract.mjs",
 	"runtime/telemetry-trigger.mjs",
+	"runtime/tower-open.mjs",
+	"runtime/sensitive-paths.mjs",
+	"runtime/tower-server.mjs",
+	"runtime/tower-hub.mjs",
+	"runtime/tower-presence.mjs",
+	"runtime/tower-actions.mjs",
+	"runtime/tower-snapshot.mjs",
+	"runtime/tower-launch.mjs",
   "scripts/check-provider-contract.mjs",
   "scripts/download-progress.mjs",
   "scripts/gentle-ai-installer.mjs",
@@ -178,18 +190,18 @@ export const requiredPaths = [
   // exact bytes are pinned by the lock-driven scripts/check-provider-contract.mjs
   // drift check, which runs in the same pnpm test flow.
   "contracts/review-provider-contract-mirror/provider-contract.lock.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/README.md",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/manifest.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/orchestration/pi.md",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/routing/pi.md",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/schemas/lens.schema.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/schemas/refuter.schema.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/schemas/targeted-validator.schema.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/vectors/lens.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/vectors/refuter.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/vectors/targeted-validator.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/generated/provider-capabilities.baseline.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/generated/provider-roles.baseline.json",
+  "contracts/review-provider-contract-mirror/v1.7.0/bundle/README.md",
+  "contracts/review-provider-contract-mirror/v1.7.0/bundle/manifest.json",
+  "contracts/review-provider-contract-mirror/v1.7.0/bundle/orchestration/pi.md",
+  "contracts/review-provider-contract-mirror/v1.7.0/bundle/routing/pi.md",
+  "contracts/review-provider-contract-mirror/v1.7.0/bundle/schemas/lens.schema.json",
+  "contracts/review-provider-contract-mirror/v1.7.0/bundle/schemas/refuter.schema.json",
+  "contracts/review-provider-contract-mirror/v1.7.0/bundle/schemas/targeted-validator.schema.json",
+  "contracts/review-provider-contract-mirror/v1.7.0/bundle/vectors/lens.json",
+  "contracts/review-provider-contract-mirror/v1.7.0/bundle/vectors/refuter.json",
+  "contracts/review-provider-contract-mirror/v1.7.0/bundle/vectors/targeted-validator.json",
+  "contracts/review-provider-contract-mirror/v1.7.0/generated/provider-capabilities.baseline.json",
+  "contracts/review-provider-contract-mirror/v1.7.0/generated/provider-roles.baseline.json",
   "prompts/skill-creation.md",
   "skills/branch-pr/SKILL.md",
   "skills/chained-pr/SKILL.md",
@@ -207,6 +219,7 @@ export const requiredPaths = [
   "skills/issue-creation/references/delegated-workflow-actions.md",
   "skills/judgment-day/SKILL.md",
   "skills/judgment-day/references/prompts-and-formats.md",
+  "skills/provider-defect-report/SKILL.md",
   "skills/rdd-defect-workflow/SKILL.md",
   "skills/skill-creator/SKILL.md",
   "skills/skill-improver/SKILL.md",
@@ -411,13 +424,34 @@ export function reconcileGeneratedRuntimeSources(packageRoot, sources, paths) {
   return { drifted };
 }
 
+// Gentle Tower: /gentle:tower serves this built web app. It is a build output
+// (gitignored), so it is required only when the caller built it first:
+// prepack and prepublishOnly pass --with-built-web right after `pnpm build:tower`.
+export const builtWebPaths = Object.freeze(["web/tower/dist/index.html"]);
+export function packageRequiredPaths(argv = process.argv) {
+  return argv.includes("--with-built-web") ? [...requiredPaths, ...builtWebPaths] : requiredPaths;
+}
+
+// The files npm itself would pack from packageRoot. A file on disk is not proof
+// it ships: npm applies nested .gitignore/.npmignore files even inside a path
+// package.json `files` lists, which is how 4.9.0 shipped without web/tower/dist.
+export function packedFileList(packageRoot) {
+  const result = spawnSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], {
+    cwd: packageRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, shell: process.platform === "win32",
+  });
+  if (result.status !== 0) throw new Error(`npm pack --dry-run failed: ${(result.error?.message || result.stderr || "").trim().slice(-2000)}`);
+  const parsed = JSON.parse(result.stdout);
+  const entry = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
+  return new Set(entry.files.map((file) => file.path));
+}
+
 async function main() {
   if (existsSync(join(root, "extensions/sdd-init.ts"))) {
     console.error("gentle-pi package must not restore the retired SDD init extension");
     process.exit(1);
   }
 
-  const missing = missingRequiredPaths(root, requiredPaths);
+  const missing = missingRequiredPaths(root, packageRequiredPaths());
 
   if (missing.length > 0) {
     console.error("gentle-pi package is missing required Pi resources:");
@@ -426,6 +460,24 @@ async function main() {
     }
     console.error("\nRefusing to pack/publish an incomplete npm package.");
     process.exit(1);
+  }
+
+  if (process.argv.includes("--with-built-web")) {
+    let packed;
+    try {
+      packed = packedFileList(root);
+    } catch (error) {
+      console.error(`gentle-pi could not list the files npm would pack: ${error.message}`);
+      console.error("\nRefusing to pack/publish without checking the built web app is included.");
+      process.exit(1);
+    }
+    const excluded = builtWebPaths.filter((relativePath) => !packed.has(relativePath));
+    if (excluded.length > 0) {
+      console.error("gentle-pi built web files exist on disk but npm pack excludes them:");
+      for (const relativePath of excluded) console.error(`- ${relativePath}`);
+      console.error("\nCheck the nested .gitignore/.npmignore beside them (web/tower/.npmignore must not ignore dist/).");
+      process.exit(1);
+    }
   }
 
   const { unlistedOnDisk, listedButMissing } = reconcileContractsOnDisk(root, contractHashes);
@@ -458,7 +510,7 @@ async function main() {
   });
 
   if (driftedContracts.length > 0) {
-    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v4.5.0 runtime's vendored Gentle AI contract artifacts:");
+    console.error("gentle-pi packaged contract bytes drifted from the vendored contract hash baseline:");
     for (const drift of driftedContracts) console.error(`- ${drift.relativePath}: expected ${drift.expected}, got ${drift.actual}`);
     process.exit(1);
   }
@@ -503,7 +555,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v4.5.0 runtime).`);
+  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} byte-pinned package contract artifacts; Gentle AI v${INSTALLER_VERSION} runtime pin).`);
 }
 
 const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;

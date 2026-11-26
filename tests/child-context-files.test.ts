@@ -22,7 +22,7 @@ const REALISTIC_AGENTS_MD = [
 	"",
 	"Run `pnpm test` before pushing.",
 	"",
-	block("codegraph-guidance", "## CodeGraph\n\nUse CodeGraph first."),
+	block("project-guidance", "## Project guidance\n\nKeep fixtures local."),
 	"",
 	block("sdd-orchestrator", [
 		"<!-- section:model-capable -->",
@@ -55,7 +55,7 @@ const EXPECTED_REALISTIC = [
 	"",
 	"Run `pnpm test` before pushing.",
 	"",
-	block("codegraph-guidance", "## CodeGraph\n\nUse CodeGraph first."),
+	block("project-guidance", "## Project guidance\n\nKeep fixtures local."),
 	"",
 	block("remote-authorization", "## Remote operation authorization\n\nAsk before remote work."),
 	"",
@@ -83,15 +83,15 @@ test("filters a realistic managed AGENTS.md: nested kept blocks survive, nested 
 	assert.match(output, /<!-- gentle-ai:remote-authorization -->\n## Remote operation authorization/);
 });
 
-test("drops engram-protocol while codegraph-guidance and unknown managed blocks stay byte-for-byte", () => {
+test("drops engram-protocol while surrounding managed blocks stay byte-for-byte", () => {
 	const kept = [
-		block("codegraph-guidance", "cg"),
+		block("project-guidance", "local"),
 		block("some-future-block", "future"),
 		"",
 	].join("\n");
 	assert.equal(stripOrchestratorOnlyBlocks(kept), kept);
 	const withEngram = [
-		block("codegraph-guidance", "cg"),
+		block("project-guidance", "local"),
 		block("engram-protocol", "engram\n\n\n\nspacing kept"),
 		block("some-future-block", "future"),
 		"",
@@ -142,7 +142,7 @@ test("markers mentioned inline or inside fenced code are plain text", () => {
 
 test("unbalanced, mismatched, or duplicate-open markers leave the file unchanged", () => {
 	const cases = [
-		`${block("codegraph-guidance", "cg")}\n<!-- gentle-ai:orchestrator -->\nno close\n`,
+		`${block("project-guidance", "local")}\n<!-- gentle-ai:orchestrator -->\nno close\n`,
 		`<!-- /gentle-ai:orchestrator -->\n${block("agent-routing", "x")}\n`,
 		`<!-- gentle-ai:orchestrator -->\nx\n<!-- /gentle-ai:agent-routing -->\n`,
 		`<!-- gentle-ai:agent-routing -->\n<!-- gentle-ai:remote-authorization -->\nx\n<!-- /gentle-ai:agent-routing -->\n<!-- /gentle-ai:remote-authorization -->\n`,

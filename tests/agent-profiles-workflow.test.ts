@@ -14,6 +14,8 @@ import {
 	renameProfile,
 	deleteProfile,
 	setProfileOrchestratorMode,
+	setProfileControlledEngineering,
+	toggleProfileOrchestratorMode,
 	type AgentProfilesFile,
 } from "../lib/agent-profiles.ts";
 
@@ -160,4 +162,104 @@ test("dropping an unknown mode does not disturb an existing valid entry", () => 
 	assert.equal(readProfileWorkflow(normalized.file, "frontier-local").orchestratorMode, "full-delegation");
 	assert.equal(readProfileWorkflow(normalized.file, "normal").orchestratorMode, "organic");
 	assert.deepEqual(normalized.drops.droppedWorkflow, [{ profile: "normal", mode: "nope" }]);
+});
+
+// ---------------------------------------------------------------------------
+// controlled-engineering S1/S4: the per-profile Controlled Engineering option
+// rides the same `workflow` entry as the orchestrator mode. Off is the
+// default and is never written, so a profile that does not enable it keeps
+// today's bytes.
+// ---------------------------------------------------------------------------
+
+const TODAYS_BYTES = `${JSON.stringify({
+	kind: "gentle-pi.agent_model_profiles",
+	version: 1,
+	profiles: {
+		"frontier-local": {
+			orchestrator: { model: "claude-opus-4-6", thinking: "high" },
+			worker: { model: "local/qwen3-coder" },
+		},
+		normal: { orchestrator: { model: "gpt-5.4" } },
+	},
+	workflow: { "frontier-local": { orchestratorMode: "full-delegation" } },
+}, null, 2)}\n`;
+
+test("Controlled Engineering off: the store keeps today's bytes and reads as off", () => {
+	const today = setProfileOrchestratorMode(fileWith(), "frontier-local", "full-delegation");
+	assert.equal(serializeProfilesFile(today), TODAYS_BYTES);
+	// Turning the option off where it was never on writes nothing new.
+	const off = setProfileControlledEngineering(today, "normal", false);
+	assert.equal(serializeProfilesFile(off), TODAYS_BYTES);
+	// A file written before the option existed reads as off for every profile.
+	const parsed = parseProfilesFileText(TODAYS_BYTES);
+	assert.equal(parsed.status, "valid");
+	if (parsed.status !== "valid") return;
+	assert.equal(readProfileWorkflow(parsed.file, "frontier-local").controlledEngineering, false);
+	assert.equal(readProfileWorkflow(parsed.file, "normal").controlledEngineering, false);
+	assert.equal(serializeProfilesFile(parsed.file), TODAYS_BYTES);
+});
+
+test("Controlled Engineering on persists beside any orchestrator mode and survives a round trip", () => {
+	let file = setProfileOrchestratorMode(fileWith(), "frontier-local", "full-delegation");
+	file = setProfileControlledEngineering(file, "frontier-local", true);
+	file = setProfileControlledEngineering(file, "normal", true);
+	const text = serializeProfilesFile(file);
+	assert.deepEqual(JSON.parse(text).workflow, {
+		"frontier-local": { orchestratorMode: "full-delegation", controlledEngineering: true },
+		normal: { orchestratorMode: "organic", controlledEngineering: true },
+	});
+	const normalized = normalizeProfilesFile(JSON.parse(text));
+	assert.ok(normalized);
+	assert.equal(normalized.drops.droppedWorkflow, undefined);
+	const reparsed = parseProfilesFileText(serializeProfilesFile(normalized.file));
+	assert.equal(reparsed.status, "valid");
+	if (reparsed.status !== "valid") return;
+	assert.deepEqual(readProfileWorkflow(reparsed.file, "frontier-local"), { orchestratorMode: "full-delegation", controlledEngineering: true });
+	assert.deepEqual(readProfileWorkflow(reparsed.file, "normal"), { orchestratorMode: "organic", controlledEngineering: true });
+	// Each setting changes alone: the mode back to organic keeps the option, the
+	// option off keeps the mode, and an entry with neither is removed.
+	const organic = setProfileOrchestratorMode(reparsed.file, "frontier-local", "organic");
+	assert.deepEqual(readProfileWorkflow(organic, "frontier-local"), { orchestratorMode: "organic", controlledEngineering: true });
+	const plain = setProfileControlledEngineering(organic, "frontier-local", false);
+	assert.equal(plain.workflow !== undefined && Object.hasOwn(plain.workflow, "frontier-local"), false);
+	assert.deepEqual(JSON.parse(serializeProfilesFile(plain)).workflow, { normal: { orchestratorMode: "organic", controlledEngineering: true } });
+});
+
+test("duplicate copies Controlled Engineering with the mode, rename moves it, delete removes it", () => {
+	const file = setProfileControlledEngineering(setProfileOrchestratorMode(fileWith(), "frontier-local", "full-delegation"), "frontier-local", true);
+	const duplicated = duplicateProfile(file, "frontier-local", "copy");
+	assert.deepEqual(readProfileWorkflow(duplicated, "copy"), { orchestratorMode: "full-delegation", controlledEngineering: true });
+	const organicOnly = setProfileControlledEngineering(fileWith(), "normal", true);
+	assert.deepEqual(readProfileWorkflow(duplicateProfile(organicOnly, "normal", "normal-copy"), "normal-copy"), { orchestratorMode: "organic", controlledEngineering: true });
+	const renamed = renameProfile(duplicated, "copy", "renamed");
+	assert.equal(readProfileWorkflow(renamed, "renamed").controlledEngineering, true);
+	const deleted = deleteProfile(renamed, "renamed");
+	assert.equal(deleted.workflow !== undefined && Object.hasOwn(deleted.workflow, "renamed"), false);
+});
+
+test("a Controlled Engineering value other than true reads as off and drops nothing", () => {
+	const normalized = normalizeProfilesFile({
+		kind: "gentle-pi.agent_model_profiles",
+		version: 1,
+		profiles: {
+			normal: { orchestrator: { model: "gpt-5.4" } },
+			"frontier-local": { orchestrator: { model: "claude-opus-4-6" } },
+		},
+		workflow: {
+			normal: { orchestratorMode: "full-delegation", controlledEngineering: "yes" },
+			"frontier-local": { orchestratorMode: "organic", controlledEngineering: false },
+		},
+	});
+	assert.ok(normalized);
+	// The valid mode survives; only exactly `true` turns the option on.
+	assert.deepEqual(readProfileWorkflow(normalized.file, "normal"), { orchestratorMode: "full-delegation", controlledEngineering: false });
+	assert.equal(normalized.drops.droppedWorkflow, undefined);
+	assert.deepEqual(JSON.parse(serializeProfilesFile(normalized.file)).workflow, { normal: { orchestratorMode: "full-delegation" } });
+});
+
+test("the orchestrator mode still persists and toggles as before (preserved)", () => {
+	const delegated = toggleProfileOrchestratorMode(fileWith(), "normal");
+	assert.deepEqual(JSON.parse(serializeProfilesFile(delegated)).workflow, { normal: { orchestratorMode: "full-delegation" } });
+	const back = toggleProfileOrchestratorMode(delegated, "normal");
+	assert.equal(serializeProfilesFile(back).includes("\"workflow\""), false);
 });

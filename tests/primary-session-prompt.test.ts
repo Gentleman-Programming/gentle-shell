@@ -57,7 +57,7 @@ function tempRoutingMirror(text: string, entrySha256 = createHash("sha256").upda
 	return root;
 }
 
-test("the rendered primary-session prompt is byte-identical to the golden captured from the base", () => {
+test("the rendered primary-session prompt is byte-identical to its golden", () => {
 	const rendered = renderPrimaryPrompt();
 	if (process.env.UPDATE_PRIMARY_SESSION_PROMPT_GOLDEN === "1") writeFileSync(GOLDEN_PATH, rendered, "utf8");
 	assert.equal(rendered, readFileSync(GOLDEN_PATH, "utf8"));
@@ -71,6 +71,23 @@ test("the ODD steps, phase reporting, and resume lines come from the mirrored ro
 	assert.equal(__testing.readMirroredOddProtocolSteps(), expected.join("\n"));
 	assert.ok(renderPrimaryPrompt().includes(`Run these steps in this order on every request:\n${expected.join("\n")}\n\nHarness principles:`));
 	assert.ok(routing.includes(`${expected[6]}\n\n${expected[7]}\n\n${expected[8]}`), "the bundle separates step 7, phase reporting, and resume with blank lines");
+});
+
+test("S3: the mirrored routing Close owns the authorized-work boundary without a generic terminal license", () => {
+	const routing = mirroredRoutingText();
+	const close = routing.split("\n").find((line) => line.startsWith("7. **Close.**"));
+	assert.ok(close, "mirrored routing must carry Close");
+	for (const clause of [
+		"Run authorized in-scope steps. Work through failures with a permitted route. A pending child is a wait: completion resumes the turn without asking.",
+		"Only a real human decision, explicit user stop, denial, missing consent, exhausted limit, or failure without a permitted route stops only affected work.",
+		"A tracked task ends the turn pending only for launched work still running, a real human decision, denial, missing consent, explicit stop, or exhausted limit.",
+		"Report failures without a permitted route as incomplete. Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
+		"Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget.",
+		"Never turn a report into a blind self-reprompt loop.",
+		"Hedged wording is not a stop.",
+	]) assert.ok(close.includes(clause), `mirrored routing Close is missing: ${clause}`);
+	assert.ok(!routing.includes("Needs your decision"), "the canonical Close must not license a generic terminal phrase");
+	assert.ok(!routing.includes("never more verification"), "the canonical Close must not license a broad verification stop");
 });
 
 test("extensions/gentle-ai.ts no longer carries the ODD step lines as string literals", () => {
@@ -111,4 +128,14 @@ test("Safety clause allows the task's exact resolved skill reads in every mode w
 		"ask before any read or write outside it, naming the absolute path",
 		"registered same-clone worktrees",
 	]) assert.ok(line.includes(clause), `missing delivered clause: ${clause}`);
+});
+
+// fix/temp-dir-exemption (user decision): the OS temp directory needs no outside-root question, deletion there
+// is limited to what the session or its tools created, and every other outside-root access still asks first.
+test("Safety clause exempts the OS temp directory and keeps the ask-first rule for every other outside path", () => {
+	const line = renderPrimaryPrompt().split("\n").find(candidate => candidate.startsWith("- Keep session work inside the project root"));
+	assert.ok(line, "confinement clause is delivered");
+	assert.ok(line.includes("Reading or writing the OS temp directory (session `TMPDIR`, `/tmp`, `/var/tmp`) needs none either; without asking, delete there only what this session or its tools created."), "missing the temp-directory exemption");
+	assert.ok(!line.includes("session scratch"), "the temp exemption must not name session scratch, which also covers clones and worktrees outside the temp directory");
+	assert.ok(line.startsWith("- Keep session work inside the project root and registered same-clone worktrees; ask before any read or write outside it, naming the absolute path. Exception: reading the task's exact resolved skill files needs no per-file question in any mode."), "the ask-first outside-root rule changed");
 });

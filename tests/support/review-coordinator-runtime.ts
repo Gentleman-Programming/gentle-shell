@@ -6,6 +6,7 @@ import { createGentleAiExtension, __testing } from "../../extensions/gentle-ai.t
 import { decodeReviewStatusV3, type ReviewCollectInputV3, type ReviewStatusV3 } from "../../lib/review-integration-v2.ts";
 import type { NativeReviewCli } from "../../lib/native-review-cli.ts";
 import { runReviewHostRelayReviewerGroup, type ReviewHostRelayPreparationRunner, type ReviewHostRelayRequest } from "../../lib/review-host-relay.ts";
+import { statusV9 } from "./status-v9.ts";
 
 type Body = Record<string, any>;
 export interface CoordinatorRuntimeOptions {
@@ -37,6 +38,8 @@ export interface CoordinatorRuntimeOptions {
 	 * with a correction request carrying `correctionFindings`. "escalated":
 	 * STATUS stops (native_stop_required) with the provider's escalation.
 	 */
+	/** assess answers medium/under_budget (not due) unless the request carries an escalate. */
+	mediumAssess?: boolean;
 	scenario?: "single" | "group" | "refuter" | "refuter-reoffers-group" | "untracked-selection" | "provider-role" | "correction" | "escalated";
 	/** Passed to every tool execute as its abort signal. */
 	signal?: AbortSignal;
@@ -62,7 +65,7 @@ const GROUP_LENSES = ["review-risk", "review-reliability"] as const;
 export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coordinator", options: CoordinatorRuntimeOptions = {}) {
 	cwd = realpathSync(cwd);
 	const scenario = options.scenario ?? "single";
-	const raw = JSON.parse(readFileSync(new URL("../fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
+	const raw = statusV9(JSON.parse(readFileSync(new URL("../fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8")));
 	raw.action = "stop";
 	const reviewing = decodeReviewStatusV3(raw);
 	const lineage = reviewing.authority!.lineageId!;
@@ -187,8 +190,14 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 			nativeCalls.push("acknowledge"); state = "burned";
 			return { schema: "gentle-ai.review-acknowledged/v1", lineageId: lineage, targetIdentity: target, consumedRevision: revision };
 		},
-		assess: async () => {
+		assess: async (request: unknown) => {
 			candidateReads++;
+			if (options.mediumAssess === true) {
+				nativeRequests.push({ operation: "assess", request: { ...(request as Body) } });
+				const escalated = (request as Body).escalate !== undefined;
+				return { schema: "gentle-ai.review-assessment/v1", risk: escalated ? "high" : "medium", reasons: [], changedPaths: 1, changedLines: 1,
+					reviewDue: escalated, reviewDueReason: escalated ? "agent_escalation" : "under_budget", candidate: { kind: "current-changes", consumed: false } };
+			}
 			if (scenario === "untracked-selection") {
 				nativeCalls.push("assess");
 				return { schema: "gentle-ai.review-assessment/v1", risk: "high", reasons: [], changedPaths: 1, changedLines: 1, reviewDue: true, reviewDueReason: "high_risk",

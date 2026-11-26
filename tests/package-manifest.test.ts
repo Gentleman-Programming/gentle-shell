@@ -61,7 +61,7 @@ const V014_MANAGED_ASSETS = join(
 // gentle-ai-explore.md as their exemplar (packaged, absent from the v0.13
 // manifest) after review-refuter.md was retired together with every
 // Pi-authored adversarial review verdict.
-const MANAGED_EXEMPLAR_TOOLS = ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"];
+const MANAGED_EXEMPLAR_TOOLS = ["read", "grep", "find", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "codemode"];
 const RETIRED_ADVERSARIAL_AGENTS = ["review-refuter.md", "review-validator.md"];
 
 interface ManagedAssetsManifest {
@@ -431,20 +431,20 @@ test("package manifest installs pi-pretty through a wrapper without bundling nat
 	);
 });
 
-test("package verification binds the published Gentle AI v4.5.0 runtime pin", () => {
+test("package verification binds the published Gentle AI v5.0.0 runtime pin", () => {
 	const installer = readFileSync(join(PACKAGE_ROOT, "scripts", "gentle-ai-installer.mjs"), "utf8");
 	const binary = readFileSync(join(PACKAGE_ROOT, "lib", "gentle-ai-binary.ts"), "utf8");
 	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
 
-	assert.match(installer, /INSTALLER_VERSION = "4\.5\.0"/);
+	assert.match(installer, /INSTALLER_VERSION = "5\.0\.0"/);
 	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_PACKAGE.*GENTLE_AI_WINDOWS_SOURCE_MODULE/);
-	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:81Hsy\+cboAbUse1ORVJuwji6V9sRIGlFwC73EtMdw0c="/);
+	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:8NBGfEMu\/LsR\/lJxALGNAsvK9\+5SA2htPNueWKXIW24="/);
 	assert.match(installer, /GOTOOLCHAIN: "local"/);
 	assert.match(installer, /GOSUMDB: "sum\.golang\.org"/);
 	assert.match(binary, /GENTLE_AI_VERSION = INSTALLER_VERSION/);
 	assert.match(binary, /GO_SUMDB_SOURCE_BUILD/);
 	assert.match(binary, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM/);
-	assert.match(verifier, /v4\.5\.0/);
+	assert.match(verifier, /v\$\{INSTALLER_VERSION\} runtime pin/);
 });
 
 
@@ -1583,8 +1583,8 @@ test("gentle-ai-worker packages the exact scoped writer contract", () => {
 		"edit",
 		"write",
 		"bash",
+		"codemode",
 		"mem_save",
-		"mcp__codegraph__codegraph_explore",
 	]);
 	assert.ok(
 		tools.every((tool) => !tool.startsWith("subagent_")),
@@ -1645,10 +1645,10 @@ test("gentle-ai-worker packages the exact scoped writer contract", () => {
 	const contextContract = readMarkdownSection(source, "Context contract");
 	assert.match(contextContract, /pre-existing untracked targets explicitly listed by the parent/);
 	assert.match(contextContract, /new files required by the delegated task/);
-	assert.match(contextContract, /derived candidate set the human can approve or narrow/);
-	assert.match(contextContract, /never an open request for the human to author paths or globs/);
-	assert.match(interactionContract, /closed set the human can approve, decline, or select from/);
-	assert.match(interactionContract, /never ask the human to author paths, globs, identifiers, or commands as free text/);
+	assert.match(contextContract, /derived candidate set the parent can approve, narrow, or route to the human/);
+	assert.match(contextContract, /never an open request for anyone to author paths or globs/);
+	assert.match(interactionContract, /closed set the decision owner can approve, decline, or select from/);
+	assert.match(interactionContract, /never ask anyone to author paths, globs, identifiers, or commands as free text/);
 
 	const implementationRules = readMarkdownSection(source, "Implementation rules");
 	assert.match(implementationRules, /`blocked` only for a non-human technical blocker/);
@@ -1703,8 +1703,8 @@ test("package installation gives gentle-ai-worker a loader-compatible scoped ide
 			"edit",
 			"write",
 			"bash",
+			"codemode",
 			"mem_save",
-			"mcp__codegraph__codegraph_explore",
 		]);
 		assert.doesNotMatch(
 			readAgentFrontmatter(installedAgentPath),
@@ -1828,8 +1828,8 @@ test("global model routing uses PI_CODING_AGENT_DIR for package-installed agents
 test("normal and forced installation copy generic agents with complete role contracts", () => {
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
 	const expectedTools = {
-		"gentle-ai-explore": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"],
-		"gentle-ai-verify": ["read", "grep", "find", "bash", "mcp__codegraph__codegraph_explore"],
+		"gentle-ai-explore": ["read", "grep", "find", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "codemode"],
+		"gentle-ai-verify": ["read", "grep", "find", "bash", "codemode"],
 	} as const;
 
 	try {
@@ -1849,12 +1849,7 @@ test("normal and forced installation copy generic agents with complete role cont
 					assert.match(source, /generic ODD work/);
 					assert.match(source, /Do not (?:fix findings, delegate to child agents|delegate to child agents, commit)/);
 					if (name === "gentle-ai-explore") {
-						assert.match(source, /cwd-scoped `codegraph` tool/);
-						assert.match(source, /never ask it to target another path/);
-						assert.match(source, /sole permitted mutation/);
-						assert.match(source, /all tracked files, source files, and other project content remain read-only/);
-						assert.match(source, /CodeGraph reports that it is unavailable or fails/);
-						assert.match(source, /Do not use that fallback before CodeGraph is unavailable or fails/);
+						assert.match(source, /Read and search only\. Do not edit, write, run commands, or mutate project state\./);
 					}
 					assert.match(source, /Do not (?:edit, write|edit, write, or fix findings)/);
 					// Cost/speed S4: reports are compact and never restate the task.
@@ -1949,9 +1944,9 @@ test("pi-pretty wrapper uses cached ESM loading for compiled and pnpm symlink in
 	assert.match(wrapper, /quietToolsEnabled/);
 });
 
-test("Gentle Shell v4.8.0 package manifest declares the release version", () => {
+test("Gentle Shell v5.0.0 package manifest declares the release version", () => {
 	const packageJson = readPackageJson();
-	assert.equal(packageJson.version, "4.8.0", "the release manifest must be explicitly pinned to v4.8.0");
+	assert.equal(packageJson.version, "5.0.0", "the release manifest must be explicitly pinned to v5.0.0");
 	assert.equal(packageJson.scripts?.test, "node scripts/run-test-suite.mjs");
 	assert.ok(packageJson.files?.includes("assets/"));
 	assert.ok(packageJson.files?.includes("contracts/"));

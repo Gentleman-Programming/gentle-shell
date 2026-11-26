@@ -45,7 +45,6 @@ test("research uses adaptive evidence gathering and existing general workers onl
 	containsAll(delegation, [
 		"problem, intended outcome, constraints, and current evidence",
 		"no fixed questionnaire or mandatory rounds",
-		"one focused user question",
 		"stop and wait",
 		"workers return gaps to the parent",
 		"available authorized documentation/web tools",
@@ -57,6 +56,10 @@ test("research uses adaptive evidence gathering and existing general workers onl
 		"existing fresh general exploration/research worker",
 		"do not create a specialized agent or create a new workflow",
 		"no new persistence or readiness machinery",
+	]);
+	// harness-continuity S4: step 3 as rendered replaced the retired "one focused user question" route.
+	containsAll(wrapper, [
+		"Continue when no human decision remains; ask with the available compatible tool; text only for a genuinely open clarification or no usable compatible interface",
 	]);
 });
 
@@ -100,6 +103,13 @@ test("organic progress preserves both complete feature copies and reconciles act
 	assert.doesNotMatch(memory, /`todo` tool is an optional session\/UI projection/);
 });
 
+// harness-continuity S7 (T7b): one canonical-state statement, owned by the memory module.
+test("S7: the feature document is canonical and the Engram mirror and `todo` are projections, stated once", () => {
+	const statement = "The feature document is canonical; the Engram mirror and `todo` are projections refreshed at task transitions.";
+	assert.equal(memory.split(statement).length - 1, 1, "the memory module states the canonical source once");
+	assert.ok(!delegation.includes(statement), "the delegation modules do not restate it");
+});
+
 // gentle-shell#1494 field follow-up: tracking must not grow its own reconciliation
 // scripts, invented size gates, or repeated malformed writer launches.
 test("tracking sync recovers from partial writes without custom reconciliation gates", () => {
@@ -133,7 +143,7 @@ test("assumption challenge and task checks do not activate or duplicate native r
 		// P5b (C5): the injected contract governs how a review starts, runs, and gets consent; tracking keeps the
 		// commit-boundary rules mirrored from routing/pi.md, which the rendered prompt carries nowhere else.
 		"When RDD is enabled, the injected Gentle AI contract governs native review start, execution and consent; this module adds only assessment and commit boundaries.",
-		"A not-due `passive` commit needs no review and the boundary advances; `under_budget` stays pending in the slice until a later commit reaches the budget.",
+		"A not-due `passive` commit needs no review and the boundary advances; `under_budget` stays pending in the slice and never triggers review by itself.",
 		"lower the tier or infer low risk",
 		"When RDD is disabled, do not start or prompt for RDD",
 	]);
@@ -187,7 +197,10 @@ test("ODD commits work units in reviewable slices and reviews the commit or PR s
 		"forecast authored changed lines (additions plus deletions, generated files excluded) from the task list",
 		"keep a running count from work-unit commits",
 		"`ask-on-risk` (default), `auto-chain`, `single-pr`, or `exception-ok`",
-		"apply the chosen strategy before the next commit",
+		// harness-continuity S7 (T7): the oversized-delivery menu waits for a publish request.
+		"record the slice boundary in the feature document",
+		"apply the chosen strategy only when the user asks to publish (push or PR), never before a local work-unit commit",
+		"Local work-unit commits stay separate from publishing",
 		"`ask-on-risk` asks once using the ordered oversized-delivery menu",
 		"`auto-chain` asks only for a missing chain strategy and slices automatically",
 		"Cache both choices, and record slice boundaries",
@@ -196,7 +209,10 @@ test("ODD commits work units in reviewable slices and reviews the commit or PR s
 		"The delivery budget below reads the accumulated branch, not this per-task heuristic",
 	]);
 	assert.ok(!wrapper.includes("Every tracked task closes with at least one work-unit commit"), "step 6 keeps the per-task commit rule");
+	assert.ok(!delegation.includes("before the next commit"), "S7: the delivery menu no longer gates a local commit");
 	const docs = read("docs/readme-reference.md");
+	assert.ok(!docs.includes("before the next commit"), "S7: docs no longer gate a local commit on the delivery menu");
+	assert.ok(docs.includes("only when the user asks to publish (push or PR), never before a local work-unit commit"), "S7: docs say the menu waits for a publish request");
 	containsAll(docs, [
 		"Commit work units in reviewable slices of about 400 authored changed lines on the feature branch (branch first when on the default branch)",
 		"a unit whose Risk line names a high-risk item gets its own commit so native review can take it alone",
@@ -475,7 +491,7 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 	const orderedClauses = [
 		"Default workflow: Organic Driven Development (MANDATORY)",
 		"predefined workflow of this orchestrator",
-		"Never describe this workflow only when asked about it: run it.",
+		"Every request enters it unasked. Apply it, don't just describe it. Run these steps in this order on every request:",
 		"1. **Authorize.**",
 		"2. **Explore.**",
 		"3. **Resolve uncertainty.**",
@@ -486,7 +502,7 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 		"Tell the user in one line which feature document was created and how many tasks it holds",
 		"6. **Implement task by task.**",
 		"7. **Close.**",
-		"call `gentle_odd_phase` only when the primary session's ODD phase actually changes",
+		"call it from the primary session only when its ODD phase actually changes",
 		"Harness principles:",
 		"# el Gentleman Orchestrator",
 	];

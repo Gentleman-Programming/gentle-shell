@@ -55,6 +55,32 @@ function startupNoneSessions(): Set<string> {
 	return (holder[startupNoneRegistryKey] ??= new Set());
 }
 
+// Observers of binding changes (the Desktop `profile_binding_changed` event),
+// shared on `globalThis` for the same reason as the store itself.
+const observersRegistryKey = Symbol.for("gentle-pi:session-profile-binding-observers");
+
+function bindingObservers(): Set<(sessionId: string) => void> {
+	const holder = globalThis as { [observersRegistryKey]?: Set<(sessionId: string) => void> };
+	return (holder[observersRegistryKey] ??= new Set());
+}
+
+function notifyBindingChange(sessionId: string): void {
+	for (const observer of [...bindingObservers()]) {
+		try { observer(sessionId); } catch { /* an observer never breaks a bind */ }
+	}
+}
+
+/**
+ * Observe every write to the binding store (bind, clear, recorded startup
+ * without a profile), whoever made it: the `/gentle:profiles` screen, a resume,
+ * or the Desktop. The observer receives the session id only and reads the
+ * resulting state itself. Returns the unsubscribe function.
+ */
+export function observeSessionProfileBindings(observer: (sessionId: string) => void): () => void {
+	bindingObservers().add(observer);
+	return () => { bindingObservers().delete(observer); };
+}
+
 /** Copy one routing snapshot level deep — the layer a defensive copy needs, so a binding never aliases its source or its readers. */
 function cloneProfiles(profiles: AgentModelConfig): AgentModelConfig {
 	return Object.fromEntries(Object.entries(profiles).map(([agent, entry]) => [agent, { ...entry }]));
@@ -82,6 +108,7 @@ export function bindSessionProfile(
 	const { origin = "user", startup } = provenance;
 	startupNoneSessions().delete(sessionId);
 	bindingsBySession().set(sessionId, cloneBinding({ name, origin, modelProfiles, ...(startup === undefined ? {} : { startup }) }));
+	notifyBindingChange(sessionId);
 }
 
 /**
@@ -99,12 +126,14 @@ export function readSessionProfileBinding(sessionId: string | undefined): Sessio
 export function clearSessionProfileBinding(sessionId: string): void {
 	bindingsBySession().delete(sessionId);
 	startupNoneSessions().delete(sessionId);
+	notifyBindingChange(sessionId);
 }
 
 /** Record that the session's newest record says it started with no profile in any layer; replaces its binding. */
 export function recordSessionProfileStartupNone(sessionId: string): void {
 	bindingsBySession().delete(sessionId);
 	startupNoneSessions().add(sessionId);
+	notifyBindingChange(sessionId);
 }
 
 /** Whether the session's newest record says it started with no profile in any layer. */

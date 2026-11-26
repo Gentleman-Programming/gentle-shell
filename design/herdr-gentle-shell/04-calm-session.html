@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gentle Shell — Session (calm)</title>
+<style>
+:root{
+  --bg:#1a1218;--bg-deep:#000000;--surface:#20161e;--surface-1:#241822;--surface-2:#342230;
+  --border:#342230;--border-soft:#ffffff17;--text:#f6eff3;--text-muted:#a78e9b;--text-faint:#76616b;
+  --accent:#f095c8;--accent-soft:#ffb1dd;--success:#b4e7c7;--warning:#e0c27a;--error:#ff718f;--info:#a9c7ee;
+  --font-sans:Inter,"SF Pro Text",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:"IosevkaTerm NF","Iosevka Term","JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  --radius-sm:8px;--radius-md:12px;--radius-pill:999px;--glow:0 10px 30px #f095c84d;--ease:cubic-bezier(.4,0,.2,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark;scrollbar-color:var(--surface-2) transparent}
+body{background:var(--bg);color:var(--text);font:15px/1.6 var(--font-sans);height:100vh;overflow:hidden}
+::selection{background:#f095c84d}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.mono{font-family:var(--font-mono)}
+.muted{color:var(--text-muted)}
+.app{display:grid;grid-template-columns:232px 1fr;height:100vh}
+
+nav{border-right:1px solid var(--border);padding:52px 12px 16px;display:flex;flex-direction:column;gap:2px}
+.brand{display:flex;align-items:center;gap:8px;font-weight:800;padding:0 10px 20px}
+.mark{width:20px;height:20px;border-radius:6px;background:var(--accent);color:var(--bg);display:grid;place-items:center;font:800 11px var(--font-mono)}
+.nav-i{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:8px 10px;border-radius:var(--radius-sm);color:var(--text-muted);font-size:14.5px}
+.nav-i:hover{background:var(--surface);color:var(--text)}
+.nav-i .ic{width:16px;text-align:center;opacity:.8}
+.nav-sep{height:1px;background:var(--border);margin:12px 10px}
+.nav-label{font-size:12px;color:var(--text-faint);padding:4px 10px}
+.sess{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:6px 10px;border-radius:var(--radius-sm);font-size:14px;color:var(--text-muted)}
+.sess:hover{background:var(--surface);color:var(--text)}
+.sess[aria-current="page"]{background:var(--surface-1);color:var(--text);font-weight:600}
+.sd{width:7px;height:7px;border-radius:50%;flex:none}
+.sess small{margin-left:auto;font-size:12px;color:var(--warning);font-weight:600}
+
+.page{display:grid;grid-template-columns:1fr auto;min-height:0}
+.main{display:grid;grid-template-rows:auto 1fr auto;min-height:0}
+header{display:flex;align-items:center;gap:12px;padding:44px 32px 14px;justify-content:center}
+.hcol{width:min(720px,100%);display:flex;align-items:center;gap:12px}
+header h1{font-size:18px;font-weight:700}
+header .where{font-size:13px;color:var(--text-muted)}
+.step{margin-left:auto;font-size:13px;color:var(--text-muted)}
+.step b{color:var(--accent-soft);font-weight:600}
+.ghost{border:1px solid var(--border-soft);border-radius:var(--radius-sm);padding:5px 12px;font-size:13.5px;color:var(--text-muted)}
+.ghost:hover,.ghost[aria-expanded="true"]{border-color:var(--accent);color:var(--accent-soft)}
+
+.feed{overflow:auto;display:flex;justify-content:center;padding:12px 32px 24px}
+.fcol{width:min(720px,100%);display:flex;flex-direction:column;gap:22px}
+.you{align-self:flex-end;max-width:85%;background:var(--surface-1);border-radius:14px 14px 4px 14px;padding:10px 14px}
+.agent p + p{margin-top:8px}
+
+/* progressive disclosure: one line, opens on demand */
+details{border-radius:var(--radius-sm)}
+summary{list-style:none;display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px;color:var(--text-muted);padding:6px 0}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸";font-size:11px;color:var(--text-faint);transition:transform .2s var(--ease)}
+details[open] > summary::before{transform:rotate(90deg)}
+summary:hover{color:var(--text)}
+summary .ok{color:var(--success)}
+.inner{padding:6px 0 4px 21px;display:grid;gap:4px;font-size:13.5px;color:var(--text-muted)}
+.inner .r{display:flex;gap:10px}
+.inner .r span:last-child{margin-left:auto;font-family:var(--font-mono);font-size:12.5px}
+.diffline{font-family:var(--font-mono);font-size:12.5px}
+.a{color:var(--success)}.d{color:var(--error)}
+
+.decide{border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);padding:18px}
+.decide .q{font-weight:600;font-size:16px}
+.decide .why{font-size:14px;color:var(--text-muted);margin-top:2px}
+.opts{display:grid;gap:8px;margin-top:14px}
+.opt{display:block;width:100%;text-align:left;padding:11px 14px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-1);transition:border-color .2s var(--ease)}
+.opt:hover{border-color:var(--accent)}
+.opt b{font-weight:600}
+.opt .rec{font-size:12px;color:var(--accent-soft);margin-left:8px}
+.opt small{display:block;color:var(--text-muted);font-size:13.5px}
+.typing{font-size:13.5px;color:var(--text-muted);margin-top:10px}
+
+.composer{display:flex;justify-content:center;padding:0 32px 24px}
+.box{width:min(720px,100%);display:flex;align-items:flex-end;gap:10px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);padding:10px 10px 10px 14px}
+.box:focus-within{border-color:var(--accent)}
+.box textarea{flex:1;background:transparent;border:0;resize:none;color:var(--text);font:15px/1.5 var(--font-sans);min-height:24px}
+.box textarea:focus{outline:none}
+.send{background:var(--accent);color:var(--bg);font-weight:600;padding:6px 14px;border-radius:var(--radius-sm)}
+.stop{color:var(--text-muted);font-size:13.5px;padding:6px 8px}
+.stop:hover{color:var(--text)}
+
+/* details drawer: closed by default, opened on demand */
+.drawer{width:0;overflow:hidden;border-left:1px solid transparent;transition:width .25s var(--ease)}
+.drawer.open{width:320px;border-left-color:var(--border)}
+.dw{width:320px;padding:44px 20px 20px;display:flex;flex-direction:column;gap:18px;height:100vh;overflow:auto}
+.dw h2{font-size:13px;font-weight:600;color:var(--text-muted)}
+.big{font-size:26px;font-weight:700}
+.big small{font-size:13px;font-weight:400;color:var(--text-muted)}
+.bar{height:6px;border-radius:var(--radius-pill);background:var(--surface-2);overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;background:var(--info)}
+.kv{display:grid;grid-template-columns:1fr auto;gap:4px 12px;font-size:13.5px}
+.kv span:nth-child(odd){color:var(--text-muted)}
+.kv span:nth-child(even){font-family:var(--font-mono);font-size:12.5px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav aria-label="Main">
+    <div class="brand"><span class="mark" aria-hidden="true">g</span>gentle shell</div>
+    <button class="nav-i"><span class="ic" aria-hidden="true">⌂</span>Home</button>
+    <button class="nav-i"><span class="ic" aria-hidden="true">±</span>Changes</button>
+    <button class="nav-i"><span class="ic" aria-hidden="true">◎</span>Memory</button>
+    <button class="nav-i"><span class="ic" aria-hidden="true">∿</span>Usage</button>
+    <button class="nav-i"><span class="ic" aria-hidden="true">⚙</span>Settings</button>
+    <div class="nav-sep"></div>
+    <div class="nav-label">Sessions</div>
+    <button class="sess" aria-current="page"><span class="sd" style="background:var(--warning)"></span>Token refresh fix<small>you</small></button>
+    <button class="sess"><span class="sd" style="background:var(--info)"></span>Release notes 4.5.1</button>
+    <button class="sess"><span class="sd" style="background:var(--success)"></span>Triage #6102</button>
+  </nav>
+
+  <div class="page">
+    <div class="main">
+      <header>
+        <div class="hcol">
+          <div><h1>Token refresh fix</h1><div class="where">gentle-ai · feat/token-refresh</div></div>
+          <span class="step">Step 3 of 5 · <b>Building</b></span>
+          <button class="ghost" id="dt" aria-expanded="false" aria-controls="drawer">Details</button>
+        </div>
+      </header>
+
+      <div class="feed" role="log" aria-live="polite">
+        <div class="fcol">
+          <div class="you">Users get logged out after an hour even when they're active. Fix the refresh so it renews before expiry, with a test.</div>
+
+          <div class="agent">
+            <p>Found it. The refresh timer is set once when you log in and never set again after a renewal, so the second expiry is missed.</p>
+            <p>I wrote a test that shows the bug, then fixed it. The test passes now.</p>
+          </div>
+
+          <details>
+            <summary>What I did · 3 steps · <span class="ok">42 tests passed</span></summary>
+            <div class="inner">
+              <div class="r"><span>Read 4 files in internal/auth</span><span>0.8s</span></div>
+              <div class="r"><span>Changed session.go</span><span><span class="a">+22</span> <span class="d">−6</span></span></div>
+              <div class="r"><span>Ran the auth tests</span><span class="a">42 passed</span></div>
+            </div>
+          </details>
+
+          <details>
+            <summary>2 helpers worked on this</summary>
+            <div class="inner">
+              <div class="r"><span>Explorer · mapped the auth code</span><span>done</span></div>
+              <div class="r"><span>Builder · wrote the failing test</span><span>done</span></div>
+            </div>
+          </details>
+
+          <details>
+            <summary>See the change · session.go</summary>
+            <div class="inner">
+              <div class="diffline d">-  s.timer = time.AfterFunc(ttl, s.refresh)</div>
+              <div class="diffline a">+  s.schedule(tok.ExpiresAt.Add(-refreshMargin))</div>
+            </div>
+          </details>
+
+          <section class="decide" aria-labelledby="dq">
+            <div class="q" id="dq">One question before I continue</div>
+            <div class="why">If the refresh request fails, what should the user see?</div>
+            <div class="opts">
+              <button class="opt"><b>Retry once, then sign out with a message</b><span class="rec">recommended</span><small>Clear outcome. The user knows they need to sign in again.</small></button>
+              <button class="opt"><b>Keep retrying quietly</b><small>Fewer interruptions, but it can hide a broken server.</small></button>
+            </div>
+            <div class="typing">Or write your own answer below.</div>
+          </section>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="box">
+          <label class="sr" for="m">Message</label>
+          <textarea id="m" rows="1" placeholder="Answer or tell it something else…"></textarea>
+          <button class="stop" aria-label="Stop the agent">Stop</button>
+          <button class="send">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <aside class="drawer" id="drawer" aria-label="Session details">
+      <div class="dw">
+        <div><h2>This session</h2><div class="big">$0.42 <small>· 14 min</small></div></div>
+        <div><h2>Memory used</h2><div class="kv" style="margin-top:4px"><span>Context</span><span>38% of 200k</span></div><div class="bar"><i style="width:38%"></i></div></div>
+        <details>
+          <summary>Tokens and model</summary>
+          <div class="kv inner"><span>Model</span><span>Opus 5.5 · high</span><span>Input</span><span>121k</span><span>Output</span><span>9.8k</span><span>Cache hit</span><span>71%</span><span>Helpers</span><span>2 runs · $0.11</span></div>
+        </details>
+        <details>
+          <summary>Permissions</summary>
+          <div class="inner">Asks before deleting files or running anything outside this folder. <button class="ghost" style="margin-top:6px;justify-self:start">Change</button></div>
+        </details>
+        <details>
+          <summary>What it remembers here</summary>
+          <div class="inner">3 notes from past sessions about auth in gentle-ai.</div>
+        </details>
+        <button class="ghost" style="align-self:flex-start">Open in terminal</button>
+      </div>
+    </aside>
+  </div>
+</div>
+<script>
+  const b=document.getElementById('dt'),d=document.getElementById('drawer');
+  b.addEventListener('click',()=>{const o=d.classList.toggle('open');b.setAttribute('aria-expanded',o)});
+  if(location.hash==='#details'){d.classList.add('open');b.setAttribute('aria-expanded','true')}
+</script>
+</body>
+</html>

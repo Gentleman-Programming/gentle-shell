@@ -38,7 +38,6 @@ thinking: high
 tools:
   - read
   - grep
-  - codegraph
 ---
 
 You are the read-only explorer.
@@ -65,7 +64,7 @@ test("parseAgentDefinition builds a definition from the gentle-ai agent format",
 	assert.equal(agent.description, "Read-only exploration and mapping.");
 	assert.deepEqual(agent.model, { provider: "openai-codex", id: "gpt-5.6-terra" });
 	assert.equal(agent.thinking, "high");
-	assert.deepEqual(agent.tools, ["read", "grep", "codegraph"]);
+	assert.deepEqual(agent.tools, ["read", "grep"]);
 	assert.equal(agent.mode, undefined);
 	assert.equal(agent.scope, "global");
 	assert.match(agent.instructions, /^You are the read-only explorer\./);
@@ -412,4 +411,25 @@ test("resolveAgentProfile never resolves through the suggestion mapping", () => 
 	assert.equal(resolved.model?.provider, "openai-codex", "the short key must not route; the agent frontmatter model wins");
 	assert.equal(resolved.source.model, "definition");
 	assert.ok(unmatchedProfileKeys(config.modelProfiles, [worker]).some((entry) => entry.key === "worker" && entry.suggestion === "gentle-ai-worker"), "the same short key is still reported with its suggestion");
+});
+
+// gentle-shell#3386: an unknown frontmatter key was silently dropped.
+test("S5: an unknown frontmatter key warns with the key and the file, and the agent still loads", () => {
+	const home = join(root, "unknown-key-home");
+	const cwd = join(root, "unknown-key-project");
+	mkdirSync(join(cwd, ".pi/agents"), { recursive: true });
+	const file = join(cwd, ".pi/agents/picky.md");
+	writeFileSync(file, "---\nname: picky\ndescription: Picky\nmodel: some/model\nextensions: [pi-btw]\n---\nDo the work");
+	const { agents, errors, notices } = discoverAgents({ cwd, home });
+	assert.deepEqual(agents.map((agent) => agent.name), ["picky"]);
+	assert.deepEqual(errors, []);
+	assert.deepEqual(notices, [`${file}: unknown frontmatter key "extensions" is ignored`]);
+});
+
+test("S5: known frontmatter keys produce no notice", () => {
+	const home = join(root, "known-keys-home");
+	const cwd = join(root, "known-keys-project");
+	mkdirSync(join(cwd, ".pi/agents"), { recursive: true });
+	writeFileSync(join(cwd, ".pi/agents/ok.md"), "---\nname: ok\ndescription: d\nmodel: a/b\nthinking: high\nmode: read\ntools: [read]\n---\nBody");
+	assert.deepEqual(discoverAgents({ cwd, home }).notices, []);
 });

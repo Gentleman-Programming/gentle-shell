@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gentle Shell — The Gentleman Club (pixel)</title>
+<style>
+:root{
+  --bg:#1a1218;--bg-deep:#000000;--surface:#20161e;--surface-1:#241822;--surface-2:#342230;
+  --border:#342230;--border-soft:#ffffff17;--text:#f6eff3;--text-muted:#a78e9b;--text-faint:#76616b;
+  --accent:#f095c8;--accent-strong:#ff76c3;--accent-soft:#ffb1dd;--success:#b4e7c7;--warning:#e0c27a;--info:#a9c7ee;
+  --brand-violet:#9146ff;
+  --font-sans:Inter,"SF Pro Text",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:"IosevkaTerm NF","Iosevka Term","JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  --ease:cubic-bezier(.4,0,.2,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark}
+body{background:var(--bg-deep);color:var(--text);font:15px/1.5 var(--font-sans);height:100vh;overflow:hidden;display:flex;flex-direction:column;align-items:center}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.stage{position:relative}
+canvas{display:block;image-rendering:pixelated;image-rendering:crisp-edges;cursor:crosshair}
+/* speech above heads, adventure-game style */
+.speech{position:absolute;transform:translate(-50%,-100%);max-width:380px;text-align:center;pointer-events:none;
+  font:700 19px/1.3 var(--font-mono);text-shadow:-2px 0 #000,2px 0 #000,0 -2px #000,0 2px #000,2px 2px #000,-2px -2px #000,2px -2px #000,-2px 2px #000,-3px 0 #5ee6e655,3px 0 #ff76c355}
+/* lo-fi VHS: scanlines, vignette, on-screen display */
+.stage::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(180deg,#00000022 0 2px,transparent 2px 4px),radial-gradient(ellipse at center,transparent 55%,#000000a0 100%)}
+.osd{position:absolute;top:14px;left:18px;font:700 16px var(--font-mono);color:#f6eff3cc;letter-spacing:.12em;text-shadow:-2px 0 #5ee6e688,2px 0 #ff76c388;pointer-events:none}
+.osd .r{position:absolute;left:0;top:22px;font-size:12px;opacity:.75}
+/* bottom panel: sentence line, dialogue choices, quiet nav */
+.panel{flex:1;width:100%;display:flex;gap:24px;padding:14px 28px 16px;background:var(--bg-deep);border-top:2px solid var(--surface-2);min-height:96px}
+.left{flex:1;min-width:0}
+.sentence{font:700 17px var(--font-mono);color:var(--accent-soft);min-height:24px;letter-spacing:.02em}
+.choices{list-style:none;margin-top:4px;display:grid;gap:1px}
+.choices button{font:600 16px/1.45 var(--font-mono);color:var(--brand-violet);filter:brightness(1.5);text-align:left;width:100%;padding:1px 4px}
+.choices button:hover,.choices button:focus-visible{color:var(--accent-strong);filter:none;outline:none}
+.choices .n{opacity:.7;margin-right:8px}
+.choices .rec{font-size:12px;color:var(--text-muted);margin-left:10px;font-weight:400}
+.right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;font:600 13px var(--font-mono)}
+.need{color:var(--warning)}
+.need button{color:var(--warning);text-decoration:underline;text-underline-offset:3px}
+.nav{display:flex;gap:14px;color:var(--text-muted)}
+.nav button{color:var(--text-muted)}
+.nav button:hover{color:var(--accent-soft)}
+.brand{display:flex;align-items:center;gap:8px;color:var(--text);font-family:var(--font-sans);font-weight:800}
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+  <canvas id="c" width="320" height="180" aria-label="The Gentleman Club. Point at people and things; click to talk or look."></canvas>
+  <div class="speech" id="speech" aria-hidden="true"></div>
+  <div class="osd" aria-hidden="true">▶ PLAY<span class="r">SP 23:14</span></div>
+</div>
+<div class="panel">
+  <div class="left">
+    <div class="sentence" id="sentence" aria-live="polite">Walk to</div>
+    <ol class="choices" id="choices" aria-label="What do you say?"></ol>
+    <div class="sr" id="said" aria-live="polite"></div>
+  </div>
+  <div class="right">
+    <div class="brand"><svg width="28" height="12" viewBox="-56 -12 112 24" aria-hidden="true"><path id="ml" fill="#ff76c3"/></svg>gentle shell</div>
+    <div class="need" id="needline"><button id="go-need">1 needs you</button></div>
+    <nav class="nav" aria-label="Elsewhere"><button>List</button><button>Changes</button><button>Memory</button><button>Usage</button><button>Settings</button></nav>
+  </div>
+</div>
+<div class="sr" role="group" aria-label="People and things in the club" id="kbd"></div>
+
+<script>
+document.getElementById('ml').setAttribute('d','M0,2 C-6,-6 -20,-9 -32,-3 C-41,2 -46,-2 -47,-8 C-52,-1 -48,9 -36,9 C-24,9 -10,6 0,7 Z M0,2 C6,-6 20,-9 32,-3 C41,2 46,-2 47,-8 C52,-1 48,9 36,9 C24,9 10,6 0,7 Z');
+const W=320,H=180, cv=document.getElementById('c'), ctx=cv.getContext('2d');
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const C={ink:'#000000',bg:'#1a1218',s:'#20161e',s1:'#241822',s2:'#342230',muted:'#a78e9b',faint:'#76616b',text:'#f6eff3',
+  acc:'#f095c8',neon:'#ff76c3',accS:'#ffb1dd',ok:'#b4e7c7',warn:'#e0c27a',info:'#a9c7ee',vio:'#9146ff',teal:'#5ee6e6'};
+const BY=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]].map(r=>r.map(v=>(v+.5)/16));
+const px=(g,x,y,c)=>{g.fillStyle=c;g.fillRect(x|0,y|0,1,1)};
+const rect=(g,x,y,w,h,c)=>{g.fillStyle=c;g.fillRect(x|0,y|0,w|0,h|0)};
+function dgrad(g,x0,y0,x1,y1,pal){for(let y=y0;y<y1;y++){const t=(y-y0)/(y1-y0)*(pal.length-1),i=Math.min(pal.length-2,t|0),f=t-i;
+  for(let x=x0;x<x1;x++)px(g,x,y,f>BY[y&3][x&3]?pal[i+1]:pal[i])}}
+function pool(g,cx,cy,rx,ry,c,s){g.globalAlpha=.45;for(let y=cy-ry;y<cy+ry;y++)for(let x=cx-rx;x<cx+rx;x++){
+  const d=Math.hypot((x-cx)/rx,(y-cy)/ry);if(d<1&&(1-d)*s>BY[y&3][x&3])px(g,x,y,c)}g.globalAlpha=1}
+const bmp=(g,rows,x,y,c,s=1)=>rows.forEach((r,j)=>[...r].forEach((ch,i)=>{if(ch==='#')rect(g,x+i*s,y+j*s,s,s,c)}));
+function neon(g,rows,x,y,c,s=1){g.globalAlpha=.22;rows.forEach((r,j)=>[...r].forEach((ch,i)=>{if(ch==='#')rect(g,x+i*s-1,y+j*s-1,s+2,s+2,c)}));g.globalAlpha=1;bmp(g,rows,x,y,c,s)}
+// tiny 3x5 neon font (letters used on signs)
+const F={A:['010','101','111','101','101'],B:['110','101','110','101','110'],C:['011','100','100','100','011'],E:['111','100','110','100','111'],
+  G:['011','100','101','101','011'],I:['111','010','010','010','111'],L:['100','100','100','100','111'],M:['10001','11011','10101','10001','10001'],
+  N:['1001','1101','1011','1001','1001'],O:['010','101','101','101','010'],R:['110','101','110','101','101'],T:['111','010','010','010','010'],U:['101','101','101','101','111'],' ':['0','0','0','0','0']};
+function word(g,s,x,y,c){let cx=x;for(const ch of s){const f=F[ch];neon(g,f.map(r=>r.replace(/1/g,'#').replace(/0/g,'.')),cx,y,c);cx+=f[0].length+1}return cx}
+const MUST=['..#.........#..','.#.##.....##.#.','.#..#######..#.','..##.......##..'];
+const ELE=['..######..##','.##########.','###########.','##########.#','##########.#','.##.##.##..#','.##.##.##...'];
+const ROSE=['.###.','##.##','#.#.#','.###.','..#..','.##..','..#..'];
+
+// ---------- static background ----------
+const bg=document.createElement('canvas');bg.width=W;bg.height=H;const g=bg.getContext('2d');
+// wall with wood panels
+dgrad(g,0,0,W,124,['#0f0a0e',C.s1,'#2a1b27']);
+for(let x=0;x<W;x+=16)rect(g,x,40,1,84,'#170f15');
+rect(g,0,84,W,1,'#3a2636');rect(g,0,85,W,1,'#0f0a0e');
+// the window: dusk over the city
+const wx0=104,wy0=22,wx1=216,wy1=104;
+dgrad(g,wx0,wy0,wx1,wy1,['#1b0f3a','#3a1466','#6a1b7a','#a0287e','#d8407e','#ff6fa8','#ff9e8a','#ffc78a']);
+for(let i=0;i<9;i++){const y=wy0+14+i*6+(i%3),x=wx0+((i*37)%70),w=16+((i*13)%30);for(let k=0;k<w;k++)if(BY[y&3][(x+k)&3]<.6)px(g,x+k,y,i<4?'#7a3a8a':C.accS)}
+// the vaporwave sun: striped, sinking
+for(let y=70;y<wy1;y++)for(let x=140;x<184;x++){const d=Math.hypot(x-162,y-92);if(d>19)continue;
+  if(y>84&&(y%4)<Math.min(3,(y-84)/4))continue;const f=(y-73)/24;px(g,x,y,f+BY[y&3][x&3]*.25<.35?'#ffe08a':f<.7?'#ff9e8a':'#ff6fa8')}
+// skyline silhouettes with lit windows
+let sx=wx0;const rnd=s=>{const v=Math.sin(s*12.9898)*43758.5453;return v-Math.floor(v)};
+for(let i=0;sx<wx1;i++){const w=6+(rnd(i)*12|0),h=10+(rnd(i+9)*34|0);rect(g,sx,wy1-h,Math.min(w,wx1-sx),h,'#120a16');
+  if(i===4){rect(g,sx+2,wy1-h-8,1,8,'#120a16');px(g,sx+2,wy1-h-9,C.neon)}
+  for(let y=wy1-h+3;y<wy1-2;y+=3)for(let x=sx+1;x<Math.min(sx+w-1,wx1);x+=2)if(rnd(x*7+y)>.72)px(g,x,y,rnd(x+y)>.8?C.neon:C.warn);sx+=w}
+// palm silhouettes
+function palm(bx,lean){let x=bx;for(let y=wy1;y>wy1-34;y--){x+=lean*(y%3===0?1:0)*.5;rect(g,x,y,2,1,'#140a1c')}
+  const tx=Math.round(x),ty=wy1-34;[[-1,0],[1,0],[-1,1],[1,1],[0,-1]].forEach(([dx,dy])=>{for(let k=0;k<11;k++)px(g,tx+dx*k,ty+dy*k*.4+(k*k)*.06,'#140a1c')})}
+palm(118,1);palm(204,-1);palm(196,-1);
+// frame and mullions
+for(const [x,y,w,h] of [[wx0-3,wy0-3,wx1-wx0+6,3],[wx0-3,wy1,wx1-wx0+6,4],[wx0-3,wy0,3,wy1-wy0],[wx1,wy0,3,wy1-wy0],[141,wy0,2,wy1-wy0],[178,wy0,2,wy1-wy0],[wx0,62,wx1-wx0,2]])rect(g,x,y,w,h,'#0d080c');
+rect(g,wx0-4,wy1+3,wx1-wx0+8,2,'#3a2636');
+// floor with the window's reflection
+dgrad(g,0,124,W,H,['#2a1440','#1c0e2c','#10081a']);
+// perspective neon grid floor
+g.globalAlpha=.55;for(let i=0;i<9;i++){const y=124+Math.round(Math.pow(i/8,1.8)*56);rect(g,0,y,W,1,i%2?C.teal:C.neon)}
+for(let i=-16;i<=16;i++){const x0=160+i*7;for(let y=124;y<H;y++){const k=(y-124)/56;px(g,x0+(x0-160)*k*4.2,y,C.teal)}}g.globalAlpha=1;
+for(let y=128;y<172;y++)for(let x=wx0+4;x<wx1-4;x++){const t=(y-128)/44;if(BY[y&3][x&3]<.28*(1-t)&&(x+y*3)%5<3)px(g,x+Math.sin(y)*2,y,t<.4?'#ff9e8a':C.neon)}
+// signs: mustache over the window, GENTLE AI + rose, ENGRAM + elephant, ON AIR
+neon(g,MUST,145,7,C.neon,2);
+neon(g,ROSE,12,28,C.neon);word(g,'GENTLE AI',20,30,C.neon);
+neon(g,ELE,246,22,C.vio);word(g,'ENGRAM',261,26,C.vio);
+rect(g,58,46,30,11,'#0d080c');g.globalAlpha=.3;rect(g,57,45,32,13,C.neon);g.globalAlpha=1;word(g,'ON AIR',61,49,C.neon);
+// light pools
+pool(g,30,128,40,10,C.neon,.9);pool(g,275,132,44,10,C.vio,.9);pool(g,190,130,46,9,C.warn,.6);pool(g,95,136,16,6,C.neon,.8);
+// desks with CRT monitors
+for(const dx of [8,52]){rect(g,dx,112,28,3,'#4a3044');rect(g,dx,115,28,1,'#120b10');rect(g,dx+2,116,2,12,'#2a1b27');rect(g,dx+24,116,2,12,'#2a1b27');
+  rect(g,dx+7,96,14,13,'#3a2636');rect(g,dx+9,98,10,9,'#000');rect(g,dx+12,109,4,3,'#3a2636');rect(g,dx+20,108,4,4,'#2a1b27')}
+// jukebox
+rect(g,86,104,14,28,'#3a2636');rect(g,87,102,12,3,'#3a2636');rect(g,88,101,10,1,'#3a2636');
+for(let y=106;y<118;y+=3)rect(g,88,y,10,1,C.accS);rect(g,88,120,10,8,'#120b10');
+g.globalAlpha=.35;rect(g,85,100,16,33,C.neon);g.globalAlpha=1;
+// marble bust with a neon mustache, on a pedestal
+rect(g,122,118,14,20,'#d9d2e6');rect(g,121,117,16,2,'#eee8f6');rect(g,121,137,16,2,'#b9b0cc');for(let y=120;y<136;y+=3)rect(g,124,y,1,2,'#b9b0cc');
+rect(g,124,110,10,7,'#d9d2e6');rect(g,126,100,7,10,'#eee8f6');rect(g,125,96,8,5,'#d9d2e6');px(g,131,102,'#8a7fa0');rect(g,133,104,1,2,'#d9d2e6');
+rect(g,127,106,6,1,C.neon);px(g,126,105,C.neon);px(g,133,105,C.neon);g.globalAlpha=.3;rect(g,125,104,10,4,C.neon);g.globalAlpha=1;
+// lo-fi plant by the desks
+rect(g,40,118,8,10,'#3a2636');for(let k=0;k<6;k++){const a=-1.2+k*.5;for(let r=0;r<10;r++)px(g,44+Math.cos(a)*r,117-Math.abs(Math.sin(a))*r-r*.3,k%2?'#4f9a7a':'#3f7f68')}
+// the bar: counter, bottles, stools
+rect(g,148,114,80,3,'#6a4a3a');rect(g,148,117,80,17,'#3a2636');for(let x=150;x<228;x+=6)rect(g,x,118,1,15,'#2a1b27');
+rect(g,148,117,80,1,C.warn);
+[[154,C.ok],[160,C.warn],[164,C.info],[170,C.accS],[176,C.warn],[200,C.ok],[206,C.info]].forEach(([x,c])=>{rect(g,x,106,3,8,c);rect(g,x+1,103,1,3,c);g.globalAlpha=.4;rect(g,x,107,1,6,'#fff');g.globalAlpha=1});
+for(const x of [160,190,216]){rect(g,x,136,8,2,'#4a3044');rect(g,x+3,138,2,8,'#2a1b27');rect(g,x+1,146,6,1,'#2a1b27')}
+// Engram library shelves
+for(let y=40;y<=120;y+=16){rect(g,240,y,72,2,'#4a3044')}
+rect(g,238,38,2,86,'#2a1b27');rect(g,312,38,2,86,'#2a1b27');
+for(let y=40;y<120;y+=16)for(let x=242;x<311;x+=2+(rnd(x+y)*2|0)){const h=8+(rnd(x*3+y)*5|0);rect(g,x,y-h,2,h,[C.vio,C.info,C.accS,C.ok,'#5a3a7a'][(rnd(x+y*7)*5)|0])}
+
+// faint static grain, baked once
+g.globalAlpha=.035;for(let i=0;i<2600;i++)px(g,rnd(i*1.7)*W,rnd(i*3.1)*H,rnd(i)>.5?'#fff':C.teal);g.globalAlpha=1;
+// ---------- people ----------
+const SKIN='#e8b89a',HAIR='#2a1b27';
+function person(x,fy,o,t){
+  const top=fy-20,l=x-3,face=o.flip?-1:1;
+  rect(ctx,l+1,top,5,1,o.hair||HAIR);rect(ctx,l,top+1,7,2,o.hair||HAIR);
+  rect(ctx,l+1,top+2,5,4,SKIN);px(ctx,x+face*1,top+3,'#000');
+  rect(ctx,l+1,top+5,5,1,o.must||'#1a0f14');px(ctx,l,top+4,o.must||'#1a0f14');px(ctx,l+6,top+4,o.must||'#1a0f14');
+  rect(ctx,l+2,top+6,3,1,SKIN);
+  rect(ctx,l,top+7,7,7,o.body);if(o.tie)rect(ctx,x,top+7,1,4,o.tie);
+  const arm=o.typing&&(t*6|0)%2?1:0; // slow: t is scaled down by the callerrect(ctx,x+face*4-(face<0?0:0),top+8+arm,1,5,o.body);rect(ctx,x-face*4,top+8,1,5,o.body);
+  const step=o.walking?((t*8|0)%2):0;
+  rect(ctx,l+1,top+14,2,5-step,o.legs||'#1a1218');rect(ctx,l+4,top+14,2,5-(1-step)*(o.walking?1:0),o.legs||'#1a1218');
+  rect(ctx,l,fy-1,3,1,'#000');rect(ctx,l+4,fy-1,3,1,'#000');
+  if(o.state==='need'||o.state==='done'){const by=top-11;const c=o.state==='need'?C.warn:C.ok;
+    rect(ctx,x-4,by,9,8,c);rect(ctx,x-3,by-1,7,1,c);rect(ctx,x-3,by+8,7,1,c);px(ctx,x,by+9,c);
+    bmp(ctx,o.state==='need'?['###','..#','.##','...','.#.']:['....#','...#.','#.#..','.#...','.....'],x-(o.state==='need'?1:2),by+1,C.bg)}
+}
+const agents=[
+  {id:'a',name:'Token refresh fix',x:40,fy:141,body:C.acc,tie:'#fff',state:'need',typing:0,col:C.acc},
+  {id:'b',name:'Release notes 4.5.1',x:84,fy:140,body:C.info,state:'work',typing:1,col:C.info,flip:1},
+  {id:'c',name:'Sync conflict UI',x:254,fy:142,body:C.vio,state:'work',typing:1,col:'#b48cff'},
+  {id:'d',name:'Herdr status v2',x:206,fy:144,body:C.accS,state:'done',col:C.accS},
+];
+const me={x:129,fy:118,col:C.neon}; // the marble bust speaks
+
+// ---------- hotspots and dialogue ----------
+const say=(who,text)=>({who,text});
+const spots=[
+  {label:'Talk to Token refresh fix',box:[33,116,48,142],stand:56,who:'a',talk:()=>agents[0].state==='need'
+    ?{lines:[say('a','Boss, one question before I go on.'),say('a','If the refresh fails, what should the user see?')],choices:askA()}
+    :{lines:[say('a','On it. Retrying once, then a clear sign-out message.')]}},
+  {label:'Talk to Release notes 4.5.1',box:[77,116,91,142],stand:100,who:'b',talk:()=>({lines:[say('b','Checking the notes against the merged PRs.')],choices:[
+    ['How far along are you?',()=>({lines:[say('b','Step 4 of 5. Six minutes, 18 cents so far.')],again:1})],
+    ['Stop for now.',()=>{agents[1].state='idle';agents[1].typing=0;return{lines:[say('b','Stopped. Nothing is lost; pick me up anytime.')]}}],
+    ['Carry on.',()=>({lines:[say('me','Carry on.')]})]]})},
+  {label:'Talk to Herdr status v2',box:[199,118,214,145],stand:188,who:'d',talk:()=>agents[3].state==='done'
+    ?{lines:[say('d','Done! Three files, all 18 tests pass.')],choices:[
+      ['Show me the changes.',()=>({lines:[say('me','Let me see the changes…'),say('d','+48 −2 across three files. Opening them for you.')],again:1})],
+      ['Save it as a commit.',()=>{agents[3].state='idle';return{lines:[say('d','Saved: feat(herdr): publish status v2.')]}}],
+      ['Nice work.',()=>({lines:[say('d','Thanks, boss.')]})]]}
+    :{lines:[say('d','Committed and resting. Call me for the next one.')]}},
+  {label:'Talk to Sync conflict UI',box:[247,118,262,143],stand:234,who:'c',talk:()=>({lines:[say('c','Reading how sync stores conflicts. Three cases so far.')],choices:[
+    ['What did you find?',()=>({lines:[say('c','Same note edited on two machines, a deleted note edited elsewhere, and a renamed topic.')],again:1})],
+    ['Carry on.',()=>({lines:[say('me','Carry on.')]})]]})},
+  {label:'Look at your tab at the bar',box:[148,102,228,134],stand:172,who:'me',talk:()=>({lines:[say('me','My tab: $3.12 this week, 31 sessions.')],choices:[
+    ['Break it down.',()=>({lines:[say('me','Opus $2.41, Sonnet $0.58, helpers $0.13. Cache hit 71%.')],again:1})],
+    ['How much of my plan is left?',()=>({lines:[say('me','64% until Monday.')],again:1})],
+    ['Warn me at $10 a week.',()=>({lines:[say('me','Done. I’ll warn you before you get there.')],again:1})],
+    ['Enough numbers.',()=>({lines:[]})]]})},
+  {label:'Browse the Engram library',box:[238,20,314,124],stand:226,who:'me',talk:()=>({lines:[say('me','The elephant never forgets.'),say('me','It learned three new things this week.')],choices:[
+    ['What is the latest one?',()=>({lines:[say('me','“The full CLI suite needs more than Go’s ten-minute timeout.”')],again:1})],
+    ['Is anything waiting for me?',()=>({lines:[say('me','Four memories need your review.')],again:1})],
+    ['Open the library.',()=>({lines:[say('me','Opening your memories…')]})],
+    ['Leave it.',()=>({lines:[]})]]})},
+  {label:'Use the jukebox',box:[85,100,101,133],stand:108,who:'me',talk:()=>({lines:[say('me',music?'Shall I stop the music?':'A little lo-fi?')],choices:[
+    [music?'Stop it.':'Play.',()=>{music=!music;return{lines:[say('me',music?'It pauses itself when someone needs you.':'Silence it is.')]}}],['Not now.',()=>({lines:[]})]]})},
+  {label:'Look at the city',box:[104,22,216,104],stand:160,who:'me',talk:()=>({lines:[say('me','The city at dusk. Still shipping.')]})},
+  {label:'Ask the Gentleman for help',box:[120,94,138,138],who:'me',talk:()=>({lines:[say('me','Point at anyone to see what you can do.'),say('me','A yellow ? means they need you. A green check means done.')]})},
+];
+function askA(){return[
+  ['Retry once, then sign them out with a message.',()=>{agents[0].state='work';agents[0].typing=1;updateNeed();return{lines:[say('a','Good call. Doing it now.')]}},'recommended'],
+  ['Keep retrying quietly.',()=>{agents[0].state='work';agents[0].typing=1;updateNeed();return{lines:[say('a','Fine. I’ll log it so a broken server can’t hide.')]}}],
+  ['What have you changed so far?',()=>({lines:[say('a','One file, session.go: +22 −6. All 42 tests pass.')],again:1})],
+  ['How much has this cost?',()=>({lines:[say('a','$0.42 in fourteen minutes, with two helpers.')],again:1})],
+  ['I’ll come back later.',()=>({lines:[say('a','I’ll wait right here.')]})]]}
+let music=false, dlg=null, lastChoices=null, hover=null;
+const speech=document.getElementById('speech'), sentence=document.getElementById('sentence'), chUl=document.getElementById('choices'), said=document.getElementById('said');
+const IDLE='Point at anyone or anything.';
+function who(id){return id==='me'?me:agents.find(a=>a.id===id)}
+// everything appears at once: no walking, no waiting for lines to play
+function present(res,spot){if(spot)dlg={spot,choices:res.choices||null};
+  const lines=res.lines||[];lastChoices=res.choices||(res.again&&dlg?dlg.choices:null);
+  if(lines.length){const sp=lines[lines.length-1].who;speak(sp,lines.filter(l=>l.who===sp).map(l=>l.text).join(' '))}else speak(null,'');
+  showChoices(lastChoices);draw()}
+let speaking=null;
+function speak(id,text){speaking=id?{p:who(id),text}:null;speech.textContent=text;said.textContent=id?`${id==='me'?'Gentleman':who(id).name}: ${text}`:'';placeSpeech()}
+function placeSpeech(){if(!speaking)return;const r=cv.getBoundingClientRect(),s=r.width/W,p=speaking.p;speech.style.color=p.col;
+  speech.style.left=Math.max(200,Math.min(r.width-200,p.x*s))+'px';speech.style.top=((p.fy-(p.state==='need'||p.state==='done'?36:26))*s)+'px'}
+function showChoices(list){chUl.innerHTML='';sentence.style.display=list?'none':'';if(!list){sentence.textContent=IDLE;return}
+  list.forEach(([t,fn,tag],i)=>{const li=document.createElement('li'),b=document.createElement('button');
+    b.innerHTML=`<span class="n">${i+1}</span>${t}${tag?`<span class="rec">${tag}</span>`:''}`;b.onclick=()=>pick(i);li.appendChild(b);chUl.appendChild(li)})}
+function pick(i){const c=lastChoices&&lastChoices[i];if(!c)return;present(c[1]()||{})}
+function go(spot){present(spot.talk(),spot)}
+function clear(){lastChoices=null;dlg=null;speak(null,'');showChoices(null);draw()}
+addEventListener('keydown',e=>{if(lastChoices&&/^[1-9]$/.test(e.key))pick(+e.key-1);if(e.key==='Escape')clear()});
+function updateNeed(){const n=agents.filter(a=>a.state==='need').length;document.getElementById('needline').innerHTML=n?`<button id="go-need">${n} needs you</button>`:'<span style="color:var(--text-muted)">nobody is waiting</span>';
+  const b=document.getElementById('go-need');if(b)b.onclick=()=>go(spots[0])}
+updateNeed();
+
+// ---------- input ----------
+const toCanvas=e=>{const r=cv.getBoundingClientRect();return[(e.clientX-r.left)/r.width*W,(e.clientY-r.top)/r.height*H]};
+const hit=(x,y)=>spots.find(s=>x>=s.box[0]&&x<=s.box[2]&&y>=s.box[1]&&y<=s.box[3]);
+cv.addEventListener('mousemove',e=>{const [x,y]=toCanvas(e);const h=hit(x,y);if(h!==hover){hover=h;draw()}
+  if(!lastChoices)sentence.textContent=hover?hover.label:IDLE;cv.style.cursor=hover?'pointer':'default'});
+cv.addEventListener('click',e=>{const [x,y]=toCanvas(e);const s=hit(x,y);s?go(s):clear()});
+const kbd=document.getElementById('kbd');spots.forEach(s=>{const b=document.createElement('button');b.textContent=s.label;b.onclick=()=>go(s);kbd.appendChild(b)});
+
+// ---------- layout + a slow, quiet loop ----------
+function fit(){const s=Math.min(innerWidth/W,(innerHeight-196)/H);cv.style.width=W*s+'px';cv.style.height=H*s+'px';placeSpeech()}
+addEventListener('resize',fit);fit();
+let t=0,last=performance.now(),acc=0;
+function frame(now){const dt=Math.min(.1,(now-last)/1000);last=now;t+=dt;acc+=dt;if(acc>=1/6){acc=0;draw()}requestAnimationFrame(frame)}
+function draw(){
+  ctx.drawImage(bg,0,0);
+  for(const [dx,a] of [[8,agents[0]],[52,agents[1]]]){const on=a.state!=='idle';for(let y=0;y<4;y++){const w=on?3+((t*(a.typing&&!reduce?1.5:0)+y*3+dx)|0)%6:0;rect(ctx,dx+10,99+y*2,Math.min(8,w),1,on?C.neon:'#2a1b27')}}
+  if(music){for(let i=0;i<3;i++){const y=96-((reduce?i*9:t*4+i*9)%26),x=92+i*3;rect(ctx,x,y,2,2,C.accS);rect(ctx,x+1,y-4,1,4,C.accS)}}
+  agents.slice().sort((a,b)=>a.fy-b.fy).forEach(o=>person(o.x,o.fy,o,reduce?0:t*.25));
+  if(hover){ctx.globalAlpha=.35;const [x0,y0,x1,y1]=hover.box;rect(ctx,x0,y1+1,x1-x0,1,C.accS);ctx.globalAlpha=1}
+}
+draw();requestAnimationFrame(frame);
+present({lines:[say('me','Good evening. Somebody here has a question for you.')]});
+if(location.hash==='#ask')go(spots[0]);
+</script>
+</body>
+</html>

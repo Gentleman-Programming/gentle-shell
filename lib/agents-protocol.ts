@@ -150,6 +150,8 @@ export interface TaskRecord {
 	prompt: string;
 	/** One line for the card: what the subagent is doing. */
 	label: string;
+	/** Explicit, normalized label only; unlike label, never derived from the prompt. */
+	explicitLabel?: string;
 	cwd: string;
 	parentSessionId: string;
 	status: TaskStatus;

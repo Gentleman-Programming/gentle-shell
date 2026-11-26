@@ -1572,59 +1572,6 @@ test("models screen lists configuration problems under the profile name without 
 	assert.ok(!plain.some((line) => line.includes("…")));
 });
 
-test("#2997: due-review workflow preflight precedes delivery while commits and ordinary command safety remain independent", async () => {
-	type ToolCallHandler = (
-		event: { toolName: string; input: unknown },
-		ctx: ExtensionContext,
-	) => Promise<ToolCallEventResult | undefined>;
-	const commands = [
-		"git commit -m relay",
-		"git push origin feature/relay",
-		"gh pr create --base main --head feature/relay",
-		"gh release create v1.2.3",
-		"git status && git commit -m relay",
-		"env SAFE=1 git push origin feature/relay",
-		"sh -c 'gh pr create --base main --head feature/relay'",
-		"sh -c 'gh release create v1.2.3'",
-	] as const;
-	const modes = [
-		{ label: "no native CLI", nativeReviewCli: null },
-		{ label: "RDD off", nativeReviewCli: { reviewMode: async () => ({ status: { effective: "off" } }) } },
-		{ label: "RDD on", nativeReviewCli: { reviewMode: async () => ({ status: { effective: "on" } }) } },
-		{ label: "mode failure", nativeReviewCli: { reviewMode: async () => { throw new Error("mode unavailable"); } } },
-	] as const;
-
-	for (const mode of modes) {
-		const handlers = new Map<string, ToolCallHandler>();
-		const pi = {
-			on(name: string, handler: ToolCallHandler) {
-				handlers.set(name, handler);
-			},
-			events: { emit() {} },
-			registerCommand() {},
-			registerTool() {},
-		} as unknown as ExtensionAPI;
-		createGentleAiExtension({ nativeReviewCli: mode.nativeReviewCli as never })(pi);
-		const toolCall = handlers.get("tool_call");
-		assert.equal(typeof toolCall, "function", mode.label);
-		const ctx = {
-			cwd: process.cwd(),
-			hasUI: true,
-			ui: { confirm: async () => true },
-		} as unknown as ExtensionContext;
-
-		for (const command of commands) {
-			const result = await toolCall!({ toolName: "bash", input: { command } }, ctx);
-			const deliveryCommands: readonly string[] = [commands[1], commands[2], commands[5], commands[6]];
-			const delivery = deliveryCommands.includes(command);
-			if (delivery && (mode.label === "RDD on" || mode.label === "mode failure")) {
-				assert.equal(result?.block, true, `${mode.label}: ${command}`);
-				assert.match(result?.reason ?? "", /RDD pre-delivery/);
-			} else assert.equal(result, undefined, `${mode.label}: ${command}`);
-		}
-	}
-});
-
 test("guarded command confirmation emits a generic correlated permission lifecycle", async () => {
 	type ToolCallHandler = (
 		event: { toolName: string; input: unknown },
@@ -1892,7 +1839,7 @@ test(`${channel} emits only a private, balanced Herdr projection`, () => {
 		registerTool() {},
 	} as unknown as ExtensionAPI;
 	createGentleAiExtension({ nativeReviewCli: null })(pi);
-	const privateHostDiscovery = new Set(["gentle:yolo:host-ui", "gentle:rdd:host-ui", "gentle:desktop:profiles-service"]);
+	const privateHostDiscovery = new Set(["gentle:yolo:host-ui", "gentle:rdd:host-ui", "gentle:desktop:profiles-service", "gentle:desktop:review-service", "gentle:desktop:status-service", "gentle:desktop:background-subagents-service"]);
 	for (const channel of privateHostDiscovery) assert.equal(eventHandlers.has(channel), true);
 	assert.deepEqual([...eventHandlers.keys()].filter(name => !privateHostDiscovery.has(name)).sort(), [
 		"gentle-pi:ask-user-choice:blocked", "gentle-pi:ask-user-question:blocked", "rpiv:ask-user:blocked",
@@ -4338,23 +4285,55 @@ test("reviewer routing follows the profile the session froze at startup, not lat
 	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, undefined)).selection, "nan/flash");
 });
 
-test("provider review roles fall back to the session profile orchestrator before the persisted default", (t) => {
-	const { writeStore, writeSettings } = profilesStoreFixture(t);
-	writeStore({ sol: {} }, "sol");
+test("A3 provider review roles keep the explicit session binding ahead of the frozen orchestrator", (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({ sol: { orchestrator: { model: "openai/frozen" } } }, "sol");
 	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	freezeSessionProfileAtOwnStart({ sessionId: "bound-session", cwd: fixture.root, configHome: fixture.configHome });
 	bindSessionProfile("bound-session", "sol", { orchestrator: { model: "openai/sol", thinking: "high" }, "review-validator": { model: "openai/validator" } });
-	const routing = __testing.readReviewerModelConfig(process.cwd(), "bound-session");
+	const routing = __testing.readReviewerModelConfig(fixture.root, "bound-session");
 	assert.deepEqual(__testing.reviewHostRelaySelection("review-refuter", routing), { selection: "openai/sol", thinking: "high", routingKey: "review-refuter" });
 	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "openai/validator");
 	assert.deepEqual(__testing.reviewHostRelaySelection("risk", routing), { routingKey: "review-risk" }, "lens roles stay fail-closed");
 	assert.equal(__testing.reviewHostRelaySelection("review-refuter", {}).selection, "nan/flash", "without a session orchestrator the persisted default still applies");
+	bindSessionProfile("bound-session", "sol", {});
+	const withoutOrchestrator = __testing.readReviewerModelConfig(fixture.root, "bound-session");
+	for (const role of ["review-refuter", "review-validator"]) {
+		assert.equal(__testing.reviewHostRelaySelection(role, withoutOrchestrator).selection, "nan/flash", "an explicit binding never borrows the old frozen orchestrator");
+	}
 });
 
-test("provider review roles skip the orchestrator fallback for an inherited profile", (t) => {
+test("A3 S5: a resumed session reads its startup record's orchestrator for the provider review roles", (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	// #2863: a later process opening the session has no in-memory freeze; the
+	// startup record is what gives reviewers the profile's orchestrator instead
+	// of the persisted default. The authority publishes exactly this binding:
+	// the record's origin and its full definition, orchestrator included.
+	const orchestrator = { model: "openai/sol", thinking: "medium" as const };
+	const team = { orchestrator, "review-risk": { model: "openai/sol-risk" } };
+	writeStore({ sol: team }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	const before = [readFileSync(storePath, "utf8"), readFileSync(settingsPath, "utf8")];
+	bindSessionProfile("recorded-session", "sol", team, { origin: "global" });
+	assert.equal(readSessionProfileBinding("recorded-session")?.origin, "global", "the record is the session's startup state, not an explicit choice");
+	const routing = __testing.readReviewerModelConfig(fixture.root, "recorded-session");
+	for (const role of ["review-refuter", "review-validator"]) {
+		assert.deepEqual(__testing.reviewHostRelaySelection(role, routing), { selection: "openai/sol", thinking: "medium", routingKey: role });
+	}
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/sol-risk");
+	assert.deepEqual([readFileSync(storePath, "utf8"), readFileSync(settingsPath, "utf8")], before, "reading the record never writes shared state");
+});
+
+// S3: sessions from before A2 never recorded a startup state, so they keep
+// today's behavior; only these sessions still miss the orchestrator on resume.
+test("A3 S3: a pre-A2 session without a startup record keeps the persisted-default reviewer fallback", (t) => {
 	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
-	// Inherited routing drops the orchestrator key, so only Use in this session feeds the fallback.
 	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { model: "openai/sol-risk" } } }, "sol");
 	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
 	freezeSessionProfileAtStartup({ sessionId: "inherited-session", cwd: fixture.root, configHome: fixture.configHome });
@@ -4363,21 +4342,71 @@ test("provider review roles skip the orchestrator fallback for an inherited prof
 	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
 });
 
-// gentle-shell#2742, section 8: only a startup record carries the orchestrator;
-// a freeze at the session's own start knows the definition but records nothing.
-test("provider review roles skip the orchestrator fallback for a profile frozen at the session's own start", (t) => {
+// #2863: A3 closes the own-start in-memory half and the resume half through the record.
+for (const role of ["review-refuter", "review-validator"]) {
+	test(`A3 ${role} uses the orchestrator frozen at the session's own start`, (t) => {
+		const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+		resetFrozenInheritedProfilesForTesting();
+		t.after(() => resetFrozenInheritedProfilesForTesting());
+		const orchestrator = { model: "openai/sol", thinking: "medium", tier: "fast" };
+		writeStore({ sol: { orchestrator, "review-risk": { model: "openai/sol-risk" } } }, "sol");
+		writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+		freezeSessionProfileAtOwnStart({ sessionId: "own-start-session", cwd: fixture.root, configHome: fixture.configHome });
+		writeStore({ sol: { orchestrator: { model: "openai/later" } } }, "sol");
+		const beforeStore = readFileSync(storePath, "utf8");
+		const beforeSettings = readFileSync(settingsPath, "utf8");
+		const routing = __testing.readReviewerModelConfig(fixture.root, "own-start-session");
+		assert.deepEqual(__testing.reviewHostRelaySelection(role, routing), { selection: "openai/sol", thinking: "medium", routingKey: role });
+		assert.deepEqual(routing.orchestrator, orchestrator, "the full frozen entry survives later profile edits");
+		assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/sol-risk");
+		assert.equal(readFileSync(storePath, "utf8"), beforeStore);
+		assert.equal(readFileSync(settingsPath, "utf8"), beforeSettings);
+	});
+}
+
+test("A3 a frozen profile without an orchestrator keeps the settings.json reviewer fallback", (t) => {
 	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
-	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { model: "openai/sol-risk" } } }, "sol");
-	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
-	freezeSessionProfileAtOwnStart({ sessionId: "own-start-session", cwd: fixture.root, configHome: fixture.configHome });
-	const routing = __testing.readReviewerModelConfig(fixture.root, "own-start-session");
-	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/sol-risk");
-	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
+	writeStore({ sol: { "review-risk": { model: "openai/sol-risk" } } }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash", defaultThinkingLevel: "low" });
+	freezeSessionProfileAtOwnStart({ sessionId: "no-orchestrator-session", cwd: fixture.root, configHome: fixture.configHome });
+	const routing = __testing.readReviewerModelConfig(fixture.root, "no-orchestrator-session");
+	for (const role of ["review-refuter", "review-validator"]) {
+		assert.deepEqual(__testing.reviewHostRelaySelection(role, routing), { selection: "nan/flash", thinking: "low", routingKey: role });
+	}
 });
 
-test("provider review roles skip the orchestrator fallback for a repository pin", (t) => {
+test("A3 a profile without an orchestrator clears a stale materialized reviewer fallback at own start", (t) => {
+	const { fixture, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeStore({ sol: { "review-risk": { model: "openai/sol-risk" } } }, "sol");
+	writeSettings({ defaultProvider: "openai", defaultModel: "current", defaultThinkingLevel: "low" });
+	writeFileSync(fixture.globalPath, JSON.stringify({ orchestrator: { model: "openai/stale", tier: "fast" } }));
+	const beforeModels = readFileSync(fixture.globalPath, "utf8");
+	const beforeSettings = readFileSync(settingsPath, "utf8");
+
+	freezeSessionProfileAtOwnStart({ sessionId: "stale-orchestrator-session", cwd: fixture.root, configHome: fixture.configHome });
+	const routing = __testing.readReviewerModelConfig(fixture.root, "stale-orchestrator-session");
+	const roles = ["review-refuter", "review-validator"];
+	const selections = roles.map((role) => __testing.reviewHostRelaySelection(role, routing));
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), beforeModels);
+	assert.equal(readFileSync(settingsPath, "utf8"), beforeSettings);
+	assert.deepEqual(selections, roles.map((role) => ({ selection: "openai/current", thinking: "low", routingKey: role })));
+});
+
+test("A3 frozen orchestrator never fills an unconfigured lens model", (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { thinking: "high" } } }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	freezeSessionProfileAtOwnStart({ sessionId: "lens-session", cwd: fixture.root, configHome: fixture.configHome });
+	const routing = __testing.readReviewerModelConfig(fixture.root, "lens-session");
+	assert.deepEqual(__testing.reviewHostRelaySelection("risk", routing), { thinking: "high", routingKey: "review-risk" });
+	assert.deepEqual(__testing.reviewHostRelaySelection("reliability", routing), { routingKey: "review-reliability" });
+});
+
+test("A3 provider review roles still skip the orchestrator fallback for a repository pin", (t) => {
 	const { fixture, writeStore, writeSettings, localPinPath, writePin } = profilesStoreFixture(t);
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
@@ -4900,7 +4929,8 @@ test("clear after a session's own start goes back to the defaults it started wit
 	await __testing.runProfilesPanelAction(ctx, { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" }, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "fast" }, {});
 	await h.run("clear", ctx);
 	const family = manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === SESSION_PROFILE_CUSTOM_TYPE);
-	assert.equal(family.length, 2, "the clear follows the Use in this session bind");
+	assert.equal(family.length, 3, "the own-start record, the Use bind, then the clear");
+	assert.deepEqual((family[0] as { data?: unknown }).data, createSessionProfileStartupBind("global", "team", TEAM_DEFINITION), "the own start records the profile it began with");
 	assert.deepEqual((family.at(-1) as { data?: unknown }).data, createSessionProfileStartupBind("global", "team", TEAM_DEFINITION));
 	assert.match(h.last().message, /New launches go back to the profile this session started with, "team/);
 });

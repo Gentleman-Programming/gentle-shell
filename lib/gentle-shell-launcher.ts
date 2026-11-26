@@ -6,7 +6,7 @@ import { GENTLE_SHELL_CONFIG_HOME_ENV } from "./gentle-shell-bundled.ts";
 // env/fs/exec. `bin/gentle-shell.mjs` (T2) wires these into the real process,
 // filesystem and child process so this module stays fully unit-testable.
 
-export type LauncherCommand = "home" | "setup" | "upgrade" | "self-uninstall" | "memory";
+export type LauncherCommand = "home" | "setup" | "upgrade" | "self-uninstall" | "memory" | "desktop" | "tower";
 
 // pi's own package-management subcommands (see pi's cli/args.ts printHelp
 // "Commands" list): each is dispatched by pi itself, before pi's own flag
@@ -34,15 +34,19 @@ export interface ParsedLauncherArgs {
 	// field only tells buildPiInvocation to skip its extension injection, so
 	// pi sees the bare subcommand it expects as argv[0].
 	piSubcommand?: PiSubcommand;
+	// Set only for `--version --json` (in either order, with home selectors):
+	// print the version as one JSON line. Anywhere else `--json` stays a Pi
+	// argument, so this field is absent and the parse is unchanged.
+	json?: true;
 	error?: string;
 }
 
-// Home-, upgrade- and self-uninstall-subcommand parsing is deliberately shallow:
+// Home-, upgrade-, self-uninstall-, memory- and desktop-subcommand parsing is deliberately shallow:
 // each only counts as the subcommand when it is argv[0], and everything after it is handed over
 // untouched as commandArgs — T2 owns interpreting `home link|isolated|<path>`.
 // `self-uninstall` is not `uninstall`, which stays pi's own alias for `remove`.
 export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
-	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall" || argv[0] === "memory") {
+	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall" || argv[0] === "memory" || argv[0] === "desktop" || argv[0] === "tower") {
 		return {
 			link: false,
 			isolated: false,
@@ -69,10 +73,12 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 	let commandArgs: string[] = [];
 	let piSubcommand: PiSubcommand | undefined;
 	const passthrough: string[] = [];
+	let separated = false;
 
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === "--") {
+			separated = true;
 			const rest = argv.slice(i + 1);
 			if (passthrough.length === 0 && rest.length > 0 && isPiSubcommand(rest[0])) {
 				piSubcommand = rest[0];
@@ -175,7 +181,52 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 		}
 	}
 
-	return { link, isolated, home, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, error };
+	// `--version --json`: the only Pi-bound token was this one `--json` before
+	// any separator, so it belongs to the launcher's own version report.
+	const json = version && command === undefined && !separated && passthrough.length === 1 && passthrough[0] === "--json";
+	if (json) passthrough.length = 0;
+
+	return { link, isolated, home, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, ...(json ? { json: true as const } : {}), error };
+}
+
+// --- tower ------------------------------------------------------------------
+
+export interface TowerArgs {
+	open: boolean;
+	port?: number;
+	/** Print one JSON line (`gentle-shell.tower/v1`) instead of the text lines. */
+	json?: true;
+	error?: string;
+}
+
+// `gentle-shell tower [--no-open] [--port <n>] [--json]`: the server always
+// binds 127.0.0.1; --port only fixes which local port; --json is for programs
+// (the desktop app) that read the URL instead of a person.
+export function parseTowerArgs(args: string[]): TowerArgs {
+	let open = true;
+	let port: number | undefined;
+	let json = false;
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (arg === "--no-open") {
+			open = false;
+			continue;
+		}
+		if (arg === "--json") {
+			json = true;
+			continue;
+		}
+		if (arg === "--port" || arg.startsWith("--port=")) {
+			const value = arg === "--port" ? args[(i += 1)] : arg.slice("--port=".length);
+			if (value === undefined) return { open, error: "--port needs a whole number from 1 to 65535" };
+			const n = /^\d+$/.test(value) ? Number(value) : NaN;
+			if (!(n >= 1 && n <= 65535)) return { open, error: `--port needs a whole number from 1 to 65535 (got "${value}")` };
+			port = n;
+			continue;
+		}
+		return { open, error: `unknown tower argument "${arg}"` };
+	}
+	return { open, ...(port === undefined ? {} : { port }), ...(json ? { json: true as const } : {}) };
 }
 
 // --- home resolution -------------------------------------------------------
@@ -460,9 +511,84 @@ export function provisionedEntry(config: RawLauncherConfig, homeDir: string): Pr
 // A marker written before gentle-pi version tracking existed has no
 // `gentlePi` field, which never strictly-equals a real version string, so it
 // always counts as needing provisioning too — see ProvisionedEntry above.
+// Compatibility alias kept for existing callers and tests; new code uses setupCheck.
 export function needsProvisioning(config: RawLauncherConfig, homeDir: string, pin: string, gentlePiVersion: string): boolean {
-	const entry = provisionedEntry(config, homeDir);
-	return entry === undefined || entry.gentleAi !== pin || entry.gentlePi !== gentlePiVersion;
+	return setupCheck(config, homeDir, pin, gentlePiVersion).needsSetup;
+}
+
+export type SetupCheckReason = "never-provisioned" | "gentle-ai-changed" | "gentle-pi-changed";
+
+export interface SetupCheckResult {
+	needsSetup: boolean;
+	reasons: SetupCheckReason[];
+	// The home's provisioning record, when it has one.
+	previous?: ProvisionedEntry;
+}
+
+// Why `homeDir` needs provisioning: the one comparison needsProvisioning,
+// automatic setup's progress lines, and the read-only `setup --check` share.
+// No record is "never-provisioned"; otherwise each changed version is named
+// (a record without `gentlePi` counts as "gentle-pi-changed").
+export function setupCheck(config: RawLauncherConfig, homeDir: string, pin: string, gentlePiVersion: string): SetupCheckResult {
+	const previous = provisionedEntry(config, homeDir);
+	if (previous === undefined) return { needsSetup: true, reasons: ["never-provisioned"] };
+	const reasons: SetupCheckReason[] = [];
+	if (previous.gentleAi !== pin) reasons.push("gentle-ai-changed");
+	if (previous.gentlePi !== gentlePiVersion) reasons.push("gentle-pi-changed");
+	return { needsSetup: reasons.length > 0, reasons, previous };
+}
+
+export type SetupCheckArgs = { check: false } | { check: true; json: boolean; unrecognized?: string };
+
+// `setup --check [--json]`: read-only, so it accepts nothing else. Without
+// --check this returns { check: false } and `setup` parses its own arguments
+// exactly as before (a lone --json stays an unrecognized setup argument).
+export function parseSetupCheckArgs(args: string[]): SetupCheckArgs {
+	if (!args.includes("--check")) return { check: false };
+	const json = args.includes("--json");
+	const unrecognized = args.find((arg) => arg !== "--check" && arg !== "--json");
+	return { check: true, json, ...(unrecognized === undefined ? {} : { unrecognized }) };
+}
+
+const SETUP_CHECK_REASON_TEXT: Record<SetupCheckReason, string> = {
+	"never-provisioned": "never provisioned",
+	"gentle-ai-changed": "gentle-ai changed",
+	"gentle-pi-changed": "gentle-pi changed",
+};
+
+// `setup --check` exits 3 when it cannot read the launcher config or the home
+// (2 stays argument errors): its report then says why, never with a path.
+export const SETUP_CHECK_ERROR_EXIT_CODE = 3;
+
+export function setupCheckErrorMessage(error: unknown): string {
+	const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+	return typeof code === "string" && /^[A-Z0-9_]+$/.test(code)
+		? `could not read the launcher config or home (${code})`
+		: "could not read the launcher config or home";
+}
+
+// The failed check: one `{schema, error}` JSON line (stdout) or one text line (stderr).
+export function describeSetupCheckError(message: string, json: boolean): string {
+	return json ? JSON.stringify({ schema: "gentle-shell.setup-check/v1", error: message }) : `gentle-shell setup --check: ${message}`;
+}
+
+// The `setup --check` report: one `gentle-shell.setup-check/v1` JSON line
+// (the home mode only, never its directory) or one readable line. `foreign`
+// is a home automatic setup never touches: a --link home, or one homeIsForeign
+// in bin/gentle-shell.mjs rejects.
+export function describeSetupCheck(result: Pick<SetupCheckResult, "needsSetup" | "reasons">, options: { home: ResolvedHome; foreign: boolean; json: boolean }): string {
+	const { home, foreign, json } = options;
+	if (json) {
+		return JSON.stringify({ schema: "gentle-shell.setup-check/v1", needsSetup: result.needsSetup, home: { mode: home.mode }, reasons: result.reasons, foreign });
+	}
+	if (!result.needsSetup) return `gentle-shell: ${home.dir} is set up`;
+	const why = result.reasons.map((reason) => SETUP_CHECK_REASON_TEXT[reason]).join(", ");
+	const foreignNote = foreign ? "; not created by Gentle Shell, so it is never set up automatically" : "";
+	// An isolated home is named explicitly: when the saved default is another
+	// home, a bare `gentle-shell setup` would set up that one instead.
+	const selectors = home.mode === "isolated" ? ["--isolated"] : homeSelectorFlags(home);
+	const command = ["gentle-shell", ...selectors.map(shellQuote), "setup"].join(" ");
+	return `gentle-shell: ${home.dir} needs setup (${why}${foreignNote}); run \`${command}\``;
 }
 
 // Returns a new config object recording `homeDir` as provisioned at `pin`
@@ -628,10 +754,9 @@ function npmSourceDeclaresGentlePi(source: string): boolean {
 	return source === "npm:gentle-pi" || source.startsWith("npm:gentle-pi@");
 }
 
-// The exact `X.Y.Z` an `npm:gentle-pi@X.Y.Z` entry pins, or undefined for a
-// bare name, a range (`^4.6.0`, `~4.6.0`, `4.6`) or a dist-tag (`latest`).
-// Only an exact pin can be compared with the bundled version: reporting a skew
-// from a range would claim a mismatch the declaration never actually makes.
+// Only a bare `X.Y.Z` can be compared safely with the launcher's own version:
+// a range (`^4.6.0`), a short spec (`4.6`) or a dist-tag (`latest`) never
+// makes an exact claim, so reporting skew from one would be a false alarm.
 const EXACT_SEMVER_PATTERN = /^\d+\.\d+\.\d+$/;
 
 function declaredNpmVersion(source: string): string | undefined {
@@ -1336,14 +1461,10 @@ export interface DescribeVersionInput {
 	gentlePiVersion: string;
 	piVersion: string | undefined;
 	home: ResolvedHome;
-	// Exact version a settings.json `packages` entry pins for gentle-pi. Only
-	// reported when it differs from the bundled version, so a matching home
-	// keeps the plain three-line report existing parsers already read.
+	// Exact version an npm declaration pins for gentle-pi. Only reported by
+	// describeVersion when it differs from the bundled version, so a matching
+	// home keeps the three-line report existing parsers already read.
 	declaredGentlePiVersion?: string;
-}
-
-function declaredPackageLine(declaredVersion: string, bundledVersion: string): string {
-	return `gentle-pi ${declaredVersion} (declared) — this launcher ships ${bundledVersion}`;
 }
 
 export function describeVersion(input: DescribeVersionInput): string {
@@ -1353,7 +1474,7 @@ export function describeVersion(input: DescribeVersionInput): string {
 		`home ${input.home.mode} ${input.home.dir}`,
 	];
 	if (input.declaredGentlePiVersion !== undefined && input.declaredGentlePiVersion !== input.gentlePiVersion) {
-		lines.push(declaredPackageLine(input.declaredGentlePiVersion, input.gentlePiVersion));
+		lines.push(`gentle-pi ${input.declaredGentlePiVersion} (declared) — this launcher ships ${input.gentlePiVersion}`);
 	}
 	return lines.join("\n");
 }
@@ -1363,21 +1484,17 @@ export interface DeclaredPackageSkewInput {
 	homeDir: string;
 	bundledVersion: string;
 	installedVersion?: string;
-	// True when the launcher injects its own package root for this run: the
-	// declared package no longer decides what loads, so a stale copy on disk is
-	// not a skew worth reporting.
+	// True when this run injects its own package root: the declared package no
+	// longer decides what Pi loads, so a stale copy on disk is not a skew.
 	takeOver?: boolean;
 }
 
-// The one-line notice for a home whose own settings keep loading a gentle-pi
-// other than this launcher's. Link mode never edits the home's settings by
-// contract, so without this the bundle can move ahead while pi keeps loading
-// an older package and nothing on screen says so.
+// One-line notice for a home whose own settings keep loading a gentle-pi
+// other than this launcher's. Only an npm declaration makes Pi load a package
+// from that home: without it (or with a path declaration) any installation
+// left on disk is not what Pi loads, and naming it would be a false claim.
 export function declaredPackageSkewMessage(input: DeclaredPackageSkewInput): string | undefined {
 	if (input.takeOver === true) return undefined;
-	// Only an npm declaration makes pi load an installed package. Without one the
-	// launcher injects its own package, so a leftover installation on disk is never
-	// what pi loads and naming it would be a false claim.
 	if (input.declaration?.kind !== "npm") return undefined;
 	if (input.installedVersion !== undefined) {
 		if (input.installedVersion === input.bundledVersion) return undefined;
@@ -1388,16 +1505,30 @@ export function declaredPackageSkewMessage(input: DeclaredPackageSkewInput): str
 	return `gentle-shell: ${input.homeDir} declares gentle-pi ${declaredVersion}, but this launcher ships ${input.bundledVersion}; the declared package is what pi loads (settings unchanged).\n`;
 }
 
+// `--version --json`: one `gentle-shell.version/v1` JSON line with the same
+// facts as describeVersion; `pi` is null when no Pi version was found.
+export function describeVersionJson(input: DescribeVersionInput): string {
+	return JSON.stringify({
+		schema: "gentle-shell.version/v1",
+		gentleShell: input.gentlePiVersion,
+		pi: input.piVersion ?? null,
+		home: { mode: input.home.mode, dir: input.home.dir },
+	});
+}
+
 export function helpText(): string {
 	return [
 		"Usage: gentle-shell [options] [-- pi-args...]",
 		"       gentle-shell home [link|isolated|<path>]",
 		"       gentle-shell [home selectors] home import-pi [--dry-run]",
 		"       gentle-shell [home selectors] setup [--dry-run]",
+		"       gentle-shell [home selectors] setup --check [--json]",
 		"       gentle-shell upgrade [--channel release|main]",
 		"       gentle-shell upgrade --rollback",
 		"       gentle-shell memory migrate --confirm-quiescent",
 		"       gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]",
+		"       gentle-shell desktop [--yes] [--no-open] | --status | --uninstall",
+		"       gentle-shell tower [--no-open] [--port <n>] [--json]",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",
@@ -1411,6 +1542,7 @@ export function helpText(): string {
 		"                        from any conflicting package the target settings.json already declares.",
 		"  --help, -h       Show this help text.",
 		"  --version        Show gentle-shell, pi, and home version information.",
+		"                   --version --json prints one JSON line instead (gentle-shell.version/v1).",
 		"",
 		"Commands:",
 		"  home             Print or persist the effective home mode (link, isolated, or a path).",
@@ -1424,6 +1556,9 @@ export function helpText(): string {
 		"                   Accepts --dry-run, forwarded to gentle-ai. Accepts a home selector",
 		"                   (--link, --isolated, --home <dir>) before it.",
 		"                   Warns if configured MCP servers remain disabled; never re-enables them.",
+		"                   --check only reports whether the resolved home needs setup and why",
+		"                   (exit 0 set up, 1 needs setup), writing and downloading nothing;",
+		"                   --json prints one JSON line instead (gentle-shell.setup-check/v1).",
 		"  upgrade          Update Gentle Shell along its channel: the latest release, or the latest",
 		"                   main commits of Gentle Shell and Gentle AI (built locally; needs Go and",
 		"                   pnpm). --channel switches the channel first. A bundled install (the web",
@@ -1441,6 +1576,15 @@ export function helpText(): string {
 		"                   ~/.pi/gentle-ai configuration is kept unless",
 		"                   you accept or pass --include-shared; --dry-run only shows the plan.",
 		"                   Never touches your pi home or custom --home homes.",
+		"  desktop          Install and open Gentle Shell Desktop: Herdr app (pinned minimum",
+		"                   version, downloaded from releases.herdr.dev and checked against its pinned",
+		"                   SHA-256 when missing or older) with Gentle Shell's gentle-* mods and",
+		"                   gentle-shell layout. Shows the plan and asks first (--yes skips the",
+		"                   question); --status and --uninstall; 'gentle-shell desktop --help'.",
+		"  tower            Open the Gentle Tower outside any session: every open Gentle Shell session",
+		"                   as a floor, in your browser. Prints the local URL and serves until Ctrl+C.",
+		"                   --no-open only prints the URL; --port <n> fixes the port (127.0.0.1 only);",
+		"                   --json prints one JSON line with the URL instead, for programs.",
 		"",
 		"Managing packages:",
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",
@@ -1455,6 +1599,7 @@ export function helpText(): string {
 		"  gentle-shell auth <command>      Run pi's own 'auth' against the resolved home.",
 		"  gentle-shell mcp <command>       Run pi's own 'mcp' (add, list, login, logout) against the",
 		"                                   resolved home, e.g. gentle-shell mcp add <name> -- <command>.",
+		"                                   'mcp list --json' is Pi's own JSON listing.",
 		"  'gentle-shell uninstall <source>' is pi's own alias for 'remove'; to remove Gentle",
 		"  Shell itself, use 'gentle-shell self-uninstall'.",
 		"  These run pi's own commands, forwarded verbatim, against the --isolated home",

@@ -214,6 +214,26 @@ You should not have to run `git status` in every worktree to find out what your 
 
 ---
 
+### Gentle Tower — Every session as a floor, in your browser
+
+<img width="100%" src="docs/assets/features/gentle-tower.png" alt="Gentle Tower: a painted pixel-art building at dusk, one floor per Gentle Shell session with rooms for map, workshop, lab, review, Engram, Gentle AI and lounge; agents stand in the room of what they do, and the floor list on the left shows each session's cost and todo progress">
+
+Not everyone lives in a terminal. `/gentle:tower` opens a local web view where each project is a painted building and each open Gentle Shell session is a floor of it. The orchestrator and its named helpers (`worker`, `explore`, `verify`, or `worker-tests` when a role repeats) stand in the room of what they are doing: the map while exploring, the workshop while building, the lab while testing, the lounge when done. A `?` means a floor needs you.
+
+To open it without a session, run `gentle-shell tower` from any terminal: it prints the local URL, opens your browser and keeps serving until Ctrl+C (`--no-open` only prints the URL; `--port <n>` fixes the port, still `127.0.0.1` only; `--json` prints the URL as one JSON line for programs).
+
+- **Tasks at a glance**: each floor shows its todo progress (`2/4 · blocked: …`); click it for the full list. The map's corkboard notes are the same tasks.
+- **Talk to a floor** (`T`): read the orchestrator's latest words and send a message; it arrives as a new turn, or as a follow-up while the agent works. Questions asked in the terminal show as waiting; answer them there or tell the floor.
+- **Artifacts**: the docs, Mermaid diagrams and images a floor wrote open in a viewer.
+- **Engram library and your tab**: a read-only window on the project's memories and on what the open sessions spent, by model and by project.
+- **Controls**: stop a helper, change a floor's permissions, and switch review mode.
+
+The web never has more power than the terminal: it listens on `127.0.0.1` only, with a fresh token in the path on every launch, refuses other origins. Lowering a floor's permissions applies at once; raising them asks for confirmation in that session's terminal. Each session runs the requests itself, with its own rules.
+
+**[Docs →](docs/gentle-shell.md#gentle-tower)**
+
+---
+
 ### Gentle Agents — Parallel work with a live view
 
 <img width="100%" src="docs/assets/features/agents-view.png" alt="Gentle Agents overlay showing a completed subagent thread with model, tokens, and elapsed columns, and the structured handoff it returned">
@@ -304,6 +324,45 @@ Use `/gentle:jobs` to inspect this session's background commands and monitors. R
 The Status panel has a **Jobs** section with each running job's description. When the panel is hidden or unavailable in the compact/mobile layout, the top or bottom bar shows only the running count (`⧗ 1 job`). The count and descriptions disappear when no jobs remain active; `/gentle:jobs` retains completed jobs for inspection.
 
 **[Docs →](docs/gentle-shell.md#background-jobs)**
+
+---
+
+### Gentle Shell Desktop — The same session, in a native window
+
+<img width="100%" src="docs/images/desktop/chat.png" alt="Gentle Shell Desktop running a real session: projects and agents in the left sidebar with plan usage below, sessions as tabs, the chat in the centre with an edit diff card, tool calls and the agent's summary, the Changes inspector on the right with per-file line counts, and a status bar with the ODD todo progress and jobs">
+
+<p align="center"><sub>A real session: the agent edits <code>src/text.js</code>, runs the tests and reports, while Changes tracks the files.</sub></p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/desktop/todo.png" alt="The Todo tab of the inspector showing the session's task list completed, 3 of 3"></td>
+    <td width="50%"><img src="docs/images/desktop/palette.png" alt="The ⌘K Gentle palette open over the chat, listing session commands such as /new, /resume, /fork, /compact and /export"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>The session's todo, live in the inspector.</sub></td>
+    <td align="center"><sub><code>⌘K</code> opens every Gentle Shell command.</sub></td>
+  </tr>
+</table>
+
+Gentle Shell Desktop shows your Gentle Shell sessions in [Herdr app](https://herdr.dev): the conversation as a native chat, with Changes, Todo, Agents, Jobs, Review and Session stats beside it, and the real TUI one switch away (`⌘J`). It is Herdr, unchanged, plus Gentle Shell's own mods and layout; the desktop acts with exactly the authority you have in the terminal, and consent is always answered in the terminal.
+
+- **Every session on your machine**, in two sidebar sections: **Herdr** (running in this window, with the Chat | Terminal switch) and **TUI** (running in any other terminal, such as Herdr TUI or Ghostty; you can still write to it from the chat).
+- **Needs you** pinned at the top of the sidebar, with a notification, whenever a session waits for an answer.
+- **A minimal chat** like the TUI's: every tool, diff or subagent is one line that expands (`⌘O` expands or collapses all).
+- **Plan usage and model profiles**: every usage window the TUI shows, and switching profiles from the header.
+- **Remote machines** from Herdr (**Add machine**), and **light and dark** themes that follow Herdr and the system.
+
+```bash
+gentle-shell desktop              # install what is missing (asks first), then open the window
+gentle-shell desktop --status     # versions and what is installed
+gentle-shell desktop --uninstall  # remove our mods, layout and shortcuts; Herdr stays
+```
+
+To try it before it reaches a release, switch to the main channel first with `gentle-shell upgrade --channel main`, then run `gentle-shell desktop`. Sessions that were already open show up after you restart them.
+
+Requires macOS on Apple silicon or Linux (x86_64, arm64); Gentle Shell installs Herdr app 0.1.16 for you, checked against a pinned SHA-256. On Windows, install Herdr app with its official installer first.
+
+**[Docs →](docs/gentle-shell-desktop.md)**
 
 <p align="center">
   <img src="docs/assets/brand/terminal-divider.svg" width="480" alt="">
@@ -616,7 +675,7 @@ gentle-shell upgrade --rollback
 
 <br>
 
-- **Main channel:** On the main channel it rebuilds Gentle AI and Gentle Shell from the latest `main` commits (only what changed) and needs pnpm and Go (a Go older than the minimum is replaced, for the build only, by the pinned Go the installer left in its own folder); switching back to release restores the pinned Gentle AI binary. When the Gentle AI build fails but Gentle Shell moved, the new Gentle Shell is still installed and the command exits with an error asking you to run `gentle-shell upgrade --channel main` again. The retry rebuilds Gentle AI with the new Shell's code, and finishes once the cause of the original error is resolved.
+- **Main channel:** An interactive terminal shows a spinner with the current upgrade step; CI and redirected output stay free of animation. On the main channel it rebuilds Gentle AI and Gentle Shell from the latest `main` commits (only what changed) and needs pnpm and Go (a Go older than the minimum is replaced, for the build only, by the pinned Go the installer left in its own folder); switching back to release restores the pinned Gentle AI binary. When the Gentle AI build fails but Gentle Shell moved, the new Gentle Shell is still installed and the command exits with an error asking you to run `gentle-shell upgrade --channel main` again. The retry rebuilds Gentle AI with the new Shell's code, and finishes once the cause of the original error is resolved.
 - **Your Pi:** With pnpm 11, the updated Gentle Shell may run a newer Pi that pnpm puts next to it (always at least the minimum); your own Pi is never changed.
 - **Bundled install:** A bundled install (the web installer's own Node, pnpm and Pi) follows the release channel only: it installs the new version beside the current one, verifies it, then switches, keeping the previous version for `--rollback`. On release, once the latest release publishes the bundled distribution, `upgrade` moves a global pnpm or npm installation to the bundled one and asks once before removing the old global `gentle-pi`.
 - **`update` vs `upgrade`:** `gentle-shell update` updates the Pi this launcher runs; `upgrade` updates Gentle Shell. A verified source-linked Shell updates its checkout's local Pi within its declared range, without replacing the link ([requirements](docs/gentle-shell.md#updating-pi-safely)). In a bundled install `update` selects the newest published stable Pi (`--latest` is an alias); `--all` also updates extensions, while explicit extension pins stay pinned. The Pi update warns before installing without the release's verified lockfile: features relying on audited Pi internals (such as Vim) may turn off. It verifies and activates the new pair, retaining rollback. A Shell release upgrade keeps any newer active Pi, also without that release's lockfile. Managed Pi self updates reject `--force`.
@@ -655,6 +714,7 @@ Start with the product-facing destination, then move into the operational refere
 | Destination | Purpose |
 | --- | --- |
 | [gentle-shell reference](docs/gentle-shell.md) | Workspace layout, changes, usage, agents, and todo interactions. |
+| [Gentle Shell Desktop](docs/gentle-shell-desktop.md) | Install, controls, shortcuts, safety and troubleshooting for the Herdr app window. |
 | [ODD workflow](docs/readme-reference.md#organic-driven-development) · [Technical reference](docs/readme-reference.md) | Everyday work and recovery, installation, configuration, commands, and contributor detail. |
 | [Installation wizard (preview)](docs/install-wizard.md) | How the browser installer checks your computer, what it installs on the release and main channels, its security model, and what is still being verified. |
 | [Removing Gentle Shell](docs/gentle-shell-uninstall.md) | What `gentle-shell self-uninstall` removes, keeps and never touches. |

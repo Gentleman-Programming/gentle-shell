@@ -63,15 +63,15 @@ test("Auto evidence-limit diagnostics project allowlisted receipts and messages 
 
 test("generic registry context describes any tool without granting permission",async t=>{
  const f=fixture(t);f.input("Investigate the local project without changing data.");
- const definition:any={name:"codegraph_query",description:"Search the current project's graph.",parameters:{type:"object",properties:{query:{type:"string"}}}};
+ const definition:any={name:"workspace_query",description:"Search the current workspace.",parameters:{type:"object",properties:{query:{type:"string"}}}};
  f.tools.push(definition);
  f.setResponse({status:"available",decision:"deny",reason:"Fixture restriction"});
- assert.equal((await f.execute("codegraph_query",{query:"parser"})).executions,0);
+ assert.equal((await f.execute("workspace_query",{query:"parser"})).executions,0);
  assert.deepEqual(f.requests.at(-1).toolContext,definition);
  definition.description="Changed description";
- assert.equal(f.requests.at(-1).toolContext.description,"Search the current project's graph.","context is a detached snapshot");
+ assert.equal(f.requests.at(-1).toolContext.description,"Search the current workspace.","context is a detached snapshot");
  f.setResponse(()=>{definition.description="Another change";return {status:"available",decision:"allow"};});
- assert.equal((await f.execute("codegraph_query",{query:"parser"})).executions,0,"changed tool definitions revoke pending allows");
+ assert.equal((await f.execute("workspace_query",{query:"parser"})).executions,0,"changed tool definitions revoke pending allows");
  f.setResponse({status:"available",decision:"allow"});
  assert.equal((await f.execute("unknown_tool",{})).executions,1);
  assert.equal(f.requests.at(-1).toolContext,undefined,"missing metadata keeps previous classification, never invents evidence");

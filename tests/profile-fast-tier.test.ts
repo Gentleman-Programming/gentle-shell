@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createSessionProfileIntegration } from "../lib/session-profile-integration.ts";
 import { normalizeProfilesFile, PROFILES_KIND, PROFILES_VERSION, createProfile, duplicateProfile, emptyProfilesFile, parseProfileExportText, parseProfilesFileText, serializeProfileExport, serializeProfilesFile } from "../lib/agent-profiles.ts";
-import { createSessionProfileBind, readSessionProfileEntry, replaySessionProfileBranch, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
+import { createSessionProfileBind, createSessionProfileStartupBind, readSessionProfileEntry, replaySessionProfileBranch, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { normalizeRoutingEntry } from "../lib/model-routing-authority.ts";
 import { parseAgentsConfig, resolveAgentProfile, withPinnedModelProfiles } from "../lib/agents-config.ts";
 import { __testing } from "../extensions/gentle-ai.ts";
 import fast from "../extensions/gentle-fast.ts";
 import { CHILD_TIER_ENV, PROFILE_TIER_EVENT } from "../lib/openai-fast-tier.ts";
 import { runInProcessReviewer } from "../lib/inprocess-reviewer.ts";
-import { bindSessionProfile, clearSessionProfileBinding } from "../lib/session-profile-binding.ts";
-import { freezeSessionProfileAtStartup, readFrozenDefaultOrchestrator, readFrozenInheritedProfile, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
+import { bindSessionProfile, clearSessionProfileBinding, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { freezeSessionProfileAtStartup, readFrozenDefaultOrchestrator, readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 
 test("All Fast sets compatible routes without toggling existing Fast or changing other fields", () => {
  const model = "openai/gpt-6.1-sol";
@@ -65,6 +68,68 @@ test("profile UI saves Fast for both providers and independent roles", () => {
   assert.equal(results[0].config.worker.tier, "fast");
  }
 });
+
+for (const [provider, api] of [["openai", "openai-responses"], ["openai-codex", "openai-codex-responses"]]) {
+ for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
+  test(`/gentle:profiles can select and save Fast for ${provider}/${id}`, async (t) => {
+   const root = mkdtempSync(join(tmpdir(), "profile-fast-editor-"));
+   const previous = process.env.GENTLE_PI_CONFIG_HOME;
+   process.env.GENTLE_PI_CONFIG_HOME = root;
+   t.after(() => {
+    if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+    else process.env.GENTLE_PI_CONFIG_HOME = previous;
+    rmSync(root, { recursive: true, force: true });
+   });
+   const path = join(root, "profiles.json");
+   const existing = `${provider}/gpt-6.1-sol`;
+   const orchestrator = { model: `${provider}/${id}`, thinking: "high" };
+   const team = { orchestrator, "review-risk": { model: existing, tier: "standard" } };
+   const initial = { kind: PROFILES_KIND, version: PROFILES_VERSION, active: "daily", profiles: { daily: { orchestrator: { model: existing } }, team } };
+   writeFileSync(path, JSON.stringify(initial));
+   type PanelFactory = Parameters<ExtensionContext["ui"]["custom"]>[0];
+   let visits = 0;
+   const ctx = {
+    cwd: root,
+    sessionManager: SessionManager.inMemory(root),
+    modelRegistry: { getAvailable: async () => [{ provider, api, id }, { provider, api, id: "gpt-6.1-sol" }] },
+    ui: {
+     notify() {},
+     async custom(factory: PanelFactory) {
+      let action: unknown;
+      const panel = await factory(
+       { terminal: { rows: 30 }, requestRender() {} } as Parameters<PanelFactory>[0],
+       { fg: (_tone: string, value: string) => value } as Parameters<PanelFactory>[1],
+       {} as Parameters<PanelFactory>[2],
+       (result) => { action = result; },
+      );
+      const row = () => panel.render(120).find((line) => line.includes(id));
+      assert.ok(panel.handleInput);
+      if (visits++ === 0) {
+       assert.match(row() ?? "", /Standard ▾/, "the new model row offers the tier control");
+       panel.handleInput("t");
+       assert.match(row() ?? "", /Fast ▾/, "t selects Fast on that row");
+       panel.handleInput("s");
+      } else {
+       assert.match(row() ?? "", /Fast ▾/, "the saved tier remains selected after the editor reopens");
+       panel.handleInput("\x1b");
+      }
+      assert.ok(action, "the editor completed the action");
+      return action;
+     },
+    },
+   } as unknown as ExtensionContext;
+   await __testing.openProfilesPanelLoop(ctx, {
+    async setModel() { assert.fail("Save must not change the session model"); },
+    setThinkingLevel() { assert.fail("Save must not change the session effort"); },
+    getThinkingLevel: () => "high",
+   }, "team");
+   assert.equal(visits, 2);
+   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+    ...initial, profiles: { ...initial.profiles, team: { ...team, orchestrator: { ...orchestrator, tier: "fast" } } },
+   });
+  });
+ }
+}
 
 test("tier and fallback controls coexist at narrow and wide widths", () => {
  const model = "openai/gpt-5.6-luna";
@@ -173,6 +238,81 @@ test("session tree restores its frozen profile binding", async () => {
   if (previousChild === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
   else process.env.GENTLE_PI_AGENTS_CHILD = previousChild;
  }
+});
+
+// A session file recorded by a non-follow run, opened later the way a new
+// process does. Returns a resume that holds nothing from the recording run.
+function recordedSession(t: test.TestContext, defaultTier: "fast" | "standard") {
+ const root = mkdtempSync(join(tmpdir(), "profile-fast-resume-"));
+ const config = join(root, "config");
+ mkdirSync(config, { recursive: true });
+ const previous = { config: process.env.GENTLE_PI_CONFIG_HOME, child: process.env.GENTLE_PI_AGENTS_CHILD, follow: process.env.GENTLE_PI_PROFILE_FOLLOW };
+ process.env.GENTLE_PI_CONFIG_HOME = config;
+ delete process.env.GENTLE_PI_AGENTS_CHILD;
+ delete process.env.GENTLE_PI_PROFILE_FOLLOW;
+ t.after(() => {
+  resetSessionProfileBindingsForTesting();
+  resetFrozenInheritedProfilesForTesting();
+  for (const [key, value] of [["GENTLE_PI_CONFIG_HOME", previous.config], ["GENTLE_PI_AGENTS_CHILD", previous.child], ["GENTLE_PI_PROFILE_FOLLOW", previous.follow]] as const) {
+   if (value === undefined) delete process.env[key];
+   else process.env[key] = value;
+  }
+  rmSync(root, { recursive: true, force: true });
+ });
+ const model = "openai/gpt-5.6-luna";
+ const record = { orchestrator: { model, thinking: "high" as const, tier: "fast" as const }, worker: { model: "openai-codex/gpt-5.6-sol" } };
+ const started = SessionManager.create(root, join(root, "sessions"));
+ started.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileStartupBind("global", "work", record));
+ started.appendMessage({ role: "user", content: "first", timestamp: 2 } as never);
+ const file = started.getSessionFile();
+ assert.ok(file, "the fixture session is on disk");
+ // The shared default disagrees on the tier, so only the record can say Fast.
+ writeFileSync(join(config, "models.json"), JSON.stringify({ orchestrator: { model, tier: defaultTier } }));
+ return {
+  /** The newest record is now the user's explicit choice of this orchestrator. */
+  choose() {
+   started.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileBind("explicit", { orchestrator: { model, thinking: "high", tier: "fast" } }));
+  },
+  /** A fresh process: nothing frozen or bound survives the restart. */
+  resume(modelId: string, follow = false) {
+   resetSessionProfileBindingsForTesting();
+   resetFrozenInheritedProfilesForTesting();
+   if (follow) process.env.GENTLE_PI_PROFILE_FOLLOW = "1";
+   else delete process.env.GENTLE_PI_PROFILE_FOLLOW;
+   const handlers = new Map<string, Function>();
+   fast({ on: (name: string, fn: Function) => handlers.set(name, fn) } as never);
+   const manager = SessionManager.open(file);
+   const ctx: any = { model: { provider: "openai", api: "openai-responses", id: modelId }, cwd: root, hasUI: false, sessionManager: manager, ui: { notify() {} } };
+   const start = () => handlers.get("session_start")!({ reason: "startup" }, ctx);
+   start();
+   return { sessionId: manager.getSessionId(), request: () => handlers.get("before_provider_request")!({ payload: {} }, ctx) };
+  },
+ };
+}
+
+// gentle-shell#1064 A3 S5/S6: the record is what a resumed process reads. A new
+// process holds no binding and no freeze, so the shared default would decide;
+// the recorded startup orchestrator still applies its tier, for its model only.
+test("a resumed session applies the Fast tier from its startup record over the shared defaults", (t) => {
+ const resumed = recordedSession(t, "standard");
+ const session = resumed.resume("gpt-5.6-luna");
+ assert.equal(readSessionProfileBinding(session.sessionId)?.origin, "global", "the record is what the resumed process binds");
+ assert.deepEqual(session.request(), { service_tier: "priority" }, "the recorded startup tier survives the resume");
+ assert.equal(resumed.resume("gpt-5.6-sol").request(), undefined, "a model the record does not name never gets its tier");
+});
+
+// gentle-shell#1064 A3 S4 reading side: `follow` ignores a startup record and
+// resolves the current defaults, exactly as resolveSessionProfile does; an
+// explicit choice is not a startup state and still wins.
+test("a follow session ignores the resumed startup record and reads the current default tier", (t) => {
+ const resumed = recordedSession(t, "standard");
+ assert.deepEqual(resumed.resume("gpt-5.6-luna", true).request(), { service_tier: "default" }, "follow reads the shared default, not the record's tier");
+ assert.deepEqual(resumed.resume("gpt-5.6-luna").request(), { service_tier: "priority" }, "the same record still decides outside follow");
+ // An explicit choice outranks follow, as it does for the profile itself.
+ resumed.choose();
+ const chosen = resumed.resume("gpt-5.6-luna", true);
+ assert.equal(readSessionProfileBinding(chosen.sessionId)?.origin, "user", "the newest record is the user's choice");
+ assert.deepEqual(chosen.request(), { service_tier: "priority" }, "an explicit choice keeps its tier in follow mode");
 });
 
 test("child runtime uses only its launch route and rejects model mismatches", () => {

@@ -32,6 +32,7 @@ import { DEFAULT_VISUAL_SETTINGS, DENSITY, VISUAL_PRESET, VISUAL_SCHEMA, resolve
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
+import { resolveTpsSettings } from "../lib/tps-policy.ts";
 import { HERDR_TASK_SUMMARY_CHANGED, resolveHerdrTaskSummarySettings, writeHerdrTaskSummarySettings } from "../lib/herdr-task-summary-policy.ts";
 import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import { readBannerConfig } from "../extensions/startup-banner.ts";
@@ -43,6 +44,7 @@ import { CARD_CONTENT, cardContent, resolveCardContent, setCardContent, writeCar
 import { claimNotificationOwner } from "../lib/notification-service.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS } from "../lib/notification-policy.ts";
 import { SUPER_YOLO_STATUS_TEXT, yoloBannerContent } from "../lib/yolo-session-policy.ts";
+import { statusV9 } from "./support/status-v9.ts";
 
 
 // Vim fixtures claim the installed pi-tui release, which the adapter gate
@@ -301,6 +303,72 @@ test("buildShellBarModel shortens the home directory and hides effort for non-re
 	assert.equal(built.branch, null);
 });
 
+test("the context gauge uses the active model's reserve, then the ordinary reserve, then Pi's default", () => {
+	const { pi } = fakePi();
+	const { ctx } = fakeContext();
+	const model = ctx.model!;
+	ctx.getContextUsage = () => ({ contextWindow: 1_048_576, tokens: 524_288, percent: 50 });
+	Object.assign(ctx.sessionManager, { getLeafId: () => "same-leaf" });
+	let compaction: ReturnType<ExtensionAPI["getSettings"]>["compaction"] = {
+		reserveTokens: 209_715,
+		modelOverrides: { [`${model.provider}/${model.id}`]: { reserveTokens: 419_430 } },
+	};
+	pi.getSettings = () => ({ compaction });
+	const memo = createFooterStatusMemo({
+		pi, ctx, footerData: { getGitBranch: () => null, getExtensionStatuses: () => new Map(),
+			getAvailableProviderCount: () => 1, onBranchChange: () => () => {} },
+		usage: () => undefined, profile: () => undefined, jobs: () => undefined, review: () => undefined,
+		tracker: () => ({ model: { files: [], added: 0, deleted: 0, digest: "empty" } as never, unbornRoots: [] }),
+		visualSettings: () => undefined, cardStyle: () => undefined,
+	});
+	const context = () => renderShellBar(memo.model(), plainTheme, 160)[0].split(" ⟡ ").find(segment => segment.startsWith("ctx "));
+	assert.equal(context(), "ctx ▰▰▰▰▱▱▱▱ 50% (105k to compact)");
+	// Same model ID, different provider: the override no longer applies.
+	ctx.model = { ...model, provider: "openai" };
+	assert.equal(context(), "ctx ▰▰▰▰▱▱▱▱ 50% (315k to compact)");
+	compaction = { modelOverrides: { [`${ctx.model.provider}/${ctx.model.id}`]: { keepRecentTokens: 33_000 } } };
+	assert.equal(context(), "ctx ▰▰▰▰▱▱▱▱ 50% (508k to compact)");
+	compaction = { ...compaction, enabled: false };
+	assert.equal(context(), "ctx ▰▰▰▰▱▱▱▱ 50% (compact off)");
+});
+
+test("invalid or unreadable compaction settings leave the context gauge usable without guessing a threshold", () => {
+	const { pi } = fakePi();
+	const { ctx } = fakeContext();
+	const footerData = { getGitBranch: () => null, getExtensionStatuses: () => new Map(),
+		getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const modelKey = `${ctx.model!.provider}/${ctx.model!.id}`;
+	const context = () => renderShellBar(buildShellBarModel(pi, ctx, footerData), plainTheme, 160)[0].split(" ⟡ ").find(segment => segment.startsWith("ctx "));
+	for (const compaction of [
+		{ reserveTokens: -1, modelOverrides: { [modelKey]: { reserveTokens: 4000 } } },
+		{ reserveTokens: 4000, modelOverrides: { [modelKey]: { reserveTokens: 1.5 } } },
+		{ reserveTokens: 4000, modelOverrides: { [modelKey]: { keepRecentTokens: "bad" } } },
+		{ modelOverrides: { [modelKey]: null } },
+		{ enabled: "false" },
+	]) {
+		pi.getSettings = () => ({ compaction } as ReturnType<ExtensionAPI["getSettings"]>);
+		assert.equal(context(), "ctx ▰▰▰▰▱▱▱▱ 45% (? to compact)");
+	}
+	pi.getSettings = () => { throw new Error("settings unavailable"); };
+	assert.equal(context(), "ctx ▰▰▰▰▱▱▱▱ 45% (? to compact)");
+});
+
+test("the context gauge clamps headroom to zero at and above Pi's strict compaction boundary", () => {
+	const { pi } = fakePi();
+	pi.getSettings = () => ({ compaction: { reserveTokens: 419_430 } });
+	const { ctx } = fakeContext();
+	const footerData = { getGitBranch: () => null, getExtensionStatuses: () => new Map(),
+		getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	for (const [tokens, remaining] of [[629_145, 1], [629_146, 0], [629_147, 0]]) {
+		ctx.getContextUsage = () => ({ contextWindow: 1_048_576, tokens, percent: tokens / 1_048_576 * 100 });
+		const context = renderShellBar(buildShellBarModel(pi, ctx, footerData), plainTheme, 160)[0].split(" ⟡ ").find(segment => segment.startsWith("ctx "));
+		assert.equal(context, `ctx ▰▰▰▰▰▱▱▱ 60% (${remaining} to compact)`);
+	}
+	ctx.getContextUsage = () => ({ contextWindow: 1_048_576, tokens: null, percent: null });
+	const afterCompaction = renderShellBar(buildShellBarModel(pi, ctx, footerData), plainTheme, 160)[0];
+	assert.match(afterCompaction, /ctx ▱▱▱▱▱▱▱▱ \?% \(\? to compact\)/);
+});
+
 test("NaN and non-NaN shell bars show selected effort and refresh the memo on changes", () => {
 	const { pi } = fakePi();
 	const { ctx } = fakeContext();
@@ -486,7 +554,7 @@ async function reviewSidebarHarness() {
 	ctx.cwd = process.cwd();
 	let sessionId = "shell-session";
 	ctx.sessionManager.getSessionId = () => sessionId;
-	const raw = JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
+	const raw = statusV9(JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8")));
 	raw.action = "stop";
 	raw.projection.paths = ["src/fresh.ts"];
 	const status = decodeReviewStatusV3(raw);
@@ -677,6 +745,9 @@ test("the jobs snapshot validator admits the finished-tail statuses", () => {
 	assert.ok(isJobsSidebarSnapshot({ jobs: [{ id: "job-1", label: "Spawn failed", startedAt: 1, status: "failed", endedAt: 60_000, exitCode: null }] }));
 	assert.ok(isJobsSidebarSnapshot({ jobs: [{ id: "job-2", label: "Stopped", startedAt: 1, status: "stopped", endedAt: 2 }] }));
 	assert.equal(isJobsSidebarSnapshot({ jobs: [{ id: "job-3", label: "Bad", startedAt: 1, status: "exploded" }] }), false);
+	for (const explicitLabel of [42, null, {}, [], true]) {
+		assert.equal(isJobsSidebarSnapshot({ jobs: [{ id: "job-4", label: "Bad", explicitLabel, startedAt: 1 }] }), false);
+	}
 });
 
 test("hidden Status leaves only a jobs count in regular bottom and fullscreen header chrome", async (t) => {
@@ -3615,6 +3686,28 @@ test("customize History rows persist prompt history capture and keep stored hist
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 
+test("customize Notifications rows persist the TPS usage notification toggle", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	// Missing policy file: enabled is the default, so OFF is offered and nothing is written yet.
+	assert.ok(findCustomizeRow(ui, "TPS usage notification: OFF"));
+	assert.equal(existsSync(join(home, "tps.json")), false, "highlighting never applies");
+	await customizeAction(ui, "TPS usage notification: OFF");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveTpsSettings({ gentlePiConfigHome: home }).settings.enabled, false);
+	assert.match(ui.notices.at(-1)!, /TPS usage notification: off/i);
+	assert.ok(findCustomizeRow(ui, "TPS usage notification: OFF (current)"));
+	await customizeAction(ui, "TPS usage notification: ON");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveTpsSettings({ gentlePiConfigHome: home }).settings.enabled, true);
+	assert.match(ui.notices.at(-1)!, /TPS usage notification: on/i);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
 test("customize Layout offers explicit task summary choices without saving on navigation", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const { pi, commands } = fakePi();
@@ -5823,18 +5916,52 @@ test("gentleShell binds the changes shortcut to the same handler as the command"
 	assert.equal(silent.shortcuts.has("alt+g"), false, "the changes shortcut must not register when disabled");
 });
 
-test("Changes never polls Git in the background; external edits appear at turn end", async () => {
- const {pi,handlers,git}=fakePi([{numstat:"4\t2\texternal.ts\n",porcelain:" M external.ts\0"}]);
- gentleShell(pi,{GENTLE_PI_SHELL_CHANGES_WATCH_MS:"5"});
- const {ctx,ui}=fakeContext();
- await fire(handlers,"session_start",ctx);
- await new Promise(resolve=>setTimeout(resolve,30));
- assert.equal(git.length,0);
- assert.equal(ui.widgets.has("gentle-shell-changes"),false);
- await fire(handlers,"agent_end",ctx);
- await changesSettled();
- assert.match(renderFooter(ui),/±1/);
- await fire(handlers,"session_shutdown",ctx);
+test("the legacy watch setting does not poll after the idle load; external edits still appear at turn end", async () => {
+	const { pi, handlers, git } = fakePi([{ numstat: "", porcelain: "" }, { numstat: "4\t2\texternal.ts\n", porcelain: " M external.ts\0" }]);
+	let tick: (() => void) | undefined;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "5" }, {
+		scheduleChangesIdle: (callback) => {
+			tick = () => { tick = undefined; callback(); };
+			return { cancel: () => { tick = undefined; }, unref() {} };
+		},
+	});
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	assert.doesNotMatch(renderFooter(ui), /±/);
+	assert.ok(tick);
+	tick();
+	await changesSettled();
+	assert.equal(ui.widgets.has("gentle-shell-changes"), false);
+	assert.equal(tick, undefined);
+	const afterIdle = git.length;
+	await new Promise(resolve => setTimeout(resolve, 30));
+	assert.equal(git.length, afterIdle);
+	await fire(handlers, "agent_end", ctx);
+	await changesSettled();
+	assert.match(renderFooter(ui), /±1/);
+	await fire(handlers, "session_shutdown", ctx);
+});
+
+test("opening Changes does not wait for the quiet timer and its inventory covers the idle load", async () => {
+	const { pi, handlers, commands, git } = fakePi([{ numstat: "4\t2\texternal.ts\n", porcelain: " M external.ts\0" }]);
+	let cancelled = false;
+	gentleShell(pi, {}, { scheduleChangesIdle: () => ({ cancel: () => { cancelled = true; }, unref() {} }) });
+	const { ctx, ui, overlayReady } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	renderFooter(ui);
+	assert.equal(git.length, 0);
+	const opened = commands.get("gentle:changes")!.handler("", ctx);
+	await overlayReady;
+	try {
+		ui.overlayView!.handleInput("\r");
+		assert.match(ui.overlayView!.render(140).join("\n"), /external\.ts/);
+		assert.equal(git.filter((args) => args.includes("status")).length, 1);
+		assert.equal(cancelled, true);
+	} finally {
+		ui.closeOverlay?.();
+		await opened;
+		await fire(handlers, "session_shutdown", ctx);
+	}
 });
 
 const JWT = `h.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" } })).toString("base64url")}.s`;
@@ -7023,6 +7150,30 @@ test("an open session keeps its frozen profile in the status and Usage scope whe
 	}
 });
 
+// gentle-shell#1064 A4: the display half of S5. A later process resumes the
+// recorded session with no in-memory freeze; the only thing carried over is the
+// startup record (origin global, as openAt leaves it). The header must show the
+// recorded profile, not the live default that changed after the start.
+test("a resumed session shows its startup record's profile in the status header", (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-resumed-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: {}, later: {} }, "team");
+	resetSessionProfileBindingsForTesting();
+	t.after(() => {
+		resetSessionProfileBindingsForTesting();
+	});
+	// What a resume leaves in the later process: the record's binding with its
+	// startup origin, and nothing frozen in memory.
+	bindSessionProfile("shell-resumed", "team", {}, { origin: "global" });
+	const reader = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: home });
+	reader.bind(home, () => ({ root: home, commonDir: home }), "shell-resumed");
+	assert.equal(reader(), "team", "the header shows the recorded profile under its global spelling");
+	// The shared default moves after the session started; the label does not.
+	writeProfilesStore(home, { team: {}, later: {} }, "later");
+	assert.equal(reader.refresh(), false, "the resumed label does not move with the live default");
+	assert.equal(reader(), "team");
+});
+
 test("active profile reader: a bound session shows its frozen profile, and follow shows the live default", (t) => {
 	const root = mkdtempSync(join(tmpdir(), "shell-profile-frozen-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -7458,7 +7609,7 @@ async function mobilePlacementFixture(t: TestContext, headerPlacement: "top" | "
 	root[node]();
 	const state = sidebarState(tui as unknown as TUI);
 	const widget = (ui.widgets.get("gentle-shell-below-input-header") as () => SidebarRail)();
-	const banner = (yoloBannerContent("tui", SUPER_YOLO_STATUS_TEXT) as (tui: TUI) => { render(width: number): string[] })(tui as unknown as TUI);
+	const banner = (yoloBannerContent("tui", SUPER_YOLO_STATUS_TEXT) as (tui: TUI) => { render(width: number): readonly string[] })(tui as unknown as TUI);
 	const layoutRows = () => {
 		const layout = root[node]() as unknown as { entries?: Array<{ component: { render(width: number): string[] } }> };
 		return (layout.entries ?? []).map(({ component }) => component.render(columns).map(stripAnsi).join("\n"));
@@ -7484,7 +7635,7 @@ async function checkMobilePanel(f: Awaited<ReturnType<typeof mobilePlacementFixt
 	await new Promise((resolve) => setImmediate(resolve));
 }
 
-function checkMobileBar(f: Awaited<ReturnType<typeof mobilePlacementFixture>>, rows: string[], width: number) {
+function checkMobileBar(f: Awaited<ReturnType<typeof mobilePlacementFixture>>, rows: readonly string[], width: number) {
 	const text = rows.map(stripAnsi).join("\n");
 	assert.match(text, /main/);
 	assert.match(text, /💥 SUPER-YOLO/);

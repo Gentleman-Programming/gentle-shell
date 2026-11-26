@@ -21,10 +21,19 @@
 // nothing happened" trap, so `source` is part of the result and the panel shows
 // it rather than re-deriving it.
 
-import { profilesFilePath, readProfileWorkflow, readProfilesFileResult, DEFAULT_ORCHESTRATOR_MODE, type OrchestratorMode } from "./agent-profiles.ts";
+import { profilesFilePath, readProfileWorkflow, readProfilesFileResult, DEFAULT_ORCHESTRATOR_MODE, type OrchestratorMode, type ProfileWorkflow } from "./agent-profiles.ts";
 import { resolveSessionProfile } from "./session-profile-freeze.ts";
 
 export const ORCHESTRATOR_MODE_ENV = "GENTLE_PI_ORCHESTRATOR_MODE";
+/**
+ * Set by the launcher on a writer or verify child whose launching session's
+ * profile enables Controlled Engineering: "writer" or "verify" names the section
+ * the child gets; any other value gives none (controlled-engineering S3).
+ */
+export const CONTROLLED_ENGINEERING_ENV = "GENTLE_PI_CONTROLLED_ENGINEERING";
+/** The sections a child can be marked for; the launcher writes one, the receiver accepts only these. */
+export const CONTROLLED_ENGINEERING_ROLES = ["writer", "verify"] as const;
+export type ControlledEngineeringRole = (typeof CONTROLLED_ENGINEERING_ROLES)[number];
 
 /** Which layer decided the effective mode. */
 export type OrchestratorModeSource = "environment" | "session_profile" | "default";
@@ -36,6 +45,8 @@ export interface OrchestratorModeResolution {
 	profileName?: string;
 	/** The raw env value, reported even when it is unrecognized and inert. */
 	envValue?: string;
+	/** Whether the session's profile enables Controlled Engineering; the env override never sets it. */
+	controlledEngineering: boolean;
 }
 
 export interface ResolveOrchestratorModeOptions {
@@ -53,18 +64,18 @@ function resolvedProfileName(resolution: ReturnType<typeof resolveSessionProfile
 }
 
 /**
- * The mode a profile stores, or the raised default when the store cannot
- * answer. Never throws: this runs inside the prompt build, and a broken store
- * must degrade to today's behaviour instead of breaking the orchestrator.
+ * The workflow a profile stores, or the defaults when the store cannot
+ * answer. Never throws: this runs inside the prompt build and the child
+ * launch, and a broken store must degrade to today's behaviour instead.
  */
-function modeFromProfile(configHome: string, profileName: string): OrchestratorMode {
+export function workflowFromProfile(configHome: string, profileName: string): ProfileWorkflow {
 	try {
 		const read = readProfilesFileResult(profilesFilePath(configHome));
-		if (read.status !== "valid") return DEFAULT_ORCHESTRATOR_MODE;
-		return readProfileWorkflow(read.file, profileName).orchestratorMode;
+		if (read.status === "valid") return readProfileWorkflow(read.file, profileName);
 	} catch {
-		return DEFAULT_ORCHESTRATOR_MODE;
+		// Fall through to the defaults.
 	}
+	return { orchestratorMode: DEFAULT_ORCHESTRATOR_MODE, controlledEngineering: false };
 }
 
 export function resolveOrchestratorMode(
@@ -92,11 +103,13 @@ export function resolveOrchestratorMode(
 		...(profileName === undefined ? {} : { profileName }),
 		...(envValue === undefined ? {} : { envValue }),
 	};
-	if (overridden) return { mode: envValue, source: "environment", ...reported };
-	if (profileName !== undefined) {
-		return { mode: modeFromProfile(options.configHome, profileName), source: "session_profile", ...reported };
+	const workflow = profileName === undefined ? undefined : workflowFromProfile(options.configHome, profileName);
+	const controlledEngineering = workflow?.controlledEngineering === true;
+	if (overridden) return { mode: envValue, source: "environment", ...reported, controlledEngineering };
+	if (workflow !== undefined) {
+		return { mode: workflow.orchestratorMode, source: "session_profile", ...reported, controlledEngineering };
 	}
-	return { mode: DEFAULT_ORCHESTRATOR_MODE, source: "default", ...reported };
+	return { mode: DEFAULT_ORCHESTRATOR_MODE, source: "default", ...reported, controlledEngineering };
 }
 
 /** Whether the effective mode requires the supervisor-only workflow. */

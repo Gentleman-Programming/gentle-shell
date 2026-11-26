@@ -19,6 +19,11 @@
 // mode the orchestrator is still chosen at startup while children follow later
 // defaults: an accepted, documented limitation.
 //
+// `follow` never records its startup state and never reads one back
+// (gentle-shell#1064 A3 S4): a startup bind in the record is ignored and the
+// current defaults resolve, the documented v1 divergence. An explicit choice
+// still wins over follow.
+//
 // The frozen state is in-process only, like the explicit binding of slice 2: it
 // lives on `globalThis` behind a `Symbol.for` key because Pi evaluates this
 // module once per extension entrypoint. A resumed session (`--resume`,
@@ -29,7 +34,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { normalizeModelConfig, normalizeRoutingEntry, readModelConfigFile, type AgentModelConfig, type AgentRoutingEntry } from "./model-routing-authority.ts";
-import { profileRoleEntries, profilesFilePath, readProfilesFileResult } from "./agent-profiles.ts";
+import { profileRoleEntries, profilesFilePath, readProfileOrchestrator, readProfilesFileResult } from "./agent-profiles.ts";
 import { readProfilePinStatus, resolveProfilePin, resolveUnversionedProjectProfile } from "./agent-profile-pin.ts";
 import { readSessionProfileBinding, readSessionProfileStartupNone } from "./session-profile-binding.ts";
 import type { SessionProfileStartupState } from "./session-profile-persistence.ts";
@@ -51,7 +56,7 @@ export interface InheritedProfile {
 /** A frozen session: `profile` is `undefined` when no layer had a profile at startup. */
 export interface FrozenInheritedProfile {
 	readonly profile: InheritedProfile | undefined;
-	/** Pi's global default orchestrator, separate from the role-only routing. */
+	/** The frozen orchestrator, separate from the role-only routing. */
 	readonly defaultOrchestrator?: AgentRoutingEntry;
 }
 
@@ -180,11 +185,15 @@ export function readFrozenDefaultOrchestrator(sessionId: string | undefined): Ag
 	return entry ? { ...entry } : undefined;
 }
 
-/** An explicit Make default may update only the applying session's snapshot. */
+/** Own start and explicit Make default update only this session's snapshot. */
 export function setFrozenDefaultOrchestrator(sessionId: string | undefined, value: AgentRoutingEntry | undefined): void {
 	if (!sessionId) return;
 	const entry = normalizeRoutingEntry(value);
-	registry().orchestrators.set(sessionId, entry?.model && entry.tier ? { model: entry.model, tier: entry.tier } : null);
+	registry().orchestrators.set(sessionId, entry?.model ? {
+		model: entry.model,
+		...(entry.thinking === undefined ? {} : { thinking: entry.thinking }),
+		...(entry.tier === undefined ? {} : { tier: entry.tier }),
+	} : null);
 }
 
 function freezes(options: SessionProfileOptions): boolean {
@@ -222,7 +231,11 @@ function startupDefinition(options: SessionProfileOptions, profile: InheritedPro
  */
 export function freezeSessionProfileAtOwnStart(options: SessionProfileOptions): void {
 	freezeSessionProfileAtStartup(options);
-	if (freezes(options)) registry().ownStart.add(options.sessionId!);
+	if (!freezes(options) || registry().ownStart.has(options.sessionId!)) return;
+	registry().ownStart.add(options.sessionId!);
+	const startup = readSessionProfileOwnStartup(options.sessionId);
+	const orchestrator = startup && startup !== "none" ? readProfileOrchestrator(startup.modelProfiles) : undefined;
+	setFrozenDefaultOrchestrator(options.sessionId, orchestrator);
 }
 
 /**
@@ -254,16 +267,18 @@ export function freezeSessionProfileAtStartup(options: SessionProfileOptions): v
  * extension's `session_start` ran first.
  */
 export function resolveSessionProfile(options: SessionProfileOptions): SessionProfileResolution {
+	const env = options.env ?? process.env;
 	const recorded = readSessionProfileBinding(options.sessionId);
 	if (recorded?.origin === "user") return { kind: "explicit", name: recorded.name, modelProfiles: recorded.modelProfiles };
 	// gentle-shell#2742: a startup record is the session's inherited profile,
-	// taken as recorded instead of freezing again, and routed in `follow` mode
-	// too, as v1 routes any bind. Like the freeze, it keeps role routing only.
-	if (recorded !== undefined)
+	// taken as recorded instead of freezing again. Like the freeze, it keeps role
+	// routing only. gentle-shell#1064 A3 S4: a `follow` session ignores that
+	// record and resolves the current defaults below; an explicit choice above
+	// still wins.
+	if (recorded !== undefined && !profileFollowEnabled(env))
 		return { kind: "inherited", profile: { name: recorded.name, origin: recorded.origin, modelProfiles: roleRouting(recorded.modelProfiles) } };
 	if (freezes(options) && readSessionProfileStartupNone(options.sessionId)) return { kind: "inherited", profile: undefined };
 	if (freezes(options)) return { kind: "inherited", profile: frozenOrFreeze(options).profile };
-	const env = options.env ?? process.env;
 	const profile = resolveInheritedProfile(options);
 	return isChildSession(env) || !profileFollowEnabled(env) ? { kind: "live", profile } : { kind: "follow", profile };
 }

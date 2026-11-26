@@ -1,5 +1,5 @@
 import { createReadStream, realpathSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { listSessionFiles } from "../extensions/history/session-scan.ts";
 import { SessionChanges } from "./session-changes.ts";
@@ -77,10 +77,22 @@ export interface StatsFilter {
 	dayKey?: (ms: number) => string;
 }
 
+export interface ProviderStats {
+	provider: string;
+	tokens: number;
+	cost: number;
+	messages: number;
+	share: number;
+}
+
 export interface StatsSummary {
 	totals: TokenTotals;
 	models: ModelStats[];
 	days: Record<string, number>;
+	/** Cost per day, keyed like `days`, rounded like every other cost. */
+	dayCosts: Record<string, number>;
+	/** Usage per provider, largest first, with each provider's share of the tokens. */
+	providers: ProviderStats[];
 	sessions: number;
 	activeDays: number;
 	daysInRange: number;
@@ -242,37 +254,66 @@ function preferredCopy(kept: SessionRecord, other: SessionRecord): SessionRecord
 	return lastUsageAt(other) > lastUsageAt(kept) ? other : kept;
 }
 
-/** A loader over one or more sessions roots that re-reads only files whose size or mtime changed since the last load. */
+/**
+ * A loader over one or more sessions roots that re-reads only files whose size
+ * or mtime changed since the last load. Concurrent loads of the same roots
+ * share one in-flight scan (and its result), so the panel and a Desktop read
+ * never scan the same history twice at once.
+ */
 export function createStatsLoader(): StatsLoader {
 	const cache = new Map<string, { size: number; mtimeMs: number; record: SessionRecord | undefined }>();
-	return {
-		async load(sessionsRoots) {
-			const files = sessionFiles(typeof sessionsRoots === "string" ? [sessionsRoots] : sessionsRoots).sort();
-			const live = new Set(files);
-			for (const path of cache.keys()) if (!live.has(path)) cache.delete(path);
-			const byId = new Map<string, SessionRecord>();
-			const sessions: SessionRecord[] = [];
-			for (const path of files) {
-				let info;
-				try {
-					info = await stat(path);
-				} catch {
-					continue;
-				}
-				let cached = cache.get(path);
-				if (!cached || cached.size !== info.size || cached.mtimeMs !== info.mtimeMs) {
-					cached = { size: info.size, mtimeMs: info.mtimeMs, record: await readSessionFile(path) };
-					cache.set(path, cached);
-				}
-				const record = cached.record;
-				if (!record) continue;
-				// A header without an ID cannot be matched to another copy.
-				if (record.id === UNKNOWN) sessions.push(record);
-				else byId.set(record.id, byId.has(record.id) ? preferredCopy(byId.get(record.id)!, record) : record);
+	let inFlight: { key: string; scan: Promise<SessionRecord[]> } | undefined;
+	const scan = async (roots: readonly string[]): Promise<SessionRecord[]> => {
+		const files = sessionFiles(roots).sort();
+		const live = new Set(files);
+		for (const path of cache.keys()) if (!live.has(path)) cache.delete(path);
+		const byId = new Map<string, SessionRecord>();
+		const sessions: SessionRecord[] = [];
+		for (const path of files) {
+			let info;
+			try {
+				info = await stat(path);
+			} catch {
+				continue;
 			}
-			return [...byId.values(), ...sessions];
+			let cached = cache.get(path);
+			if (!cached || cached.size !== info.size || cached.mtimeMs !== info.mtimeMs) {
+				cached = { size: info.size, mtimeMs: info.mtimeMs, record: await readSessionFile(path) };
+				cache.set(path, cached);
+			}
+			const record = cached.record;
+			if (!record) continue;
+			// A header without an ID cannot be matched to another copy.
+			if (record.id === UNKNOWN) sessions.push(record);
+			else byId.set(record.id, byId.has(record.id) ? preferredCopy(byId.get(record.id)!, record) : record);
+		}
+		return [...byId.values(), ...sessions];
+	};
+	return {
+		load(sessionsRoots) {
+			const roots = typeof sessionsRoots === "string" ? [sessionsRoots] : [...sessionsRoots];
+			const key = JSON.stringify(roots);
+			if (inFlight?.key === key) return inFlight.scan;
+			const current = { key, scan: scan(roots) };
+			inFlight = current;
+			const settle = () => { if (inFlight === current) inFlight = undefined; };
+			current.scan.then(settle, settle);
+			return current.scan;
 		},
 	};
+}
+
+/** True when at least one sessions root is a directory this process can list. */
+export async function hasReadableSessionsRoot(sessionsRoots: readonly string[]): Promise<boolean> {
+	for (const root of sessionsRoots) {
+		try {
+			await readdir(root);
+			return true;
+		} catch {
+			// a missing, non-directory, or unreadable root does not count
+		}
+	}
+	return false;
 }
 
 export function aggregateStats(sessions: readonly SessionRecord[], filter: StatsFilter): StatsSummary {
@@ -283,6 +324,8 @@ export function aggregateStats(sessions: readonly SessionRecord[], filter: Stats
 	const totals = emptyTotals();
 	const models = new Map<string, Omit<ModelStats, "share">>();
 	const days: Record<string, number> = {};
+	const dayCosts: Record<string, number> = {};
+	const providers = new Map<string, Omit<ProviderStats, "share">>();
 	let sessionCount = 0;
 	let longestSession: StatsSummary["longestSession"];
 	for (const session of sessions) {
@@ -296,6 +339,12 @@ export function aggregateStats(sessions: readonly SessionRecord[], filter: Stats
 			lastAt = Math.max(lastAt, message.timestamp);
 			addUsage(totals, message);
 			days[day] = (days[day] ?? 0) + message.total;
+			dayCosts[day] = (dayCosts[day] ?? 0) + message.cost;
+			const provider = providers.get(message.provider) ?? { provider: message.provider, tokens: 0, cost: 0, messages: 0 };
+			provider.tokens += message.total;
+			provider.cost += message.cost;
+			provider.messages++;
+			providers.set(message.provider, provider);
 			const model = models.get(message.model) ?? { model: message.model, tokens: 0, cost: 0, messages: 0 };
 			model.tokens += message.total;
 			model.cost += message.cost;
@@ -318,6 +367,10 @@ export function aggregateStats(sessions: readonly SessionRecord[], filter: Stats
 			.map((model) => ({ ...model, cost: roundCost(model.cost), share: totals.total > 0 ? model.tokens / totals.total : 0 }))
 			.sort((a, b) => b.tokens - a.tokens || b.messages - a.messages || a.model.localeCompare(b.model)),
 		days,
+		dayCosts: Object.fromEntries(Object.entries(dayCosts).map(([day, cost]) => [day, roundCost(cost)])),
+		providers: [...providers.values()]
+			.map((provider) => ({ ...provider, cost: roundCost(provider.cost), share: totals.total > 0 ? provider.tokens / totals.total : 0 }))
+			.sort((a, b) => b.tokens - a.tokens || b.messages - a.messages || a.provider.localeCompare(b.provider)),
 		sessions: sessionCount,
 		activeDays: active.length,
 		daysInRange: daysBetween(firstDay, today) + 1,

@@ -51,7 +51,13 @@
 	let locating = null;
 	let locateQueued = false;
 
-	function makeBox(color) {
+	// The outlines' colors are the canvas theme's (gd:mode `colors`): the hover's border (accent), both fills (wash)
+	// and the selected one's border (focus). Until the canvas sends them, Neutral's.
+	const colors = { accent: "#8ab4ff", wash: "rgba(138, 180, 255, 0.12)", focus: "#ffd479" };
+	// Only a plain color reaches a style: #rgb, #rgba, #rrggbb, #rrggbbaa, or rgb()/rgba() with numbers.
+	const COLOR = /^(?:#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|rgba?\(\d{1,3}(?:\.\d+)?, ?\d{1,3}(?:\.\d+)?, ?\d{1,3}(?:\.\d+)?(?:, ?(?:0|1|0?\.\d+))?\))$/i;
+
+	function makeBox() {
 		const box = document.createElement("div");
 		box.setAttribute(MARK, "");
 		box.setAttribute("aria-hidden", "true");
@@ -59,8 +65,6 @@
 			position: "fixed",
 			pointerEvents: "none",
 			zIndex: "2147483647",
-			border: `2px solid ${color}`,
-			background: "rgba(138, 180, 255, 0.12)",
 			borderRadius: "2px",
 			display: "none",
 			margin: "0",
@@ -70,8 +74,24 @@
 	}
 
 	// Attached to <html>, not <body>, so body child positions (and selectors) stay unchanged.
-	const hoverBox = makeBox("#8ab4ff");
-	const selectedBox = makeBox("#ffd479");
+	const hoverBox = makeBox();
+	const selectedBox = makeBox();
+	paintBoxes();
+
+	function paintBoxes() {
+		Object.assign(hoverBox.style, { border: `2px solid ${colors.accent}`, background: colors.wash });
+		Object.assign(selectedBox.style, { border: `2px solid ${colors.focus}`, background: colors.wash });
+	}
+
+	/** The theme's colors from gd:mode: each one that is a plain color replaces the current one; anything else is ignored. */
+	function setColors(next) {
+		if (!next || typeof next !== "object") return;
+		for (const key of Object.keys(colors)) {
+			const value = next[key];
+			if (typeof value === "string" && value.length <= 64 && COLOR.test(value)) colors[key] = value;
+		}
+		paintBoxes();
+	}
 
 	function place(box, element) {
 		if (!element || !element.isConnected) {
@@ -689,9 +709,12 @@
 	window.addEventListener("message", (event) => {
 		if (event.source !== window.parent || !event.data || typeof event.data !== "object") return;
 		if (event.data.type === "gd:mode") {
+			setColors(event.data.colors);
 			inspecting = event.data.inspect === true;
 			setEnabled(event.data.enabled === true);
 		}
+		// A change of theme: new outline colors only; the mode and the outlines shown stay.
+		else if (event.data.type === "gd:colors") setColors(event.data.colors);
 		else if (event.data.type === "gd:pins") setPins(event.data.pins);
 		else if (event.data.type === "gd:highlight") highlight(event.data);
 		else if (event.data.type === "gd:run-checks") {

@@ -539,7 +539,7 @@ test("get_config rejects unknown stores, unsupported params, and physical paths"
 
 	assert.deepEqual(DESKTOP_CONFIG_METHODS, ["get_config", "set_config"]);
 	assert.deepEqual([...DESKTOP_CONFIG_EVENTS], ["config_changed"]);
-	assert.deepEqual([...DESKTOP_CONFIG_STORES], ["profiles", "models", "profile_fallbacks", "subagents", "pins", "managed_assets"]);
+	assert.deepEqual([...DESKTOP_CONFIG_STORES], ["profiles", "models", "profile_fallbacks", "subagents", "pins", "managed_assets", "persona", "banner", "notifications", "mcp", "pi_settings", "claude_bridge"]);
 });
 
 test("reads never mutate any store", async (t) => {
@@ -596,6 +596,12 @@ test("stores carry the documented read-only split", async (t) => {
 		subagents: true,
 		pins: false,
 		managed_assets: true,
+		persona: false,
+		banner: false,
+		notifications: false,
+		mcp: true,
+		pi_settings: true,
+		claude_bridge: true,
 	});
 });
 
@@ -879,7 +885,7 @@ test("read-only and unknown stores reject writes without creating anything", asy
 	const bridge = bridgeFor(env);
 	const before = snapshotTree(env.root);
 
-	for (const store of ["models", "subagents", "managed_assets"]) {
+	for (const store of ["models", "subagents", "managed_assets", "mcp", "pi_settings", "claude_bridge"]) {
 		const outcome = await setConfig(bridge, { store, data: {}, expectedRevision: "sha256:x" });
 		assertError(outcome, "read_only");
 	}
@@ -1327,11 +1333,29 @@ test("capabilities advertise the wired config read and write surface", async (t)
 		"get_design_canvas",
 		"list_jobs",
 		"cancel_job",
+		"get_job_output",
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",
+		"get_subagent_thread",
+		"list_sessions",
+		"switch_session",
+		"get_changes",
+		"get_change_diff",
+		"get_review_mode",
+		"set_review_mode",
+		"get_usage_stats",
+		"get_update_status",
+		"list_agent_definitions",
+		"get_status",
+		"get_background_subagents",
+		"set_background_subagents",
+		"get_profile_binding",
+		"clear_profile_binding",
+		"get_auth_status",
+		"reload_credentials",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
 });
 
 test("get_config answers through the transport with no physical path in the response", async (t) => {

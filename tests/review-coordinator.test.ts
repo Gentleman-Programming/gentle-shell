@@ -119,6 +119,20 @@ test("an intended-untracked selection returns selection-required; a correction r
  }
 });
 
+test("a stopped run relays the targeted-validator evidence its rejection closure carried (gentle-shell#3520)", async () => {
+ const evidence = { targeted_validation_request_hash: "sha256:" + "c".repeat(64), original_criteria: { passed: true, evidence: ["criteria met"] },
+  correction_regression: { passed: false, evidence: ["consumer broke"], regressions: [{ id: "REG-1", location: "tracked.txt:5", claim: "marker broke consumer", proof_refs: ["frozen diff"] }] }, follow_ups: [] };
+ const rejection = { outcome: "native-last-event-closure", closure: { targeted_validator_evidence: structuredClone(evidence) } };
+ const native = { ...stopped, result: { ...stopped.result, next_transition: { kind: "stop", reason_code: "native_stop_required" } } };
+ const host = backend([collect, rejection, native]);
+ const result = await runReviewCoordinator({ lineageId: lineage }, host);
+ assert.equal(result.outcome, "stopped");
+ assert.equal(result.result, native, "routing still comes only from the bound STATUS");
+ assert.deepEqual(result.targeted_validator_evidence, evidence, "the rejection evidence the capture returned is not lost at the stop");
+ const plain = await runReviewCoordinator({ lineageId: lineage }, backend([collect, captured, native]));
+ assert.equal(Object.hasOwn(plain, "targeted_validator_evidence"), false, "no evidence is invented when the closure carried none");
+});
+
 test("post-edit opaque captures need no targeted-validator reason or operation", async () => {
  const host = backend([collect, captured, approved, closed]);
  assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "closed");

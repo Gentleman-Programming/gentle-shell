@@ -19,7 +19,7 @@ import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
 import { offerBuiltinCodemodeOptOut, type BuiltinCodemodeOptOutOptions } from "../lib/builtin-codemode-optout.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import {
-	CARD_TONE, cardAwaitingResult, cardBottom, cardInnerWidth, cardLine, cardRunningLine, cardStyle, cardTopRows, floatRows, markCardResult,
+	CARD_TONE, CardFrame, cardAwaitingResult, cardBottom, cardInnerWidth, cardLine, cardRunningLine, cardTopRows, floatRows, markCardResult,
 	type CardRowContext, type CardTheme,
 } from "../lib/shell-card.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
@@ -608,31 +608,18 @@ function toolTone(pending: boolean, failed: boolean): ToolTone {
 	return pending ? CARD_TONE.WARNING : CARD_TONE.SUCCESS;
 }
 
-/** One settled frame per component: bounded memory, including all card chrome. */
-class ToolCardRows {
-	private frame?: { width: number; style: ReturnType<typeof cardStyle>; running: boolean; lines: string[] };
-
-	render(width: number, running: boolean, build: () => string[]): string[] {
-		const style = cardStyle();
-		if (this.frame?.width === width && this.frame.style === style && this.frame.running === running) return this.frame.lines;
-		const lines = build();
-		this.frame = { width, style, running, lines };
-		return lines;
-	}
-
-	invalidate(): void { this.frame = undefined; }
-}
-
 class ToolCardTop implements Component {
-	private readonly rows = new ToolCardRows();
+	private readonly rows = new CardFrame();
 	private readonly header: (inner: number) => string;
 	private readonly glyph: string;
 	private readonly tone: ToolTone;
 	private readonly theme: CardTheme;
 	private readonly hint: string | undefined;
 	private readonly row: CardRowContext | undefined;
+	private readonly followsCardContent: boolean;
 
-	constructor(header: (inner: number) => string, tone: ToolTone, theme: CardTheme, glyph: string, hint?: string, row?: CardRowContext) {
+	constructor(header: (inner: number) => string, tone: ToolTone, theme: CardTheme, glyph: string, hint?: string, row?: CardRowContext, followsCardContent = false) {
+		this.followsCardContent = followsCardContent;
 		this.header = header;
 		this.glyph = glyph;
 		this.tone = tone;
@@ -646,7 +633,11 @@ class ToolCardTop implements Component {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
 		const running = this.row !== undefined && cardAwaitingResult(this.row);
-		return this.rows.render(target, running, () => floatRows(this.tone, this.theme, target, (inner) => ({
+		// Bash headings also read the live Card content preference. Neither input
+		// should invalidate unrelated cards or make a settled heading track a clock.
+		const minimal = this.followsCardContent && cardContent() === CARD_CONTENT.MINIMAL;
+		const revision = (running ? 1 : 0) | (minimal ? 2 : 0);
+		return this.rows.render(target, revision, () => floatRows(this.tone, this.theme, target, (inner) => ({
 			head: cardTopRows({ title: this.header(inner), glyph: this.glyph, body: [], tone: this.tone }, this.theme, inner, this.hint),
 			body: running ? [cardRunningLine(this.tone, this.theme, inner)] : undefined,
 			bottom: running ? cardBottom(this.tone, this.theme, inner) : undefined,
@@ -657,7 +648,7 @@ class ToolCardTop implements Component {
 }
 
 class ToolCardBody implements Component {
-	private readonly rows = new ToolCardRows();
+	private readonly rows = new CardFrame();
 	private readonly inner: () => Component;
 	private readonly tone: ToolTone;
 	private readonly theme: CardTheme;
@@ -680,7 +671,7 @@ class ToolCardBody implements Component {
 			bottom: cardBottom(this.tone, this.theme, inner),
 			afterHeading: true,
 		}));
-		return this.cacheable ? this.rows.render(target, false, build) : build();
+		return this.cacheable ? this.rows.render(target, undefined, build) : build();
 	}
 
 	invalidate(): void { this.rows.invalidate(); }
@@ -781,7 +772,7 @@ export function createQuietToolRenderer(
 			const hint = finished ? stripAnsi(keyHint("app.tools.expand", renderContext.expanded === true ? "to collapse" : "to expand")) : undefined;
 			// Minimal collapsed cards fit the call in the top rule; the room leaves the rule's glyph, edges and hint.
 			const summary = renderContext.expanded === true ? undefined : (inner: number) => ({ width: inner - CARD_TOP_CHROME - (hint ? visibleWidth(hint) + 2 : 0) });
-			return new ToolCardTop((inner) => formatToolCall(toolName, callArgs, theme, summary?.(inner)), tone, theme, TOOL_GLYPH[toolName], hint, renderContext);
+			return new ToolCardTop((inner) => formatToolCall(toolName, callArgs, theme, summary?.(inner)), tone, theme, TOOL_GLYPH[toolName], hint, renderContext, toolName === "bash");
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {

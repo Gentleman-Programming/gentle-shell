@@ -5,6 +5,7 @@ import type { ThinkingLevel } from "../lib/model-routing-authority.ts";
 import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
 import { loadKeymaps } from "../lib/keymaps.ts";
 import { CHILD_TIER_ENV } from "../lib/openai-fast-tier.ts";
+import { CONTROLLED_ENGINEERING_ENV, workflowFromProfile, type ControlledEngineeringRole } from "../lib/orchestrator-mode-policy.ts";
 import { spawn } from "node:child_process";
 import { Type } from "typebox";
 import { recordReviewMutation } from "../lib/review-reminder-receipt.ts";
@@ -24,8 +25,8 @@ import { createLocalBashOperations, keyHint, SettingsManager, type ExtensionAPI,
 import { createJobRegistry, isStandaloneSleep, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
 import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsText, monitorStoppedText, registerBackgroundJobTools, type BackgroundJobsChange } from "../lib/background-jobs-tools.ts";
 import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from "../lib/background-monitor.ts";
-import { DESKTOP_JOBS_SERVICE_CHANNEL, DESKTOP_JOBS_SERVICE_SCHEMA, projectDesktopJob, selectDesktopJobs, type DesktopJobsCancelOutcome, type DesktopJobsOwnerRead, type DesktopJobsService } from "../lib/desktop-rpc-jobs.ts";
-import { DESKTOP_AGENTS_SERVICE_CHANNEL, DESKTOP_AGENTS_SERVICE_SCHEMA, accumulateTaskUsage, projectDesktopAgent, selectDesktopAgents, type DesktopAgentsCancelOutcome, type DesktopAgentsOwnerRead, type DesktopAgentsService } from "../lib/desktop-rpc-agents.ts";
+import { DESKTOP_JOBS_SERVICE_CHANNEL, DESKTOP_JOBS_SERVICE_SCHEMA, projectDesktopJob, projectDesktopJobOutput, selectDesktopJobs, type DesktopJobsCancelOutcome, type DesktopJobsOutputOutcome, type DesktopJobsOwnerRead, type DesktopJobsService } from "../lib/desktop-rpc-jobs.ts";
+import { DESKTOP_AGENTS_SERVICE_CHANNEL, DESKTOP_AGENTS_SERVICE_SCHEMA, accumulateTaskUsage, projectDesktopAgent, projectDesktopAgentThread, selectDesktopAgents, type DesktopAgentsCancelOutcome, type DesktopAgentsOwnerRead, type DesktopAgentsService, type DesktopAgentsThreadOutcome } from "../lib/desktop-rpc-agents.ts";
 import { JobsView } from "../lib/jobs-view.ts";
 import { JOBS_FINISHED_TTL_MS } from "../lib/jobs-widget.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
@@ -71,8 +72,9 @@ import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/ag
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { HERDR_BUSY_CHANNEL, nextHerdrBusyAction, type HerdrBusyEmitted } from "../lib/herdr-busy.ts";
+import { HERDR_DESKTOP_TASKS, HERDR_DESKTOP_TASKS_REQUEST, HERDR_DESKTOP_TASK_FINISHED, HERDR_DESKTOP_JOBS, HERDR_DESKTOP_JOB_SETTLED, HERDR_DESKTOP_CONSULT, HERDR_DESKTOP_SEND, HERDR_DESKTOP_INBOUND, type HerdrDesktopInbound, type HerdrDesktopJobSettled } from "../lib/herdr-desktop-events.ts";
 import { AGENTS_GLYPH, agentsCardTone, agentsSpend, agentsSummary, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
-import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
+import { CARD_TONE, cachedCard, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
@@ -166,6 +168,8 @@ export const INPUT_PROMPT_GRACE_MS = 2000;
 // after the grace at most this many times in a row, so a permanently broken
 // runtime never retries forever.
 const PARENT_DELIVERY_RETRY_LIMIT = 3;
+// A swallowed wake or aborted delivery may never start a consuming turn.
+const HERDR_INBOUND_TTL_MS = 300_000;
 
 const retiredSddAgent = (name: string): boolean => /^sdd(?:-|$)/.test(name);
 
@@ -193,6 +197,13 @@ export interface SessionTransportFactory {
 	createListener(registry: SessionTransportRegistry, sessionId: string, onNotification: (notification: ReceivedNotification) => Promise<void>): SessionTransportListener;
 	createClient(registry: SessionTransportRegistry, sessionId: string): SessionTransportClient;
 }
+
+/** Which Controlled Engineering section each child agent gets (controlled-engineering S3). */
+const CONTROLLED_ENGINEERING_AGENT_ROLES: Partial<Record<string, ControlledEngineeringRole>> = {
+	"gentle-ai-worker": "writer",
+	"jd-fix-agent": "writer",
+	"gentle-ai-verify": "verify",
+};
 
 export interface AgentsDeps extends RunnerDeps {
 	home: string;
@@ -1203,6 +1214,92 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// conversation.
 	const completions = createCompletionQueue<TaskRecord>();
 	const messages = createAgentMessageQueue();
+	// Display-only query tracking follows the runner's enqueue/settle hooks, not
+	// the delivery queue: a delivered question still blocks until answered.
+	const herdrQueries = new Map<string, Set<string>>();
+	const emitHerdr = (name: string, data: unknown) => {
+		try { pi.events.emit(name, data); } catch { /* Display must never affect a tool or runner. */ }
+	};
+	// Display-only correlation: idle messages are already in session context;
+	// run-time follow-ups enter it only when Pi emits their custom message_start.
+	type InboundDisplay = { event: Omit<HerdrDesktopInbound, "phase">; state: "held" | "idle" | "queued" | "consumed"; cancel: () => void };
+	const inboundDisplay = new Map<string, InboundDisplay>();
+	const inboundKey = (sessionId: string, peer: string, id: string) => JSON.stringify([sessionId, peer, id]);
+	const inboundDetails = (message: Parameters<ExtensionAPI["sendMessage"]>[0], sessionId: string) => {
+		const details = (message.details as { gentleAgents?: OrchestratorMessageDetails } | undefined)?.gentleAgents;
+		if (message.customType !== AGENTS_ORCHESTRATOR_MESSAGE_TYPE || typeof details?.senderSessionId !== "string"
+			|| typeof details.correlationId !== "string" || details.recipientSessionId !== sessionId) return undefined;
+		return { sessionId, peer: details.senderSessionId, ...(details.senderLabel ? { peerName: details.senderLabel } : {}), id: details.correlationId };
+	};
+	const finishInboundDisplay = (key: string, entry: InboundDisplay) => {
+		try {
+			if (inboundDisplay.get(key) !== entry) return;
+			inboundDisplay.delete(key);
+			try { entry.cancel(); } catch { /* Display timer cleanup is best-effort. */ }
+			emitHerdr(HERDR_DESKTOP_INBOUND, { ...entry.event, phase: "handled" });
+		} catch { /* Display must never affect delivery or lifecycle. */ }
+	};
+	const receiveInboundDisplay = (message: Parameters<ExtensionAPI["sendMessage"]>[0], sessionId: string, state: InboundDisplay["state"]) => {
+		try {
+			const event = inboundDetails(message, sessionId);
+			if (!event) return;
+			const key = inboundKey(sessionId, event.peer, event.id);
+			if (inboundDisplay.has(key)) return;
+			let entry: InboundDisplay;
+			const cancel = deps.schedule(() => finishInboundDisplay(key, entry), HERDR_INBOUND_TTL_MS);
+			entry = { event, state, cancel }; inboundDisplay.set(key, entry);
+			emitHerdr(HERDR_DESKTOP_INBOUND, { ...event, phase: "received" });
+		} catch { /* Display must never affect delivery or lifecycle. */ }
+	};
+	const updateInboundDisplay = (message: Parameters<ExtensionAPI["sendMessage"]>[0], sessionId: string, state: InboundDisplay["state"] | "dropped") => {
+		try {
+			const event = inboundDetails(message, sessionId);
+			if (!event) return;
+			const key = inboundKey(sessionId, event.peer, event.id), entry = inboundDisplay.get(key);
+			if (!entry) return;
+			if (state === "dropped") finishInboundDisplay(key, entry); else entry.state = state;
+		} catch { /* Display must never affect delivery or lifecycle. */ }
+	};
+	const settleInboundDisplay = () => {
+		for (const [key, entry] of inboundDisplay) if (entry.state === "consumed") finishInboundDisplay(key, entry);
+	};
+	let herdrTaskSession: string | undefined;
+	let herdrActiveTasks = new Set<string>();
+	const emitHerdrTasks = (sessionId: string | undefined) => {
+		if (!sessionId) return;
+		try {
+			if (sessionId !== activeSessionId()) return;
+			const all = store.list(sessionId);
+			const previous = herdrTaskSession === sessionId ? herdrActiveTasks : new Set<string>();
+			const tasks = all.filter(task => !isFinished(task.status)).map(task => ({
+				id: task.id, agent: task.agent, label: task.label, explicitLabel: task.explicitLabel, status: task.status,
+				pendingQuery: (herdrQueries.get(task.id)?.size ?? 0) > 0,
+			}));
+			herdrTaskSession = sessionId;
+			herdrActiveTasks = new Set(tasks.map(task => task.id));
+			// Send the terminal edge before the active-only snapshot removes the
+			// record; existing snapshot consumers retain their original contract.
+			for (const task of all) if (previous.has(task.id) && (task.status === "failed" || task.status === "timed_out")) {
+				emitHerdr(HERDR_DESKTOP_TASK_FINISHED, { sessionId, task: {
+					id: task.id, agent: task.agent, label: task.label, explicitLabel: task.explicitLabel, status: task.status, pendingQuery: false,
+				} });
+			}
+			emitHerdr(HERDR_DESKTOP_TASKS, { sessionId, tasks });
+		} catch { /* A stale display observer never affects the owner. */ }
+	};
+	const removeHerdrQuery = (taskId: string, requestId: string) => {
+		const queries = herdrQueries.get(taskId);
+		if (!queries?.delete(requestId)) return;
+		if (queries.size === 0) herdrQueries.delete(taskId);
+		emitHerdrTasks(store.get(taskId)?.parentSessionId);
+	};
+	const unsubscribeHerdrTasks = pi.events.on(HERDR_DESKTOP_TASKS_REQUEST, (value: unknown) => {
+		const sessionId = (value as { sessionId?: unknown } | null)?.sessionId;
+		if (typeof sessionId === "string" && sessionId === activeSessionId()) {
+			emitHerdrTasks(sessionId);
+			emitHerdrJobs(sessionId);
+		}
+	});
 	// A job's exit, or a monitor's line events and harness stop, waiting for
 	// the parent delivery router.
 	type JobNotice = { job: JobRecord; kind: "exit" } | MonitorNotice;
@@ -1220,6 +1317,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}),
 		onSettled: (job) => settleJob(job),
 	});
+	// Replay the existing registry's running rows on status subscription or
+	// resume; finished sidebar tails cannot contribute a Herdr record.
+	const emitHerdrJobs = (sessionId: string) => {
+		try {
+			const running = jobs.list(sessionId).filter(job => job.status === "running")
+				.sort((a, b) => b.startedAt - a.startedAt)
+				.map(({ id, label, explicitLabel, kind, startedAt }) => ({ id, label, explicitLabel, kind, startedAt }));
+			emitHerdr(HERDR_DESKTOP_JOBS, { sessionId, snapshot: { jobs: running } });
+		} catch { /* Display-only replay. */ }
+	};
 	const monitors = createMonitorController({
 		registry: jobs,
 		schedule: (fn, ms) => deps.schedule(fn, ms),
@@ -1230,8 +1337,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// controller only through this versioned, adapter-shaped seam — the jobs
 	// analogue of the usage/design owner services. The adapter never runs or
 	// stops a job itself: `cancel` is `job_stop`'s exact stop path
-	// (`monitors.cancel` then `registry.stop`), and `observe` is driven by the
-	// same actual registry changes below. There is no second registry, process
+	// (`monitors.cancel` then `registry.stop`), `output` reads the registry's
+	// own bounded in-memory tail, and `observe` is driven by the same actual
+	// registry changes below. There is no second registry, process
 	// manager, or store.
 	const desktopJobsObservers = new Set<(sessionId: string) => void>();
 	const notifyDesktopJobs = (sessionId: string): void => {
@@ -1264,10 +1372,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				jobs.stop(job.id);
 				return { kind: "ok", job: projectDesktopJob(job), changed: wasRunning };
 			};
+			const output = (id: string): DesktopJobsOutputOutcome => {
+				if (disposed) return { kind: "not_found" };
+				const job = jobs.get(id);
+				// The same ownership rule list_jobs and cancel apply: a foreign or
+				// unknown id is a typed not_found, never another session's output.
+				if (!job || job.ownerSessionId !== sessionId) return { kind: "not_found" };
+				return { kind: "ok", view: projectDesktopJobOutput(job) };
+			};
 			request.respond({
 				schema: DESKTOP_JOBS_SERVICE_SCHEMA,
 				read,
 				cancel,
+				output,
 				observe: (onChange) => {
 					if (disposed) return () => {};
 					subscriptions.add(onChange);
@@ -1312,7 +1429,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const sessionId = ctx.sessionManager?.getSessionId?.() ?? "";
 			const read = (): DesktopAgentsOwnerRead => ({
 				sessionId,
-				agents: disposed ? [] : selectDesktopAgents(store.list(sessionId)),
+				agents: disposed ? [] : selectDesktopAgents(store.list(sessionId), (id) => store.thread(id)),
 			});
 			const cancel = (id: string): DesktopAgentsCancelOutcome => {
 				if (disposed) return { kind: "not_found" };
@@ -1329,12 +1446,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				const requested = runner.cancel(id, "cancelled: stopped from desktop");
 				const after = store.get(id) ?? before;
 				const changed = requested && after.status !== before.status;
-				return { kind: "ok", agent: projectDesktopAgent(after), requested, changed };
+				return { kind: "ok", agent: projectDesktopAgent(after, store.thread(id)), requested, changed };
+			};
+			// A pure read of the single TaskStore through the activity widget's own
+			// projection, behind the same ownership check `cancel` applies: a foreign
+			// or unknown id is a typed not_found, never another session's thread.
+			const thread = (id: string): DesktopAgentsThreadOutcome => {
+				if (disposed) return { kind: "not_found" };
+				const task = store.get(id);
+				if (!task || task.parentSessionId !== sessionId) return { kind: "not_found" };
+				return { kind: "ok", thread: projectDesktopAgentThread(id, store.thread(id)) };
 			};
 			request.respond({
 				schema: DESKTOP_AGENTS_SERVICE_SCHEMA,
 				read,
 				cancel,
+				thread,
 				observe: (onChange) => {
 					if (disposed) return () => {};
 					subscriptions.add(onChange);
@@ -1359,9 +1486,45 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// status-change notification contract. The usage breakdown recorded at
 	// completion is a status-unchanged update, so `onFinish` notifies it
 	// explicitly; the bridge coalesces both into one event.
+	// Progress inside a running task (a turn ends, a tool starts or finishes,
+	// usage grows) changes no status, so it reaches the bridge through each
+	// active task's own listener, at most once per session every
+	// DESKTOP_AGENTS_PROGRESS_MS. Status changes still notify at once.
+	const DESKTOP_AGENTS_PROGRESS_MS = 500;
+	const desktopProgressTasks = new Map<string, () => void>();
+	const desktopProgressTimers = new Map<string, () => void>();
+	const notifyDesktopAgentsProgress = (sessionId: string): void => {
+		if (desktopAgentsObservers.size === 0 || desktopProgressTimers.has(sessionId)) return;
+		desktopProgressTimers.set(sessionId, deps.schedule(() => {
+			desktopProgressTimers.delete(sessionId);
+			notifyDesktopAgents(sessionId);
+		}, DESKTOP_AGENTS_PROGRESS_MS));
+	};
 	const stopAgentsStatusNotifications = store.subscribeStatusChanges((change) => {
 		notifyDesktopAgents(change.sessionId);
+		if (isFinished(change.status)) {
+			// The store drops a finished task's listeners itself.
+			desktopProgressTasks.delete(change.taskId);
+		} else if (!desktopProgressTasks.has(change.taskId)) {
+			const sessionId = change.sessionId;
+			// Only a change to this task's wire projection is progress: streamed text
+			// moves `lastActivityAt` (which reorders the store's list) but no
+			// projected field, so it never schedules a notification.
+			let lastProjection: string | undefined;
+			desktopProgressTasks.set(change.taskId, store.subscribe(change.taskId, (task, thread) => {
+				const projection = JSON.stringify(projectDesktopAgent(task, thread));
+				if (projection === lastProjection) return;
+				lastProjection = projection;
+				notifyDesktopAgentsProgress(sessionId);
+			}));
+		}
 	});
+	const stopAgentsProgressNotifications = (): void => {
+		for (const unsubscribe of desktopProgressTasks.values()) unsubscribe();
+		desktopProgressTasks.clear();
+		for (const cancel of desktopProgressTimers.values()) cancel();
+		desktopProgressTimers.clear();
+	};
 	// A parent that sleeps while background work runs only burns the turn: each
 	// completion already arrives as a session message (#1903). bash_background
 	// and monitor stay allowed because they are the sanctioned way to wait.
@@ -1376,7 +1539,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (tasks + running === 0) return undefined;
 		return {
 			block: true,
-			reason: `Standalone sleep is blocked while background work is active (${tasks} task(s), ${running} job(s)). End the turn now; each completion arrives automatically as a session message and starts a new turn.`,
+			reason: `Standalone sleep is blocked while background work is active (${tasks} task(s), ${running} job(s)). Continue independent in-scope work; end the turn to wait only when none remains. Each completion arrives automatically as a session message and starts a new turn.`,
 		};
 	});
 	let activeAgentRuns = 0;
@@ -1385,6 +1548,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// session_start context is kept for it and dropped at shutdown; a stale
 	// context throws instead of answering, so delivery fails closed.
 	let parentCtx: ExtensionContext | undefined;
+	const ownsInboundDisplay = (ctx: ExtensionContext) => {
+		try { return !!parentCtx && ctx.sessionManager === parentCtx.sessionManager && ctx.sessionManager === sessions && ctx.sessionManager.getSessionId() === activeSessionId(); }
+		catch { return false; }
+	};
 	const helperPermission = new HelperCostPermission(() => parentCtx && activeTransportFor(parentCtx) ? parentCtx : undefined);
 	pi.on("session_before_switch", () => helperPermission.clear());
 	pi.on("session_before_fork", () => helperPermission.clear());
@@ -1636,9 +1803,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (route === "hold") {
 			heldOrchestratorMessages.push({ message, recipientSessionId });
 			armHoldRecheck();
+			receiveInboundDisplay(message, recipientSessionId, "held");
 			return;
 		}
 		sendToParent(message, route, "followUp");
+		receiveInboundDisplay(message, recipientSessionId, route === "idle" ? "idle" : "queued");
 	};
 	const flushOrchestratorMessages = () => {
 		if (heldOrchestratorMessages.length === 0) return;
@@ -1648,8 +1817,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		heldOrchestratorMessages = [];
 		for (const { message, recipientSessionId } of held) {
 			if (activeSessionId() !== recipientSessionId) continue;
-			try { sendToParent(message, route, "followUp"); }
-			catch { /* Best-effort delivery: at most once, even if forwarding fails. */ }
+			try {
+				sendToParent(message, route, "followUp");
+				updateInboundDisplay(message, recipientSessionId, route === "idle" ? "idle" : "queued");
+			} catch {
+				updateInboundDisplay(message, recipientSessionId, "dropped");
+				/* Best-effort delivery: at most once, even if forwarding fails. */
+			}
 		}
 	};
 
@@ -1777,6 +1951,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	// Session changes discard every pending wake and boundary flush.
 	const resetParentDelivery = (ctx: ExtensionContext | undefined) => {
+		herdrTaskSession = undefined; herdrActiveTasks.clear();
 		helperPermission.clear(); // Revoke before dropping old callback authority.
 		parentCtx = ctx;
 		restoreBridgeWakeIdentity(ctx);
@@ -1784,6 +1959,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		parentRunActive = false;
 		wakeOwed = false;
 		heldOrchestratorMessages = [];
+		for (const entry of inboundDisplay.values()) { try { entry.cancel(); } catch { /* Display only. */ } }
+		inboundDisplay.clear();
 		completionsMaybePending = false;
 		endPromptStart();
 		stopHoldRecheck();
@@ -1808,8 +1985,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (sessionId) {
 			try {
 				pi.events.emit(JOBS_SIDEBAR_EVENT, { sessionId, snapshot: { jobs: [
-					...running.map(({ id, label, startedAt }) => ({ id, label, startedAt })),
-					...finished.map(({ id, label, startedAt, status, endedAt, exitCode }) => ({ id, label, startedAt, status, endedAt, exitCode })),
+					...running.map(({ id, label, explicitLabel, kind, startedAt }) => ({ id, label, explicitLabel, kind, startedAt })),
+					...finished.map(({ id, label, explicitLabel, kind, startedAt, status, endedAt, exitCode }) => ({ id, label, explicitLabel, kind, startedAt, status, endedAt, exitCode })),
 				] } });
 			} catch { /* Display only. */ }
 			// Every actual registry change funnels through this refresh, including
@@ -1839,6 +2016,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (activeAgentRuns === 0) flushAll();
 	};
 	const settleJob = (job: JobRecord) => {
+		if (job.status !== "running") {
+			const { id, explicitLabel, kind, startedAt, status, endedAt, exitCode } = job;
+			const event: HerdrDesktopJobSettled = { sessionId: job.ownerSessionId, job: { id, explicitLabel, kind, startedAt, status, endedAt, exitCode } };
+			emitHerdr(HERDR_DESKTOP_JOB_SETTLED, event);
+		}
 		// A monitor's pending lines are delivered before its end.
 		if (job.kind === "monitor") monitors.finish(job);
 		queueJobNotice({ job, kind: "exit" });
@@ -1872,9 +2054,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const options = event?.systemPromptOptions;
 		if (codemodeReaches(options?.selectedTools) && ["orchestrator_list", "orchestrator_consult", "orchestrator_send_message"].some((name) => options?.selectedTools?.includes(name))) appendSystemPromptOnce(options, COORDINATION_TOOLS_ROUTE);
 	});
-	pi.on("agent_start", () => {
+	pi.on("agent_start", (_event, ctx) => {
 		activeAgentRuns += 1;
 		parentRunActive = true;
+		if (ownsInboundDisplay(ctx)) for (const entry of inboundDisplay.values()) if (entry.state === "idle") entry.state = "consumed";
 		// The run carries everything stored while the parent was idle.
 		wakeOwed = false;
 		endDeliveryRetry();
@@ -1889,7 +2072,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		flushAll();
 		lastRunMessages = event?.messages ?? [];
 	});
+	pi.on("message_start", (event, ctx) => {
+		if (!ownsInboundDisplay(ctx) || event.message.role !== "custom") return;
+		const sessionId = activeSessionId();
+		if (sessionId) updateInboundDisplay(event.message, sessionId, "consumed");
+	});
 	pi.on("agent_settled", (event, ctx) => {
+		if (ownsInboundDisplay(ctx)) settleInboundDisplay();
 		parentRunActive = false;
 		endPromptStart();
 		flushAll();
@@ -1898,7 +2087,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// A child's own failures are handled by the parent's runner, never by the child.
 		if (deps.env.GENTLE_PI_AGENTS_CHILD !== "1" && ctx) void orchestratorFallbackFor(ctx).onSettled(messages, { aborted: event?.aborted === true }).catch((error: unknown) => ui?.notify(`Model fallback failed: ${error instanceof Error ? error.message : String(error)}`, "error"));
 	});
-	pi.on("turn_end", () => flushAll());
+	pi.on("turn_end", (_event, ctx) => { if (ownsInboundDisplay(ctx)) settleInboundDisplay(); flushAll(); });
 	pi.on("session_compact", scheduleBoundaryFlush);
 	pi.on("session_compact_failed", scheduleBoundaryFlush);
 	pi.on("session_tree", scheduleBoundaryFlush);
@@ -1934,8 +2123,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			try {
 				messages.enqueueQuery(task, requestId, message, deps.now());
 				if (activeAgentRuns === 0) flushMessages(true);
+				const queries = herdrQueries.get(task.id) ?? new Set<string>();
+				queries.add(requestId); herdrQueries.set(task.id, queries);
+				emitHerdrTasks(task.parentSessionId);
 				return true;
 			} catch (error) {
+				removeHerdrQuery(task.id, requestId);
 				messages.expireQuery(task.id, requestId);
 				if (task.mode === AGENT_MODE.TASK && !hadYield) yieldedTaskIds.delete(task.id);
 				throw error;
@@ -1945,6 +2138,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (outcome === "replied") messages.consumeQuery(taskId, requestId);
 			// A busy parent still sees a question that expired in its queue (S15 P9a).
 			else messages.markQueryExpired(taskId, requestId);
+			removeHerdrQuery(taskId, requestId);
 		},
 		onFallback: (task, change) => announceFallback({ agent: task.agent, from: change.from, to: change.to, category: change.category, ...(change.launch ? { launch: true } : {}) }, task.parentSessionId, task.id),
 		onSuccessfulMutation: (task, tool) => {
@@ -1997,6 +2191,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (!foreignTask) recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId, ...runtimeWriterProfile(task) });
 		},
 		onFinish: (task, observations) => {
+			herdrQueries.delete(task.id);
 			// Completion is the only forwarding opportunity. No pending event, policy
 			// query or promise survives this callback; the receiver drops when busy.
 			const { id, parentSessionId, status } = task;
@@ -2055,23 +2250,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const content = message.content as string | Array<{ type: string; text?: string }>;
 		const text = typeof content === "string" ? content : content.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("\n");
 		const tone = details?.status === "completed" ? CARD_TONE.SUCCESS : CARD_TONE.ERROR;
-		const hint = expandHint(options.expanded);
+		const expanded = options.expanded;
+		const hint = expandHint(expanded);
 		// The same answer card as the tool result: iris chrome, the state pill
 		// on top, the answer below ("answer" keeps its name through the flow).
 		const t = agentTheme(theme, tone);
 		const facts = details?.status ? statusCardFacts({ gentleAgents: details }) : undefined;
 		const chips = [details?.agent, modelChip(facts?.model), facts?.thinking ? sanitizeTerminalText(facts.thinking) : undefined];
-		const answer = options.expanded ? text.split("\n") : agentResultPreview(text).split("\n").filter((line) => line.trim() !== "");
+		const answer = expanded ? text.split("\n") : agentResultPreview(text).split("\n").filter((line) => line.trim() !== "");
 		const body = facts ? [statusCardRows(facts, t, false)[0], ...answer] : answer;
-		return {
-			render(width: number) {
-				// Same one-line heading budget as the tool cards: the answer card's
-				// inner columns are the style's, not the terminal's.
-				const subtitle = fitSubject({ title: "Agent answer", tone, glyph: ACTION_GLYPH.result }, hint, panelInnerWidth(theme, width, tone), chips);
-				return renderCard({ title: "Agent answer", subtitle, body, tone, glyph: ACTION_GLYPH.result }, t, width, { expanded: options.expanded, previewRows: 3, hint });
-			},
-			invalidate() {},
-		};
+		return cachedCard((width) => {
+			// Same one-line heading budget as the tool cards: the answer card's
+			// inner columns are the style's, not the terminal's.
+			const subtitle = fitSubject({ title: "Agent answer", tone, glyph: ACTION_GLYPH.result }, hint, panelInnerWidth(theme, width, tone), chips);
+			return renderCard({ title: "Agent answer", subtitle, body, tone, glyph: ACTION_GLYPH.result }, t, width, { expanded, previewRows: 3, hint });
+		});
 	});
 
 	// A stale completion is appended as a custom entry: durable transcript
@@ -2318,6 +2511,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// A status change is worth a frame right away; deltas inside a task are
 	// coalesced so a chatty child cannot flood the terminal.
 	store.subscribeSummary(() => {
+		emitHerdrTasks(activeSessionId());
 		refreshHerdrBusy();
 		publishActivity();
 		if (sidebarTui) invalidateSidebar(sidebarTui);
@@ -2615,12 +2809,24 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (profile.tier && childModel?.provider && childModel.id) {
 			childEnv[CHILD_TIER_ENV] = JSON.stringify({ tier: profile.tier, model: `${childModel.provider}/${childModel.id}` });
 		}
+		// controlled-engineering S3: only the writers and the verifier, and only when
+		// the launching session's profile enables the option; read live per launch.
+		const sessionProfileName = sessionProfile.kind === "explicit" ? sessionProfile.name : sessionProfile.profile?.name;
+		delete childEnv[CONTROLLED_ENGINEERING_ENV];
+		const controlledRole = CONTROLLED_ENGINEERING_AGENT_ROLES[agent.name];
+		if (controlledRole !== undefined && sessionProfileName !== undefined
+			&& workflowFromProfile(profileConfigHome, sessionProfileName).controlledEngineering === true) {
+			childEnv[CONTROLLED_ENGINEERING_ENV] = controlledRole;
+		}
 		if (foreign) for (const key of inheritedUnsafeGitEnvironmentKeys(childEnv)) delete childEnv[key];
 		const extensions = childExtensionRequest(deps.env, deps.childExtensionPaths);
 		if (profile.tier && !parseChildPackageInjection(deps.env)) {
 			const fastPath = fileURLToPath(new URL("./gentle-fast.ts", import.meta.url));
 			if (existsSync(fastPath)) extensions.extensionPaths = [...new Set([...(extensions.extensionPaths ?? []), fastPath])];
 		}
+		const activeMcpTools = typeof pi.getAllTools === "function"
+			? pi.getAllTools().map((tool) => tool.name).filter((name) => name.startsWith("mcp__"))
+			: undefined;
 		const request: TaskRequest = {
 			agent,
 			prompt,
@@ -2629,6 +2835,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			mode,
 			cwd: target ?? parentWorktreeRoot,
 			parentSessionId,
+			...(activeMcpTools && activeMcpTools.length > 0 ? { mcpTools: activeMcpTools } : {}),
 			...(admittedModel === undefined ? {} : { beforeSpawn: () => {
 				if (!current()) throw new Error("Writer session changed before spawn.");
 				registry.validate(originalCwd);
@@ -2646,8 +2853,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			thinking: profile.thinking,
 			...(() => {
 				// The chain of the profile this launch resolved, else the active profile's.
-				const name = sessionProfile.kind === "explicit" ? sessionProfile.name : sessionProfile.profile?.name;
-				const fallbacks = profileFallbackChain(profileConfigHome, name, agent.name);
+				const fallbacks = profileFallbackChain(profileConfigHome, sessionProfileName, agent.name);
 				return fallbacks.length ? { fallbacks } : {};
 			})(),
 			sessionDir,
@@ -2892,20 +3098,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						facts?.thinking ? headingText(facts.thinking) : undefined,
 					]
 					: [];
-				return {
-					render(width: number) {
-						if (width <= 0) return [];
-						const hint = expandHint(options.expanded);
-						return floatRows(tone, iris, width, (inner) => ({
-							...(ownHeading ? {
-								head: [cardTop({ title: heading, subtitle: fitSubject({ title: heading, tone, glyph }, hint, inner, ownChips), body: [], tone, glyph }, iris, inner, hint)],
-							} : { afterHeading: true }),
-							body: cardBodyRows(fitRows ? rows.map((row) => truncateToWidth(row, cardInnerWidth(inner), "…")) : rows, tone, iris, inner, { expanded: options.expanded, previewRows: ownHeading ? 3 : undefined }),
-							bottom: cardBottom(tone, iris, inner),
-						}));
-					},
-					invalidate() {},
+				const expanded = options.expanded;
+				const render = (width: number) => {
+					if (width <= 0) return [];
+					const hint = expandHint(expanded);
+					return floatRows(tone, iris, width, (inner) => ({
+						...(ownHeading ? {
+							head: [cardTop({ title: heading, subtitle: fitSubject({ title: heading, tone, glyph }, hint, inner, ownChips), body: [], tone, glyph }, iris, inner, hint)],
+						} : { afterHeading: true }),
+						body: cardBodyRows(fitRows ? rows.map((row) => truncateToWidth(row, cardInnerWidth(inner), "…")) : rows, tone, iris, inner, { expanded, previewRows: ownHeading ? 3 : undefined }),
+						bottom: cardBottom(tone, iris, inner),
+					}));
 				};
+				// Pi reconstructs the result on output, expansion, and theme changes;
+				// the separate call still reads its live task and shared state.
+				return options.isPartial === false ? cachedCard(render) : { render, invalidate() {} };
 			},
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				return execute(params as Record<string, unknown>, ctx, signal);
@@ -2995,32 +3202,38 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					|| Buffer.byteLength(input.question) > 1024 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(input.question)))
 				|| (input.cursor !== undefined && (typeof input.cursor !== "string" || input.cursor.length > 1024))) throw new Error("Invalid metadata consultation parameters.");
 			const selection = { recipientSessionId: input.recipient_session_id, cursor: input.cursor as string | undefined };
-			const transport = activeTransportFor(ctx);
-			const result = (receipt: MetadataReceipt) => {
-				const output = kind === "metadata" ? receipt : { status: "unavailable", code: receipt.unknowns[0], source: "helper_advice", ownerReply: false, authority: "none" };
-				return text(JSON.stringify(output), { gentleAgents: { senderSessionId: transport?.sessionId, receipt: output } });
-			};
-			if (!transport) return result(unavailableMetadata(selection.recipientSessionId, "not-ready"));
-			const reply = (receipt: unknown) => text(JSON.stringify(receipt), { gentleAgents: { senderSessionId: transport.sessionId, receipt } });
-			if (kind === "revoke-reasoning") {
-				helperPermission.revoke(selection.recipientSessionId);
-				return reply({ status: "revoked", source: "helper_advice", ownerReply: false, authority: "none" });
-			}
+			const consult = { sessionId: ctx.sessionManager.getSessionId() ?? "", target: selection.recipientSessionId, callId: randomUUID() };
+			// Revoking prior reasoning is not a consultation; Herdr Desktop shows nothing for it.
+			const reportsConsult = kind !== "revoke-reasoning";
+			if (reportsConsult) emitHerdr(HERDR_DESKTOP_CONSULT, { ...consult, phase: "start" });
 			try {
-				const activations = await transport.listener.registry.listActivations(transport.sessionId);
-				if (activeTransportFor(ctx) !== transport) return result(unavailableMetadata(selection.recipientSessionId, "source-session-changed"));
-				const receipt = consultPublishedMetadata(agentHome, activations, selection);
-				if (kind === "metadata") return result(receipt);
-				const current = () => activeTransportFor(ctx) === transport && parentCtx?.sessionManager === ctx.sessionManager;
-				const readSource = async () => {
-					const peers = await transport.listener.registry.listActivations(transport.sessionId);
-					return current() ? consultPublishedMetadata(agentHome, peers, selection)
-						: unavailableMetadata(selection.recipientSessionId, "source-session-changed");
+				const transport = activeTransportFor(ctx);
+				const result = (receipt: MetadataReceipt) => {
+					const output = kind === "metadata" ? receipt : { status: "unavailable", code: receipt.unknowns[0], source: "helper_advice", ownerReply: false, authority: "none" };
+					return text(JSON.stringify(output), { gentleAgents: { senderSessionId: transport?.sessionId, receipt: output } });
 				};
-				const advice = await helperPermission.run({ receipt, question: input.question as string, signal: _signal,
-					readSource, isSourceCurrent: () => current() && consultPublishedMetadata(agentHome, activations, selection).digest === receipt.digest });
-				return reply(advice);
-			} catch { return result(unavailableMetadata(selection.recipientSessionId, "discovery-unavailable")); }
+				if (!transport) return result(unavailableMetadata(selection.recipientSessionId, "not-ready"));
+				const reply = (receipt: unknown) => text(JSON.stringify(receipt), { gentleAgents: { senderSessionId: transport.sessionId, receipt } });
+				if (kind === "revoke-reasoning") {
+					helperPermission.revoke(selection.recipientSessionId);
+					return reply({ status: "revoked", source: "helper_advice", ownerReply: false, authority: "none" });
+				}
+				try {
+					const activations = await transport.listener.registry.listActivations(transport.sessionId);
+					if (activeTransportFor(ctx) !== transport) return result(unavailableMetadata(selection.recipientSessionId, "source-session-changed"));
+					const receipt = consultPublishedMetadata(agentHome, activations, selection);
+					if (kind === "metadata") return result(receipt);
+					const current = () => activeTransportFor(ctx) === transport && parentCtx?.sessionManager === ctx.sessionManager;
+					const readSource = async () => {
+						const peers = await transport.listener.registry.listActivations(transport.sessionId);
+						return current() ? consultPublishedMetadata(agentHome, peers, selection)
+							: unavailableMetadata(selection.recipientSessionId, "source-session-changed");
+					};
+					const advice = await helperPermission.run({ receipt, question: input.question as string, signal: _signal,
+						readSource, isSourceCurrent: () => current() && consultPublishedMetadata(agentHome, activations, selection).digest === receipt.digest });
+					return reply(advice);
+				} catch { return result(unavailableMetadata(selection.recipientSessionId, "discovery-unavailable")); }
+			} finally { if (reportsConsult) emitHerdr(HERDR_DESKTOP_CONSULT, { ...consult, phase: "settle" }); }
 		},
 	});
 	pi.registerTool({
@@ -3094,8 +3307,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				});
 				if (peers.length === 0) return text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.");
 				const unlisted = peers.filter(peer => peer.freshness === "recent" && peer.legacyLabel === undefined && !peer.state && !peer.statePublished);
-				const mandate = unlisted.length > 0 ? `\n${unlisted.length} of ${peers.length} advertised sessions have never published work state. Publication is mandatory for classified work: each owner session publishes state (objective, work.topic) at session start and again on every task-topic change via orchestrator_session_id.` : "";
-				return text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}${mandate}`, { gentleAgents: { candidates: peers } });
+				const unpublishedNote = unlisted.length > 0 ? `\n${unlisted.length} of ${peers.length} advertised sessions have never published work state. Progress publishes automatically from the todo list; an owner session publishes objective, work.topic, decisions or blockers via orchestrator_session_id only when they change.` : "";
+				return text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}${unpublishedNote}`, { gentleAgents: { candidates: peers } });
 			} catch (error) {
 				// SessionPresenceError codes are a fixed enum with no record content,
 				// so surfacing the reason is safe and keeps diagnosis possible.
@@ -3176,8 +3389,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "denied" });
 			}
 			try {
+				// Read the sender label while ctx is live: Pi invalidates it on session replacement.
+				const senderLabel = sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? "");
 				const accepted = await transport.client.sendNotification(recipient, message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
-				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted", message, reason, senderLabel: sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? ""), recipientLabel: messagePeerLabel(agentHome, recipient) } }) : text("Error: session messaging is not ready.", { error: "stale" });
+				// The peer already accepted: a replaced transport or stale ctx only suppresses the
+				// display event, never the receipt, or a retry would duplicate the message.
+				let current = false;
+				try { current = activeTransportFor(ctx) === transport; } catch { /* stale ctx: the session was replaced */ }
+				if (current) emitHerdr(HERDR_DESKTOP_SEND, { sessionId: transport.sessionId, target: recipient });
+				return text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted", message, reason, senderLabel, recipientLabel: messagePeerLabel(agentHome, recipient) } });
 			} catch {
 				return text("Error: session message was not accepted.", { error: "not accepted" });
 			}
@@ -3416,6 +3636,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		presence?.dispose();
 		registryFor(ctx);
 		showWidget(ctx);
+		emitHerdrTasks(activeSessionId());
+		if (activeSessionId()) emitHerdrJobs(activeSessionId()!);
 		// An explicit in-session /resume always brings this session's own
 		// finished subagents back from disk. Pi also reports "startup" (not
 		// "resume") when the CLI is launched directly into an existing session
@@ -3472,10 +3694,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("session_shutdown", async () => {
 		shuttingDown = true;
 		stopAgentsStatusNotifications();
+		stopAgentsProgressNotifications();
 		// Both Desktop owner services leave the bus with the session, so a
 		// replaced runtime is never discovered through a stale owner.
 		unsubscribeDesktopJobsService();
 		unsubscribeDesktopAgentsService();
+		unsubscribeHerdrTasks();
+		herdrQueries.clear();
 		completions.dropAll();
 		messages.dropAll();
 		// No stale busy may survive the runtime.

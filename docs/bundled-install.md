@@ -138,7 +138,7 @@ Observed with pnpm 11.1.1:
    - downloads our pinned Node and pnpm into a temporary prefix (with Go on Windows);
    - installs the exact pair with `installVersion` (`--frozen-lockfile`);
    - switches `current` and writes the launcher;
-   - requires `gentle-shell --version` to report exactly `gentle-shell <shell>` and `pi <pi>`.
+   - requires the first two lines of `gentle-shell --version` to be `gentle-shell <shell>` and `pi <pi>`. A plain `--version` can add one more line when the home's npm declaration pins a different gentle-pi; `checkLauncher` does not inspect lines beyond those two.
 
    On Windows a fresh temporary folder stands in for the private-folder claim, which has its own native tests. The launcher runs in `pnpmEnvironment`, the environment our pnpm ran in, without any `PI_*` or `GENTLE_*` variable. So no host `NODE_OPTIONS`, `NODE_PATH`, npm or pnpm setting, or Pi override reaches it.
 3. **`distribution-assets`** runs only after every verify lane passed. It attaches both files to the release with `gh release upload --clobber`.
@@ -347,14 +347,14 @@ S9. Everything Gentle AI and gentle-pi keep lives in the prefix, except Engram's
 - **gentle-engram.** The gentle-engram Pi extension finds Engram only through `ENGRAM_BIN`, read once when it loads, and otherwise runs `engram` from `PATH`. So Pi gets `ENGRAM_BIN` (the guard; memory reaches the shared server through `ENGRAM_URL`), and no `PATH` entry is added. An `ENGRAM_BIN` the user set is kept. The agent's shell inherits `ENGRAM_BIN` too, so an Engram MCP launcher started there through `ENGRAM_BIN` uses the same guard.
 - **Personas.** Setup snapshots and restores the persona Gentle AI may rewrite: the prefix's `config/gentle-ai/persona.json`, and also the user's `~/.pi/gentle-ai/persona.json`. A Gentle AI release without the variables still writes the user's file, and restoring an unchanged file does nothing. The managed-asset record is restored only in the user's `~/.gentle-ai/state.json`; the prefix's record belongs to the pinned Gentle AI.
 - **pi-pretty and prompt history.** In bundled mode only, the pi-pretty wrapper passes `deps.sdk` with Pi's five tool factories and `getAgentDir`, so its FFF database lands in `<agent home>/pi-pretty/fff`, and prompt history keeps its store under `<agent home>/history` ([Prompt history](prompt-history.md)). Elsewhere both keep their existing locations: Pi's deps reach pi-pretty unchanged (`$HOME/.pi/agent/pi-pretty/fff`, or no store without `HOME`), and history stays under `~/.pi/agent/history`, also in the isolated home of a pnpm or npm install, so existing histories are not left behind.
-- **Effective with a later Gentle AI.** gentle-pi pins Gentle AI 4.5.0 today (`INSTALLER_VERSION`); the following are historical compatibility notes for Gentle AI 4.0.0, which ignores the four `GENTLE_AI_*` variables. Whether 4.5.0 includes gentle-ai#5462 is unverified here. Until gentle-pi pins a Gentle AI release that contains gentle-ai#5462:
+- **Historical compatibility (Gentle AI 4.0.0).** The current Gentle AI 5.0.0 pin honors the four `GENTLE_AI_*` variables above. Gentle AI 4.0.0 ignored them:
   - Setup still writes `~/.gentle-ai` and `~/.pi/gentle-ai`, with the restores above, and still acquires Engram its own way.
   - The persona goes to the user's `~/.pi/gentle-ai/persona.json` (Gentle AI 4.0.0 resolves it from the OS home) and is restored there. The prefix's `config/gentle-ai/persona.json` is not created by setup.
   - The background-subagents policy already lands in `<prefix>/config/gentle-ai/` through `GENTLE_PI_CONFIG_HOME=<prefix>/config` (see above).
 
 What stays the user's:
 
-- `git`, `gh` and `codegraph`, which the agent runs for the user's work, from the user's `PATH`.
+- `git` and `gh`, which the agent runs for the user's work, from the user's `PATH`.
 - Engram's memory data in `~/.engram`, shared with the user's other agents.
 - pi-pretty's reads of `$HOME/.pi/agent/settings.json` (its `index.js` and `render.js` look for its settings there whatever the agent home is). This needs an upstream pi-pretty change; `node_modules` is not patched.
 - `GENTLE_SHELL_PREFIX` and `ENGRAM_BIN` reach the agent's shell, like the agent home variables. A gentle-pi the user runs there is not bundled and ignores the prefix (see above).
@@ -379,7 +379,7 @@ Ctrl+C cancels opening (exit 130). No update runs without explicit confirmation.
 2. When that release is the active version, the command says it is already current and changes nothing.
 3. Otherwise `ensureRuntime` runs (with Go on Windows), and `installVersion` installs the release in place beside the active version. If the active Pi is newer than the release's verified Pi, Shell keeps that Pi and warns that it installs without the release's lockfile. The release lockfile is used only for its exact pair.
 4. The new version's own `scripts/bundled-install.mjs` is loaded, only from that freshly installed folder, and only when its real path stays inside it. Its `prefixLayout`, `ensureRuntime` and `ensureLauncher` must all be functions; otherwise the upgrade stops. Its `ensureRuntime` installs that release's pinned Node and pnpm beside ours when the pins moved, and reuses them otherwise.
-5. The new version's launcher must print exactly `gentle-shell <shell>` and `pi <pi>`. It runs with the release's Node, in the pnpm environment, with no `GENTLE_*` or `PI_*` overrides. It runs in bundled mode for that version, with its exact Pi: the only extra variable, `GENTLE_SHELL_VERIFY_VERSION=<id>`, makes `resolveBundledInstall` treat that id as current. The launcher honors it for `--version` only, and never passes it to a child. A `pi` on `PATH` cannot pass this check.
+5. The new version's launcher must print `gentle-shell <shell>` and `pi <pi>` as its first two lines under `--version`; `checkLauncher` ignores any later line (including the declared-version skew line). It runs with the release's Node, in the pnpm environment, with no `GENTLE_*` or `PI_*` overrides. It runs in bundled mode for that version, with its exact Pi: the only extra variable, `GENTLE_SHELL_VERIFY_VERSION=<id>`, makes `resolveBundledInstall` treat that id as current. The launcher honors it for `--version` only, and never passes it to a child. A `pi` on `PATH` cannot pass this check.
 6. Only then does `current` switch (`activateVersion`, one rename), and the release's own `ensureLauncher` writes the launcher for its Node. If the launcher cannot be written, `current` switches back and the command fails.
 7. `pruneVersions(layout, 2)` keeps the new version and the previous one. If pruning fails, the upgrade still succeeds and prints a warning.
 

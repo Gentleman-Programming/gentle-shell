@@ -8,6 +8,10 @@
 	--gd-muted: #a9abb2;
 	--gd-accent: #8ab4ff;
 	--gd-accent-text: #0b1220;
+	/* A faint accent over an artboard under the pointer. */
+	--gd-accent-wash: rgba(138, 180, 255, 0.06);
+	/* The fill of the Comment mode outlines inside an artboard (inspector.js, sent with gd:mode). */
+	--gd-highlight-wash: rgba(138, 180, 255, 0.12);
 	--gd-danger: #ff9b9b;
 	--gd-focus: #ffd479;
 	--gd-pin: #8ab4ff;
@@ -17,6 +21,27 @@
 	--gd-paper: #fff;
 	font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 	font-size: 14px;
+}
+
+/* The Gentleman theme (Settings > Theme, canvas-theme.js): the Gentleman brand's pink on plum. It sets every
+   color token of :root, so nothing falls back to the Neutral palette; the states keep their meaning. */
+:root[data-theme="gentleman"] {
+	--gd-bg: #1a1218;
+	--gd-stage: #20161e;
+	--gd-panel: #241822;
+	--gd-border: #342230;
+	--gd-text: #f6eff3;
+	--gd-muted: #a78e9b;
+	--gd-accent: #f095c8;
+	--gd-accent-text: #1a1218;
+	--gd-accent-wash: rgba(240, 149, 200, 0.08);
+	--gd-highlight-wash: rgba(240, 149, 200, 0.12);
+	--gd-danger: #ff718f;
+	--gd-focus: #e0c27a;
+	--gd-pin: #f095c8;
+	--gd-pin-resolved: #76616b;
+	--gd-success: #b4e7c7;
+	--gd-paper: #fff;
 }
 
 * { box-sizing: border-box; }
@@ -321,7 +346,7 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 .gd-shield[hidden] { display: none; }
 
 .gd-shield:hover, .gd-shield:focus-visible {
-	background: rgba(138, 180, 255, 0.06);
+	background: var(--gd-accent-wash);
 	box-shadow: inset 0 0 0 calc(2px * var(--gd-inv-zoom, 1)) var(--gd-accent);
 }
 
@@ -450,7 +475,7 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	min-height: 26px;
 	padding: 0 6px;
 	border-radius: 13px 13px 13px 2px;
-	border: 2px solid #0b1220;
+	border: 2px solid var(--gd-accent-text);
 	background: var(--gd-pin);
 	color: var(--gd-accent-text);
 	font-weight: 700;

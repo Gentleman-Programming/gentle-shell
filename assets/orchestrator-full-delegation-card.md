@@ -28,20 +28,20 @@ Before delegating, declare a subject via `orchestrator_session_id`.
 
 #### Allowed edit surfaces (MANDATORY)
 
-The bounded writer refuses to write outside the exact allowed edit surfaces and stops with `status: interaction_required` when they are missing. Every new writer launch carries the section (a continuation inherits it); after an admission rejection, repair what it names once, never relaunch the same prompt unchanged.
+The writer refuses to write outside its exact surfaces and stops with `interaction_required` without them. Every new writer launch carries the section (a continuation inherits it); after an admission rejection, repair what it names once, never relaunch the same prompt unchanged, and never end the turn on one: take the next step it names.
 
-Before launching a bounded writer (`gentle-ai-worker`, a user-configured `worker`, or the native `Agent` fallback), derive the allowed edit surface from the delegated task — files the change must touch, plus directories where it authorizes new files — and pass it in the prompt under an `## Allowed edit surfaces` heading, in the exact-path form of `## Skills to load before work`:
+Before launching any bounded writer, even the native `Agent` fallback, derive its surface from the task (files the change touches, plus directories where it authorizes new files) and pass it under `## Allowed edit surfaces`:
 
-- exact repository-relative paths or narrow globs, one per line; never `.` and never a bare repository root; paths containing whitespace require whole-entry backticks (for example, ``- `Directory With Spaces/note.md` ``); a list marker alone does not permit whitespace;
-- the section ends only at the next canonical ATX Markdown heading of any level (zero to three leading ASCII spaces, one to six `#`, then an ASCII space); every non-empty line before that heading must be a valid surface entry, so put explanatory prose under a following heading;
-- pre-existing untracked targets the writer may write, listed explicitly;
-- nothing beyond the delegated task — a surface wider than the task is the same defect as no surface at all.
+- exact repository-relative paths or narrow globs, one per line; never `.` and never a bare repository root; whitespace needs whole-entry backticks (``- `My Dir/a.md` ``), not just a list marker;
+- the section ends at the next heading of any level (0-3 leading ASCII spaces, 1-6 `#`, an ASCII space); every non-empty line before it must be an entry; prose goes under a later heading;
+- pre-existing untracked targets it may write, listed explicitly;
+- nothing beyond the task; wider is the same defect as none.
 
-Test scratch stays outside the worktree (`mktemp -d`), never in the repository (nor caches or `TMPDIR`); state needed inside uses an excluded path the test removes. The runtime owns session scratch; `/gentle:scratch` lists or cleans recorded clones and worktrees.
+Test scratch stays outside the worktree (`mktemp -d`), never in the repository (nor caches or `TMPDIR`); inside state uses an excluded path the test removes. The runtime owns session scratch; `/gentle:scratch` lists or cleans recorded clones and worktrees.
 
-If the surface genuinely cannot be derived, do not launch the writer or ask the human to author paths. Derive a candidate set first — the exact paths this task would touch — and present that enumerated list as an approve/decline choice under the Lossless Blocking Prompts rules in `orchestrator-prompts.md`.
+If the surface cannot be derived, do not launch or make the human author paths: offer the derived exact paths as an approve/decline choice (Lossless Blocking Prompts, `orchestrator-prompts.md`). Investigate technical route doubt; it is not a human question.
 
-Relay a writer's `interaction_required` payload about edit surfaces the same way: present its derived candidate paths as the choice, and add or drop paths only on the human's explicit instruction.
+A writer never widens its surface; it reports exact candidate paths with reasons and awaits your replacement. Add a necessary path (test, helper) yourself, without the human, only in the authorized objective and repository, after checking ownership, existing work, risk, and concurrent writers and units; a cosmetic refactor never qualifies; an unresolved ownership or overlap conflict blocks it. New objective or scope, unapproved repository, private material, destructive or prohibited operation, missing consent, denial, or exhausted limit go to the human under existing protocols. Continue the same writer with a replacement, not a union: every still-needed path plus a concise reason, never repository-wide, no budget reset. A surface grants no repository authority or prohibited operation.
 
 <!-- gentle-pi:background-subagents -->
 #### Background Subagent Policy
@@ -58,7 +58,3 @@ When the policy is on and `subagent_run` is available:
 - Launch as many independent tasks as the work has; the runner queues beyond `max_concurrency`. Do not duplicate launches or work, and do not overlap files or topics.
 - Finished tasks persist across restarts; running ones are stopped when pi exits and must be relaunched, never claimed as recovered.
 <!-- /gentle-pi:background-subagents -->
-
-#### Key Learnings closing block
-
-Generic Explore/general worker prompts (`gentle-ai-explore`, `gentle-ai-worker`, `gentle-ai-verify`, or their native `Agent` fallback) end with: after the normal result, close the final response text with a `## Key Learnings` block of 1–5 numbered items, each a standalone factual sentence of at least 20 characters and at least 4 words; omit it when there is genuinely no reusable learning. It layers on after the Return contract without changing its fields and applies to final response text only. Engram automatically extracts and persists the items; the worker does not parse the block or call passive-capture tools; this is separate from explicit `mem_save`. Agents that must return strict JSON never receive it.

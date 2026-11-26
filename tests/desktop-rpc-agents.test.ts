@@ -6,10 +6,11 @@ import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
 import gentleAgents, { type SessionTransportFactory } from "../extensions/gentle-agents.ts";
-import { isFinished, TASK_STATUS, TaskStore, type ChildResponseObservation, type ChildTokenMeasurement, type TaskRecord } from "../lib/agents-protocol.ts";
+import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type ChildResponseObservation, type ChildTokenMeasurement, type TaskRecord } from "../lib/agents-protocol.ts";
 import { historyDir, loadStoredTask, saveTask } from "../lib/agents-history.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
 import { fakeChild } from "./agents-fake-child.ts";
+import { DEFAULT_MAX_BYTES, projectRpcActivity } from "../lib/agents-rpc-publisher.ts";
 import {
 	AGENT_NOT_FOUND,
 	AGENTS_UNAVAILABLE,
@@ -24,15 +25,21 @@ import {
 	isDesktopAgentsServiceShape,
 	parseCancelSubagentParams,
 	parseDesktopAgentEntry,
+	parseDesktopAgentThread,
+	parseGetSubagentThreadParams,
 	parseListSubagentsParams,
 	projectDesktopAgent,
+	projectDesktopAgentThread,
 	selectDesktopAgents,
 	type DesktopAgentEntry,
 	type DesktopAgentsCancelOutcome,
 	type DesktopAgentsOwnerRead,
 	type DesktopAgentsService,
+	type DesktopAgentsThreadOutcome,
+	type DesktopAgentThread,
 } from "../lib/desktop-rpc-agents.ts";
 import { DesktopAgentsBridge, discoverDesktopAgentsService } from "../lib/desktop-agents-service.ts";
+import * as probeAgents from "../lib/desktop-rpc-agents.ts";
 import { DESKTOP_RPC_SCHEMA, DesktopRpcRouter, type DesktopRpcDomain } from "../lib/desktop-rpc.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
@@ -130,6 +137,12 @@ function makeAgentsOwnerService(store: TaskStore, runner: FakeRunner, sessionId 
 			const changed = requested && after.status !== before.status;
 			return { kind: "ok", agent: projectDesktopAgent(after), requested, changed };
 		},
+		thread: (id: string): DesktopAgentsThreadOutcome => {
+			if (disposed) return { kind: "not_found" };
+			const owned = store.get(id);
+			if (!owned || owned.parentSessionId !== sessionId) return { kind: "not_found" };
+			return { kind: "ok", thread: projectDesktopAgentThread(id, store.thread(id)) };
+		},
 		observe: (onChange) => { observers.add(onChange); return () => observers.delete(onChange); },
 		dispose: () => { disposed = true; observers.clear(); },
 	};
@@ -197,6 +210,8 @@ test("projectDesktopAgent keeps only the whitelist and never prompt/cwd/path/res
 		thinking: "high",
 		lastStep: "running",
 		usage: { total: 1234, cost: 0.005, input: 100, output: 40, cache: 40, reasoning: 5 },
+		turns: 1,
+		toolCalls: 2,
 	});
 
 	const projected = JSON.stringify(projectDesktopAgent(record));
@@ -216,6 +231,8 @@ test("projectDesktopAgent omits optional fields and the breakdown when absent", 
 		thinking: "high",
 		lastStep: "running",
 		usage: { total: 1234, cost: 0.005 },
+		turns: 1,
+		toolCalls: 2,
 	});
 });
 
@@ -615,6 +632,201 @@ test("the router publishes a changed cancel response before its agents_update ev
 	assert.equal(JSON.parse(lines[1]!).event, DESKTOP_AGENTS_EVENT);
 });
 
+// ---- get_subagent_thread ----
+
+type ThreadData = { ok: true; data: DesktopAgentThread };
+
+/** A store whose task t1 (session-a) has more items than the window, evicted items, and oversize fields. */
+function threadStore(maxItems = 60) {
+	const store = new TaskStore({ maxItems });
+	store.add(task("t1", "session-a"));
+	store.add(task("theirs", "session-b"));
+	store.apply("theirs", { type: TASK_EVENT.NOTE, text: "foreign session note" }, 1001);
+	for (let index = 0; index < 70; index += 1) {
+		store.apply("t1", { type: TASK_EVENT.NOTE, text: `note ${index}` }, 1001);
+		store.apply("t1", { type: TASK_EVENT.TOOL_START, callId: `c${index}`, name: "bash", args: { command: "x".repeat(900) } }, 1001);
+		store.apply("t1", { type: TASK_EVENT.TOOL_END, callId: `c${index}`, output: "y".repeat(900), isError: index % 2 === 0 }, 1001);
+	}
+	store.apply("t1", { type: TASK_EVENT.TEXT, text: "z".repeat(5000) }, 1002);
+	return store;
+}
+
+test("parseGetSubagentThreadParams accepts only { id, sinceVersion? }", () => {
+	assert.deepEqual(parseGetSubagentThreadParams({ id: "t1" }), { id: "t1" });
+	assert.deepEqual(parseGetSubagentThreadParams({ id: "t1", sinceVersion: 0 }), { id: "t1", sinceVersion: 0 });
+	assert.deepEqual(parseGetSubagentThreadParams({ id: "t1", sinceVersion: 12 }), { id: "t1", sinceVersion: 12 });
+	for (const params of [{}, { id: "" }, { id: 1 }, { id: "t1", extra: true }, { task_id: "t1" }, { id: "t1", sinceVersion: -1 }, { id: "t1", sinceVersion: 1.5 }, { id: "t1", sinceVersion: "3" }, { id: "t1", sinceVersion: null }, { id: "t1", sinceVersion: Number.NaN }]) {
+		assert.deepEqual(parseGetSubagentThreadParams(params), { error: INVALID_AGENTS_PARAMS }, JSON.stringify(params));
+	}
+});
+
+test("projectDesktopAgentThread is the widget's exact thread projection and bounds", () => {
+	const store = threadStore();
+	const widget = projectRpcActivity(store, { parentSessionId: "session-a" }).tasks.find((entry) => entry.summary.id === "t1")!.thread;
+	const thread = projectDesktopAgentThread("t1", store.thread("t1"));
+	assert.equal(thread.id, "t1");
+	assert.deepEqual({ version: thread.version, dropped: thread.dropped, items: thread.items }, widget, "the method and gentle-agents.activity/v1 never disagree");
+	assert.equal(thread.items.length, 40, "the widget's 40-item window");
+	assert.equal(thread.version, store.thread("t1").version);
+	assert.equal(thread.dropped, store.thread("t1").dropped);
+	assert.ok(thread.dropped > 0, "the store evicted items beyond its own maxItems");
+	assert.equal(thread.truncated, true, "the store holds more items than the window");
+	const text = thread.items.at(-1)!;
+	assert.equal(text.kind, "text");
+	assert.equal((text as { text: string }).text.length, 2000, "text items keep the 2000-char bound");
+	const tool = thread.items.find((item) => item.kind === "tool") as { args: string; output: string; callId?: unknown };
+	assert.equal(tool.args.length, 500, "tool args keep the 500-char bound");
+	assert.equal(tool.output.length, 500, "tool output keeps the 500-char bound");
+	assert.equal(tool.callId, undefined, "the raw callId is not whitelisted");
+});
+
+test("projectDesktopAgentThread reports truncated only when the window cut items", () => {
+	const store = new TaskStore();
+	store.add(task("t1", "session-a"));
+	store.apply("t1", { type: TASK_EVENT.NOTE, text: "one" }, 1001);
+	const thread = projectDesktopAgentThread("t1", store.thread("t1"));
+	assert.deepEqual(thread, { id: "t1", version: 1, items: [{ kind: "note", text: "one" }], dropped: 0, truncated: false });
+});
+
+test("projectDesktopAgentThread halves items under the activity byte bound", () => {
+	const store = new TaskStore();
+	store.add(task("t1", "session-a"));
+	for (let index = 0; index < 40; index += 1) store.apply("t1", { type: TASK_EVENT.NOTE, text: `${"n".repeat(1990)}${index}` }, 1001);
+	assert.equal(projectDesktopAgentThread("t1", store.thread("t1")).items.length, 40, "under the default 256 KB bound the whole window fits");
+	assert.equal(DEFAULT_MAX_BYTES, 256 * 1024);
+	const maxBytes = 9000;
+	const thread = projectDesktopAgentThread("t1", store.thread("t1"), maxBytes);
+	assert.ok(Buffer.byteLength(JSON.stringify({ version: thread.version, dropped: thread.dropped, items: thread.items })) <= maxBytes);
+	assert.equal(thread.items.length, 2, "40 → 20 → 10 → 5 → 2, the activity encoder's halving");
+	assert.equal(thread.truncated, true);
+	assert.deepEqual(thread.items.map((item) => (item as { text: string }).text.slice(1990)), ["38", "39"], "the most recent items are kept");
+});
+
+test("parseDesktopAgentThread re-validates the owner thread and drops foreign fields", () => {
+	const valid = { id: "t1", version: 3, dropped: 0, truncated: false, items: [{ kind: "text", text: "hi" }, { kind: "tool", name: "bash", args: "{}", running: false, isError: false, output: "ok" }] };
+	assert.deepEqual(parseDesktopAgentThread({ ...valid, cwd: "/secret", items: [{ kind: "text", text: "hi", raw: "x" }, { kind: "tool", name: "bash", args: "{}", running: false, isError: false, output: "ok", callId: "c1" }] }), valid);
+	for (const bad of [
+		null,
+		{ ...valid, id: "" },
+		{ ...valid, version: -1 },
+		{ ...valid, dropped: 1.5 },
+		{ ...valid, truncated: "no" },
+		{ ...valid, items: "nope" },
+		{ ...valid, items: [{ kind: "image", text: "x" }] },
+		{ ...valid, items: [{ kind: "text", text: "x".repeat(2001) }] },
+		{ ...valid, items: [{ kind: "tool", name: "bash", args: "x".repeat(501), running: false, isError: false, output: "" }] },
+		{ ...valid, items: [{ kind: "tool", name: "bash", args: "{}", running: false, isError: false, output: "x".repeat(501) }] },
+		{ ...valid, items: [{ kind: "tool", name: "bash", args: "{}", running: "no", isError: false, output: "" }] },
+	]) {
+		assert.equal(parseDesktopAgentThread(bad), undefined, JSON.stringify(bad).slice(0, 120));
+	}
+});
+
+test("get_subagent_thread answers the owned thread and emits nothing", async () => {
+	const store = threadStore();
+	const { service } = makeAgentsOwnerService(store, makeRunner(store));
+	const { bridge, events, scheduler } = makeBridge(service);
+	const outcome = await bridge.handle("get_subagent_thread", { id: "t1" });
+	assert.equal(outcome.ok, true);
+	assert.deepEqual((outcome as unknown as ThreadData).data, projectDesktopAgentThread("t1", store.thread("t1")));
+	assert.deepEqual(Object.keys((outcome as unknown as ThreadData).data).sort(), ["dropped", "id", "items", "truncated", "version"]);
+	assert.equal((outcome as { event?: unknown }).event, undefined, "a read carries no event");
+	assert.equal(events.length, 0, "a read emits nothing");
+	assert.equal(scheduler.pendingCount(), 0, "a read schedules nothing");
+	assert.equal(store.get("t1")!.status, TASK_STATUS.RUNNING, "a read changes nothing");
+});
+
+test("get_subagent_thread sinceVersion returns no items when unchanged and the window after a change", async () => {
+	const store = new TaskStore();
+	store.add(task("t1", "session-a"));
+	store.apply("t1", { type: TASK_EVENT.NOTE, text: "first" }, 1001);
+	const { service } = makeAgentsOwnerService(store, makeRunner(store));
+	const { bridge, events } = makeBridge(service);
+	const first = (await bridge.handle("get_subagent_thread", { id: "t1" })) as unknown as ThreadData;
+	assert.deepEqual(first.data, { id: "t1", version: 1, items: [{ kind: "note", text: "first" }], dropped: 0, truncated: false });
+
+	const unchanged = (await bridge.handle("get_subagent_thread", { id: "t1", sinceVersion: first.data.version })) as unknown as ThreadData;
+	assert.deepEqual(unchanged.data, { id: "t1", version: 1, items: [], dropped: 0, truncated: false }, "nothing newer than the client's last read");
+
+	// Streamed text merges into the last item in place, so the changed window is returned.
+	store.apply("t1", { type: TASK_EVENT.TEXT, text: "hel" }, 1002);
+	store.apply("t1", { type: TASK_EVENT.TEXT, text: "lo" }, 1003);
+	const changed = (await bridge.handle("get_subagent_thread", { id: "t1", sinceVersion: first.data.version })) as unknown as ThreadData;
+	assert.deepEqual(changed.data, { id: "t1", version: 3, items: [{ kind: "note", text: "first" }, { kind: "text", text: "hello" }], dropped: 0, truncated: false });
+
+	const ahead = (await bridge.handle("get_subagent_thread", { id: "t1", sinceVersion: 99 })) as unknown as ThreadData;
+	assert.equal(ahead.data.items.length, 2, "a version the store never reached is not trusted: the whole window answers");
+	assert.equal(events.length, 0);
+});
+
+test("get_subagent_thread unknown and foreign-session ids are typed not_found", async () => {
+	const store = threadStore();
+	const { service } = makeAgentsOwnerService(store, makeRunner(store), "session-a");
+	const { bridge, events } = makeBridge(service, "session-a");
+	for (const id of ["theirs", "t-99"]) {
+		const outcome = await bridge.handle("get_subagent_thread", { id });
+		assert.equal(outcome.ok, false, id);
+		assert.deepEqual(outcome.error, AGENT_NOT_FOUND, id);
+		assert.doesNotMatch(JSON.stringify(outcome), /foreign session note/);
+	}
+	assert.equal(events.length, 0);
+});
+
+test("get_subagent_thread rejects invalid params before any owner discovery", async () => {
+	const store = threadStore();
+	const { service } = makeAgentsOwnerService(store, makeRunner(store));
+	let discoveries = 0;
+	const bridge = new DesktopAgentsBridge({} as ExtensionAPI, { discover: async () => { discoveries += 1; return service; } });
+	bridge.attach({ sessionManager: { getSessionId: () => "session-a" } } as unknown as ExtensionContext);
+	for (const params of [{}, { id: "" }, { id: "t1", extra: true }, { id: "t1", sinceVersion: -1 }, { id: "t1", sinceVersion: "1" }]) {
+		const bad = await bridge.handle("get_subagent_thread", params);
+		assert.equal(bad.ok, false);
+		assert.deepEqual(bad.error, INVALID_AGENTS_PARAMS, JSON.stringify(params));
+	}
+	assert.equal(discoveries, 0, "invalid params never reach discovery");
+});
+
+test("get_subagent_thread answers agents_unavailable for an absent, older, throwing, or malformed owner without leaking", async () => {
+	const absent = new DesktopAgentsBridge({} as ExtensionAPI, { discover: async () => undefined });
+	absent.attach({ sessionManager: { getSessionId: () => "session-a" } } as unknown as ExtensionContext);
+	const missing = await absent.handle("get_subagent_thread", { id: "t1" });
+	assert.equal(missing.ok, false);
+	assert.deepEqual(missing.error, AGENTS_UNAVAILABLE);
+
+	const base: DesktopAgentsService = { schema: DESKTOP_AGENTS_SERVICE_SCHEMA, read: () => ({ sessionId: "session-a", agents: [] }), cancel: () => ({ kind: "not_found" as const }), observe: () => () => {}, dispose: () => {} };
+	const older: DesktopAgentsService = { ...base };
+	const throwing: DesktopAgentsService = { ...base, thread: () => { throw new Error("ENOENT /home/me/.pi/sessions/secret.jsonl sk-ant-secret"); } };
+	const malformed: DesktopAgentsService = { ...base, thread: () => ({ kind: "ok", thread: { id: "t1", version: 1, dropped: 0, truncated: false, items: [{ kind: "text", text: "x".repeat(5000) }] } as unknown as DesktopAgentThread }) };
+	const wrongId: DesktopAgentsService = { ...base, thread: () => ({ kind: "ok", thread: { id: "other", version: 1, dropped: 0, truncated: false, items: [] } }) };
+	for (const service of [older, throwing, malformed, wrongId]) {
+		const { bridge, events } = makeBridge(service);
+		const outcome = await bridge.handle("get_subagent_thread", { id: "t1" });
+		assert.equal(outcome.ok, false);
+		assert.deepEqual(outcome.error, AGENTS_UNAVAILABLE);
+		assert.doesNotMatch(JSON.stringify(outcome), /secret|ENOENT|xxxxx/);
+		assert.equal(events.length, 0);
+	}
+	assert.equal(isDesktopAgentsServiceShape(older), true, "an adapter without thread still serves list/cancel");
+	assert.equal(isDesktopAgentsServiceShape({ ...base, thread: "nope" }), false, "a non-function thread is not the adapter");
+});
+
+test("get_subagent_thread through the router publishes exactly one response line", async () => {
+	const store = threadStore();
+	const { service } = makeAgentsOwnerService(store, makeRunner(store));
+	const bridge = new DesktopAgentsBridge({} as ExtensionAPI, { discover: async () => service, schedule: () => () => {}, coalesceMs: 10 });
+	bridge.attach({ sessionManager: { getSessionId: () => "session-a" } } as unknown as ExtensionContext);
+	const domain: DesktopRpcDomain = (method, params) => bridge.handle(method, params as Record<string, unknown>);
+	const lines: string[] = [];
+	const router = new DesktopRpcRouter(["capabilities", "get_snapshot", ...DESKTOP_AGENTS_METHODS], [...DESKTOP_AGENTS_EVENTS], undefined, domain);
+	router.start((line) => lines.push(line));
+	await router.handle(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "thread-2", method: "get_subagent_thread", params: { id: "t1" } }));
+	assert.equal(lines.length, 1);
+	const response = JSON.parse(lines[0]!);
+	assert.equal(response.kind, "response");
+	assert.equal(response.ok, true);
+	assert.deepEqual(response.data, projectDesktopAgentThread("t1", store.thread("t1")));
+});
+
 // ---- Transport: capabilities and owner absence ----
 
 function desktopHarness(t: test.TestContext) {
@@ -656,11 +868,43 @@ test("the Desktop transport advertises the agents methods and event", (t) => {
 		"get_design_canvas",
 		"list_jobs",
 		"cancel_job",
+		"get_job_output",
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",
+		"get_subagent_thread",
+		"list_sessions",
+		"switch_session",
+		"get_changes",
+		"get_change_diff",
+		"get_review_mode",
+		"set_review_mode",
+		"get_usage_stats",
+		"get_update_status",
+		"list_agent_definitions",
+		"get_status",
+		"get_background_subagents",
+		"set_background_subagents",
+		"get_profile_binding",
+		"clear_profile_binding",
+		"get_auth_status",
+		"reload_credentials",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
+});
+
+test("get_subagent_thread answers agents_unavailable through the transport without an owner extension", async (t) => {
+	const app = desktopHarness(t);
+	await app.commands.get("gentle:desktop")!.handler(
+		JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "thread-1", method: "get_subagent_thread", params: { id: "t1" } }),
+		app.ctx,
+	);
+	assert.equal(app.widgets.length, 1, "exactly one response line and no event");
+	const response = JSON.parse(app.widgets[0]!.lines[0]!);
+	assert.equal(response.kind, "response");
+	assert.equal(response.requestId, "thread-1");
+	assert.equal(response.ok, false);
+	assert.deepEqual(response.error, AGENTS_UNAVAILABLE);
 });
 
 test("list_subagents answers agents_unavailable through the transport without an owner extension", async (t) => {
@@ -697,7 +941,7 @@ interface RealOwnerHarness {
  * `worker` agent definition is written into the agent home so `subagent_run`
  * can launch a real background task.
  */
-async function realOwnerHarness(t: test.TestContext): Promise<RealOwnerHarness> {
+async function realOwnerHarness(t: test.TestContext, options: { schedule?: (fn: () => void, ms: number) => () => void } = {}): Promise<RealOwnerHarness> {
 	const root = mkdtempSync(join(tmpdir(), "desktop-rpc-agents-real-"));
 	t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }));
 	const home = join(root, "home");
@@ -773,7 +1017,7 @@ async function realOwnerHarness(t: test.TestContext): Promise<RealOwnerHarness> 
 		home,
 		agentHome,
 		env: { GENTLE_PI_CONFIG_HOME: configHome, PATH: process.env.PATH ?? "" },
-		schedule: () => () => {},
+		schedule: options.schedule ?? (() => () => {}),
 		now: () => 1000,
 		jobShell: () => { throw new Error("real-owner agents harness must not run jobs"); },
 		jobOutputDir: () => jobOutputDir,
@@ -882,6 +1126,40 @@ test("the real owner persists the final usage breakdown so restored finished tas
 	assert.deepEqual(stored.task.usage, { input: 100, output: 40, cacheRead: 30, cacheWrite: 10, reasoning: 5 });
 });
 
+test("the real owner serves an owned thread through the activity projection and not_found otherwise", async (t) => {
+	const h = await realOwnerHarness(t);
+	assert.deepEqual(h.service.thread!("unknown-id"), { kind: "not_found" });
+	const taskId = await launchBackgroundTask(h);
+	h.children[0]!.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "mapping the repo" } });
+	h.children[0]!.emit({ type: "tool_execution_start", toolCallId: "call-1", toolName: "read", args: { path: "README.md" } });
+	h.children[0]!.emit({ type: "tool_execution_end", toolCallId: "call-1", result: { content: [{ type: "text", text: "w".repeat(800) }] }, isError: false });
+	await tick();
+
+	const outcome = h.service.thread!(taskId);
+	assert.equal(outcome.kind, "ok");
+	const thread = (outcome as { kind: "ok"; thread: DesktopAgentThread }).thread;
+	assert.deepEqual(thread.items, [
+		{ kind: "text", text: "mapping the repo" },
+		{ kind: "tool", name: "read", args: JSON.stringify({ path: "README.md" }), running: false, isError: false, output: `${"w".repeat(499)}…` },
+	]);
+	assert.equal(thread.dropped, 0);
+	assert.equal(thread.truncated, false);
+	assert.ok(thread.version > 0);
+
+	const bridge = new DesktopAgentsBridge(h.pi, { discover: async () => h.service, schedule: () => () => {} });
+	bridge.attach(h.ctx);
+	const read = (await bridge.handle("get_subagent_thread", { id: taskId })) as unknown as ThreadData;
+	assert.deepEqual(read.data, thread);
+	const again = (await bridge.handle("get_subagent_thread", { id: taskId, sinceVersion: thread.version })) as unknown as ThreadData;
+	assert.deepEqual(again.data.items, []);
+
+	// The same ownership rule as cancel: a session-b context never reads session-a's thread.
+	const foreignCtx = { ...h.ctx, sessionManager: { ...h.ctx.sessionManager, getSessionId: () => "session-b" } } as unknown as ExtensionContext;
+	const foreign = await discoverDesktopAgentsService(h.pi, foreignCtx);
+	assert.ok(foreign);
+	assert.deepEqual(foreign.thread!(taskId), { kind: "not_found" });
+});
+
 test("a shut-down owner leaves the agents service channel and never answers discovery", async (t) => {
 	const harness = await realOwnerHarness(t);
 	assert.equal(harness.listeners.get(DESKTOP_AGENTS_SERVICE_CHANNEL)?.size, 1, "one owner answers while the session is live");
@@ -890,4 +1168,262 @@ test("a shut-down owner leaves the agents service channel and never answers disc
 	let answered = 0;
 	harness.pi.events.emit(DESKTOP_AGENTS_SERVICE_CHANNEL, { context: harness.ctx, respond: () => { answered += 1; } });
 	assert.equal(answered, 0, "a replaced runtime is never discovered through the old owner");
+});
+
+// ---- get_subagent_thread: independent verifier probes (regression) ----
+function probeTask(id: string, parentSessionId: string, o: any = {}) {
+	return { id, agent: "w", mode: "task", prompt: "SECRETPROMPT", label: "p", cwd: "/r", parentSessionId, status: TASK_STATUS.RUNNING, createdAt: 1, startedAt: 1, endedAt: null, model: "m", thinking: undefined, sessionPath: "/s.jsonl", error: null, result: null, lastStep: "x", lastActivityAt: 1, turns: 0, toolCalls: 0, tokens: 0, cost: 0, ...o };
+}
+function probeOwner(store: any, sessionId = "session-a", over: any = {}) {
+	let disposed = false;
+	let discoveries = 0;
+	const service: any = {
+		schema: probeAgents.DESKTOP_AGENTS_SERVICE_SCHEMA,
+		read: () => ({ sessionId, agents: probeAgents.selectDesktopAgents(store.list(sessionId)) }),
+		cancel: () => ({ kind: "not_found" }),
+		thread: (id: string) => {
+			if (disposed) return { kind: "not_found" };
+			const t = store.get(id);
+			if (!t || t.parentSessionId !== sessionId) return { kind: "not_found" };
+			return { kind: "ok", thread: probeAgents.projectDesktopAgentThread(id, store.thread(id)) };
+		},
+		observe: () => () => {},
+		dispose: () => { disposed = true; },
+		...over,
+	};
+	return { service, count: () => discoveries, discover: async () => { discoveries++; return service; } };
+}
+function probeBridge(o: any, sessionId = "session-a") {
+	const b = new DesktopAgentsBridge({} as any, { discover: o.discover, schedule: () => () => {}, coalesceMs: 1 });
+	b.attach({ sessionManager: { getSessionId: () => sessionId } } as any);
+	const events: any[] = [];
+	b.wire((e: string) => events.push(e));
+	return { b, events };
+}
+function probeSeeded() {
+	const store = new TaskStore();
+	store.add(probeTask("mine", "session-a"));
+	store.add(probeTask("theirs", "session-b"));
+	store.add(probeTask("grandchild", "child-session-of-mine"));
+	store.apply("mine", { type: "text", text: "hello" }, 2);
+	store.apply("theirs", { type: "tool_start", callId: "c", name: "bash", args: { cmd: "cat ~/.ssh/id_rsa" } }, 2);
+	store.apply("grandchild", { type: "note", text: "nested" }, 2);
+	return store;
+}
+
+test("probe: invalid params are invalid_request before discovery", async () => {
+	const o = probeOwner(probeSeeded());
+	const { b } = probeBridge(o);
+	for (const p of [{}, { id: "" }, { id: 3 }, { id: "mine", extra: 1 }, { id: "mine", sinceVersion: -1 }, { id: "mine", sinceVersion: 1.5 }, { id: "mine", sinceVersion: 2 ** 60 }, { id: "mine", sinceVersion: "1" }, { id: "mine", sinceVersion: null }, { id: "mine", sinceVersion: NaN }, { id: "mine", sinceVersion: Infinity }]) {
+		const r: any = await b.handle("get_subagent_thread", p as any);
+		assert.equal(r.ok, false, JSON.stringify(p));
+		assert.equal(r.error.code, "invalid_request", JSON.stringify(p));
+	}
+	assert.equal(o.count(), 0);
+});
+
+test("probe: ownership: foreign, nested, unknown are not_found with no leak; own ok", async () => {
+	const o = probeOwner(probeSeeded());
+	const { b, events } = probeBridge(o);
+	for (const id of ["theirs", "grandchild", "nope", "__proto__", "constructor"]) {
+		const r: any = await b.handle("get_subagent_thread", { id });
+		assert.equal(r.ok, false, id);
+		assert.equal(r.error.code, probeAgents.AGENT_NOT_FOUND.code, id);
+		assert.ok(!JSON.stringify(r).includes("id_rsa"));
+	}
+	const r: any = await b.handle("get_subagent_thread", { id: "mine" });
+	assert.equal(r.ok, true);
+	assert.deepEqual(r.data.items, [{ kind: "text", text: "hello" }]);
+	assert.ok(!JSON.stringify(r).includes("SECRETPROMPT"));
+	assert.equal(events.length, 0);
+});
+
+test("probe: session switch: a session-b owner cannot read the session-a subagent", async () => {
+	const o = probeOwner(probeSeeded(), "session-b");
+	const { b } = probeBridge(o, "session-b");
+	const r: any = await b.handle("get_subagent_thread", { id: "mine" });
+	assert.equal(r.error.code, probeAgents.AGENT_NOT_FOUND.code);
+});
+
+test("probe: reset during discovery answers agents_unavailable", async () => {
+	const o = probeOwner(probeSeeded());
+	let release: any;
+	const gate = new Promise((r) => { release = r; });
+	const b = new DesktopAgentsBridge({} as any, { discover: () => gate as any, schedule: () => () => {} });
+	b.attach({ sessionManager: { getSessionId: () => "session-a" } } as any);
+	const pending = b.handle("get_subagent_thread", { id: "mine" });
+	b.reset();
+	release(o.service);
+	const r: any = await pending;
+	assert.equal(r.error.code, probeAgents.AGENTS_UNAVAILABLE.code);
+});
+
+test("probe: older adapter, throwing, malformed, id mismatch, oversized item answer agents_unavailable", async () => {
+	const store = probeSeeded();
+	const cases = [
+		{ thread: undefined },
+		{ thread: () => { throw new Error("/home/x SECRETPROMPT"); } },
+		{ thread: () => ({ kind: "ok", thread: { id: "mine", version: 1, dropped: 0, truncated: false, items: [{ kind: "text", text: "x".repeat(2001) }] } }) },
+		{ thread: () => ({ kind: "ok", thread: { id: "other", version: 1, dropped: 0, truncated: false, items: [] } }) },
+		{ thread: () => ({ kind: "ok", thread: { id: "mine", version: -1, dropped: 0, truncated: false, items: [] } }) },
+	];
+	for (const over of cases) {
+		const o = probeOwner(store, "session-a", over);
+		const { b } = probeBridge(o);
+		const r: any = await b.handle("get_subagent_thread", { id: "mine" });
+		assert.equal(r.error.code, probeAgents.AGENTS_UNAVAILABLE.code);
+		assert.ok(!JSON.stringify(r).includes("SECRETPROMPT"));
+	}
+});
+
+test("probe: bounds: dropped vs eviction, 256KB halving with escape-heavy text", async () => {
+	const store = new TaskStore({ maxItems: 400 });
+	store.add(probeTask("t", "session-a"));
+	// Text is sanitized and capped at 2000 chars (≤ ~6 KB/item), so a realistic text-only
+	// window never exceeds 256 KB; tool names are the one unbounded field the widget forwards.
+	for (let i = 0; i < 450; i++) store.apply("t", { type: "tool_start", callId: "c" + i, name: "n".repeat(8000), args: {} }, i);
+	const raw = store.thread("t");
+	assert.equal(raw.items.length, 400);
+	assert.equal(raw.dropped, 50);
+	const { b } = probeBridge(probeOwner(store));
+	const r: any = await b.handle("get_subagent_thread", { id: "t" });
+	assert.equal(r.ok, true);
+	assert.ok(Buffer.byteLength(JSON.stringify(r.data)) <= 256 * 1024);
+	assert.equal(r.data.items.length, 20, "40 items of ~12KB halved once");
+	assert.equal(r.data.dropped, 50);
+	assert.equal(r.data.truncated, true);
+	assert.ok(r.data.items.every((it: any) => it.kind === "tool" && it.name.length === 8000));
+	const w = projectRpcActivity(store, { parentSessionId: "session-a" });
+	assert.equal(w.tasks[0].thread.items.length, 40);
+});
+
+test("probe: tool item caps: args 500, output 500, exact key set", async () => {
+	const store = new TaskStore();
+	store.add(probeTask("t", "session-a"));
+	store.apply("t", { type: "tool_start", callId: "c", name: "bash", args: { cmd: "y".repeat(900) } }, 1);
+	store.apply("t", { type: "tool_end", callId: "c", output: "o".repeat(900), isError: true }, 2);
+	const { b } = probeBridge(probeOwner(store));
+	const r: any = await b.handle("get_subagent_thread", { id: "t" });
+	const it = r.data.items[0];
+	assert.equal(it.args.length, 500);
+	assert.equal(it.output.length, 500);
+	assert.equal(it.isError, true);
+	assert.equal(it.running, false);
+	assert.deepEqual(Object.keys(it).sort(), ["args", "isError", "kind", "name", "output", "running"]);
+	assert.deepEqual(Object.keys(r.data).sort(), ["dropped", "id", "items", "truncated", "version"]);
+});
+
+test("probe: sinceVersion: equal returns [], other values return the window; in-place change bumps version", async () => {
+	const store = new TaskStore();
+	store.add(probeTask("t", "session-a"));
+	store.apply("t", { type: "text", text: "a" }, 1);
+	const { b } = probeBridge(probeOwner(store));
+	const first: any = await b.handle("get_subagent_thread", { id: "t" });
+	const v = first.data.version;
+	const same: any = await b.handle("get_subagent_thread", { id: "t", sinceVersion: v });
+	assert.deepEqual(same.data, { ...first.data, items: [], truncated: false });
+	store.apply("t", { type: "text", text: "b" }, 2);
+	const after: any = await b.handle("get_subagent_thread", { id: "t", sinceVersion: v });
+	assert.equal(after.data.version, v + 1);
+	assert.deepEqual(after.data.items, [{ kind: "text", text: "ab" }]);
+	const higher: any = await b.handle("get_subagent_thread", { id: "t", sinceVersion: v + 100 });
+	assert.equal(higher.data.items.length, 1);
+});
+
+// ---- Progress (gentle-shell-gpui parity, T6) ----
+
+function toolThread(name: string, running: boolean) {
+	return { items: [{ kind: "tool" as const, callId: "c1", name, args: { command: "rm -rf /secret" }, output: "", running, isError: false }], dropped: 0, version: 1, limits: { maxItems: 400, maxOutputChars: 16000 } };
+}
+
+test("projectDesktopAgent carries turns, tool calls, and the running tool name, never its arguments", () => {
+	const running = probeAgents.projectDesktopAgent(task("t1", "session-a", { status: TASK_STATUS.RUNNING, turns: 2, toolCalls: 3 }), toolThread("bash", true));
+	assert.equal(running.turns, 2);
+	assert.equal(running.toolCalls, 3);
+	assert.equal(running.activeTool, "bash");
+	assert.equal(JSON.stringify(running).includes("rm -rf"), false);
+	assert.equal(probeAgents.projectDesktopAgent(task("t1", "session-a", { status: TASK_STATUS.RUNNING }), toolThread("bash", false)).activeTool, undefined, "a finished tool call is not active");
+	assert.equal(probeAgents.projectDesktopAgent(task("t1", "session-a", { status: TASK_STATUS.RUNNING }), toolThread("not a name; rm", true)).activeTool, undefined, "only a plain identifier crosses");
+	assert.equal(probeAgents.projectDesktopAgent(task("t1", "session-a", { status: TASK_STATUS.COMPLETED, endedAt: 2 }), toolThread("bash", true)).activeTool, undefined, "a finished task has no active tool");
+});
+
+test("parseDesktopAgentEntry accepts the progress fields and rejects malformed ones", () => {
+	const base = probeAgents.projectDesktopAgent(task("t1", "session-a", { status: TASK_STATUS.RUNNING, turns: 1, toolCalls: 1 }), toolThread("read", true));
+	assert.deepEqual(probeAgents.parseDesktopAgentEntry(base), base);
+	for (const bad of [{ turns: -1 }, { toolCalls: 1.5 }, { activeTool: "two words" }, { activeTool: 7 }]) {
+		assert.equal(probeAgents.parseDesktopAgentEntry({ ...base, ...bad }), undefined, JSON.stringify(bad));
+	}
+});
+
+test("the real owner pushes in-turn progress as one throttled agents_update with turns, tool calls, and the running tool", async (t) => {
+	const owner = recordedScheduler();
+	const h = await realOwnerHarness(t, { schedule: owner.schedule });
+	await launchBackgroundTask(h);
+	const scheduler = recordedScheduler();
+	const bridge = new DesktopAgentsBridge(h.pi, { discover: async () => h.service, schedule: scheduler.schedule, coalesceMs: 10 });
+	bridge.attach(h.ctx);
+	const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+	bridge.wire((event, data) => events.push({ event, data }));
+	await bridge.start();
+	scheduler.flushAll();
+	const before = events.length;
+
+	h.children[0]!.emit({ type: "turn_end" });
+	h.children[0]!.emit({ type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: { command: "cat /secret/path" } });
+	await tick();
+	scheduler.flushAll();
+	assert.equal(events.length, before, "progress waits for the owner's throttle");
+	const throttles = owner.entries.filter((entry) => entry.ms === 500 && !entry.cancelled);
+	assert.equal(throttles.length, 1, "two progress changes schedule one notification");
+
+	owner.flushAll();
+	scheduler.flushAll();
+	assert.equal(events.length, before + 1);
+	const [agent] = (events.at(-1)!.data as { agents: DesktopAgentEntry[] }).agents;
+	assert.equal(agent!.status, TASK_STATUS.RUNNING);
+	assert.equal(agent!.turns, 1);
+	assert.equal(agent!.toolCalls, 1);
+	assert.equal(agent!.activeTool, "bash");
+	assert.equal(JSON.stringify(events.at(-1)).includes("/secret/path"), false);
+});
+
+test("activeTool skips finished tool items and reports the most recent running one", () => {
+	const thread = { items: [
+		{ kind: "tool" as const, callId: "c1", name: "bash", args: {}, output: "", running: true, isError: false },
+		{ kind: "tool" as const, callId: "c2", name: "read", args: {}, output: "", running: false, isError: false },
+	], dropped: 0, version: 2, limits: { maxItems: 400, maxOutputChars: 16000 } };
+	assert.equal(probeAgents.activeToolName(thread), "bash");
+});
+
+/** Fire only the owner's pending progress throttle (500 ms), never its stall timers. */
+function flushProgress(owner: ReturnType<typeof recordedScheduler>): void {
+	for (const entry of [...owner.entries]) {
+		if (entry.cancelled || entry.ms !== 500) continue;
+		entry.cancelled = true;
+		entry.fn();
+	}
+}
+
+test("streamed text alone emits no agents_update", async (t) => {
+	const owner = recordedScheduler();
+	const h = await realOwnerHarness(t, { schedule: owner.schedule });
+	await launchBackgroundTask(h);
+	const scheduler = recordedScheduler();
+	const bridge = new DesktopAgentsBridge(h.pi, { discover: async () => h.service, schedule: scheduler.schedule, coalesceMs: 10 });
+	bridge.attach(h.ctx);
+	const events: unknown[] = [];
+	bridge.wire((_event, data) => events.push(data));
+	await bridge.start();
+	h.children[0]!.emit({ type: "turn_end" });
+	// The first delta moves the step to `writing`, a real projected change.
+	h.children[0]!.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "start" } });
+	await tick();
+	flushProgress(owner);
+	scheduler.flushAll();
+	const before = events.length;
+	for (const delta of ["a", "b", "c"]) h.children[0]!.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta } });
+	await tick();
+	flushProgress(owner);
+	scheduler.flushAll();
+	assert.equal(events.length, before, "text deltas change no projected field");
 });

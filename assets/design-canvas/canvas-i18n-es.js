@@ -47,6 +47,11 @@ export const ES = Object.freeze({
 		auto: "Igual que el navegador",
 		languageNote: "Los mensajes al agente siguen en inglés.",
 	},
+	theme: {
+		theme: "Tema",
+		gentleman: "Gentleman",
+		neutral: "Neutro",
+	},
 	focus: {
 		navigating: "Navegando",
 		using: (title) => `Usando: ${title} · Mayús+Esc para salir`,

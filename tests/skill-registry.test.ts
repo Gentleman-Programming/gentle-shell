@@ -184,6 +184,60 @@ test("findSkillFiles follows direct symlinked skills but not symlinked categorie
 	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath]);
 });
 
+function writeSkill(root: string, dir: string, name: string): string {
+	const file = join(root, dir, "SKILL.md");
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, `---\nname: ${name}\ndescription: ${dir}.\n---\n`);
+	return file;
+}
+
+test("same-name duplicate in one scope resolves to the directory named after the skill", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-pi-backup-dedupe-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const skills = join(root, "home", ".claude", "skills");
+	const hiddenBackup = writeSkill(skills, ".backup-live-to-youtube-20261114", "live-to-youtube");
+	const live = writeSkill(skills, "live-to-youtube", "live-to-youtube");
+	const suffixBackup = writeSkill(skills, "gentle-stack-main.backup-20260927T204711", "gentle-stack-main");
+	const stack = writeSkill(skills, "gentle-stack-main", "gentle-stack-main");
+	const cwd = join(root, "project");
+	const entry = (path: string, name: string) => ({ name, path, description: "d" });
+
+	for (const entries of [
+		[entry(hiddenBackup, "live-to-youtube"), entry(live, "live-to-youtube"), entry(suffixBackup, "gentle-stack-main"), entry(stack, "gentle-stack-main")],
+		[entry(live, "live-to-youtube"), entry(hiddenBackup, "live-to-youtube"), entry(stack, "gentle-stack-main"), entry(suffixBackup, "gentle-stack-main")],
+	]) {
+		assert.deepEqual(__testing.dedupeBySkillName(entries, cwd).map((e) => e.path), [stack, live]);
+	}
+});
+
+test("findSkillFiles skips dot-prefixed skill directories inside a hidden root", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-pi-hidden-skill-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const skills = join(root, ".claude", "skills");
+	writeSkill(skills, ".backup-live-to-youtube-20261114", "live-to-youtube");
+	writeSkill(skills, join(".backup-category", "nested"), "nested");
+	const live = writeSkill(skills, "live-to-youtube", "live-to-youtube");
+
+	assert.deepEqual(await __testing.findSkillFiles(skills), [live]);
+});
+
+test("a root without duplicates keeps every skill and the first-candidate tie-break", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-pi-no-dup-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const skills = join(root, "skills");
+	const alpha = writeSkill(skills, "alpha", "alpha");
+	const beta = writeSkill(skills, "beta-dir", "beta");
+	const files = await __testing.findSkillFiles(skills);
+	assert.deepEqual(files, [alpha, beta]);
+	const cwd = join(root, "elsewhere");
+	const entries = files.map((path) => ({ name: __testing.parseFrontmatter(readFileSync(path, "utf8")).name ?? "", path, description: "d" }));
+	assert.deepEqual(__testing.dedupeBySkillName(entries, cwd).map((e) => e.path), [alpha, beta]);
+
+	const otherBeta = join(skills, "beta-old", "SKILL.md");
+	const [chosen] = __testing.dedupeBySkillName([entries[1], { name: "beta", path: otherBeta, description: "d" }], cwd);
+	assert.equal(chosen.path, beta);
+});
+
 test("only missing skill-file errors allow category scanning", () => {
 	assert.equal(__testing.isMissingSkillFileError({ code: "ENOENT" }), true);
 	assert.equal(__testing.isMissingSkillFileError({ code: "ENOTDIR" }), true);
@@ -661,13 +715,13 @@ test("regenerateRegistry carries a skill resolved from a non-default PI_CODING_A
 	const cwd = join(tmpdir(), `gentle-pi-agentdir-cwd-${Date.now()}`);
 	const isolatedHome = join(tmpdir(), `gentle-pi-agentdir-home-${Date.now()}`);
 	const agentDir = join(tmpdir(), `gentle-pi-agentdir-root-${Date.now()}`);
-	const skillPath = join(agentDir, "skills", "codegraph", "SKILL.md");
+	const skillPath = join(agentDir, "skills", "external-tool", "SKILL.md");
 	mkdirSync(dirname(skillPath), { recursive: true });
-	writeFileSync(skillPath, "---\nname: codegraph\ndescription: Trigger: agent-dir skill.\n---\n");
+	writeFileSync(skillPath, "---\nname: external-tool\ndescription: Trigger: agent-dir skill.\n---\n");
 
 	const resolved: ResolvedSkill[] = [
 		{
-			name: "codegraph",
+			name: "external-tool",
 			description: "Trigger: agent-dir skill.",
 			filePath: skillPath,
 			sourceInfo: { scope: "user" },
@@ -1903,7 +1957,7 @@ test("P2 the skill-registry skill names only existing references and no runtime 
 	const root = join(import.meta.dirname, "..");
 	const skill = readFileSync(join(root, "skills", "skill-registry", "SKILL.md"), "utf8");
 	const references = skill.slice(skill.indexOf("## References"));
-	for (const [, path] of references.matchAll(/`([^`]+\.md)`/g)) assert.ok(existsSync(join(root, path)), `missing reference: ${path}`);
+	for (const [, path] of references.matchAll(/`([^`]+\.md)`/g)) assert.ok(existsSync(join(root, "skills", "skill-registry", path)), `missing reference: ${path}`);
 	assert.doesNotMatch(skill, /systemPromptOptions|pi\.skills|node_modules/);
 	assert.match(skill, /`<available_skills>`/);
 });

@@ -35,7 +35,7 @@ after(async () => {
 async function delivered(): Promise<string> {
 	const prompt = await deliveredPrompt();
 	const start = prompt.indexOf("## Authorized work continuity");
-	const end = prompt.indexOf("# el Gentleman Orchestrator", start);
+	const end = prompt.indexOf("Default workflow: Organic Driven Development", start);
 	assert.ok(start >= 0 && end > start, "always-on parent continuity block is delivered before the core");
 	return prompt.slice(start, end);
 }
@@ -73,19 +73,35 @@ function includesAll(text: string, clauses: string[]): void {
 	for (const clause of clauses) assert.ok(text.includes(clause), `missing delivered clause: ${clause}`);
 }
 
-test("recoverable failure is distinguished from terminal missing proof within existing bounds", async () => {
-	includesAll(await delivered(), [
-		"Before a terminal bounded-stop outcome",
-		"recoverable technical or harness failure",
-		"within the authorized scope and existing correction budget",
-		"genuinely inaccessible required proof",
-		"explicit one run, no retries, or diagnostic-only limits",
-		"permission denial, required new consent, or exhausted budget",
-		"never reset budgets, add retry allowances, weaken checks, or override final outcomes",
-		"subject to every applicable limit",
-		"Respect terminal review and verification outcomes and existing bounded-stop rules",
+test("S3: authorized work continues within existing limits while proof gaps never become completion", async () => {
+	const continuity = await delivered();
+	includesAll(continuity, [
+		"Do in-scope implementation, docs and verification without asking at each step.",
+		"Run the authorized next step now.",
+		"A progress update is not a request for permission.",
+		"An explicit user stop applies only to the work it names.",
+		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
+		"Honor one-run, no-retry and diagnostic-only limits.",
+		"Correct checks within their correction limit.",
+		"Never reset, widen or dodge a limit, even in a new session.",
+		"Do not add retry allowances.",
+		"Never weaken checks or override final outcomes.",
 	]);
-	includesAll(await closeStep(), [UNAVAILABLE_VERIFIER]);
+	// The general turn-end rule complements, but does not duplicate, the
+	// canonical Close's tracked-work and proof clauses.
+	const close = await closeStep();
+	includesAll(close, [
+		"A pending child is a wait: completion resumes the turn without asking.",
+		"Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget.",
+	]);
+	for (const duplicated of [
+		"Needs your decision",
+		"never more verification",
+		"Before a terminal bounded-stop outcome",
+		"A pending child is a wait: completion resumes the turn without asking.",
+		"Missing, partial, unavailable, or declined proof",
+	]) assert.ok(!continuity.includes(duplicated), `continuity must not duplicate or license: ${duplicated}`);
+	includesAll(close, [UNAVAILABLE_VERIFIER]);
 });
 
 test("S2: setup failure preserves unrun proof without calling the verifier unavailable", async () => {
@@ -116,7 +132,7 @@ test("#3049: explicit quota recovery permits only the missing proof without reop
 		"After the human reports restored availability and explicitly requests the missing verification, allow one new bounded attempt for the same candidate.",
 		"Preserve the failed attempt and still-valid passed checks; do not replay passed suites.",
 		"Confirm no child is active or uncertain.",
-		"This is not an automatic retry, provider/model fallback, or reset of correction/native budgets.",
+		"This is not an automatic retry, provider/model fallback, or reset of verifier recheck or native correction limits.",
 		"Consent, denials, explicit one-run/no-retry limits and terminal native outcomes remain binding; failure never counts as approval.",
 	]);
 	includesAll(await closeStep(), [UNAVAILABLE_VERIFIER]);
@@ -124,34 +140,77 @@ test("#3049: explicit quota recovery permits only the missing proof without reop
 	assert.ok(docs.includes("This guidance changes no runtime quota detection, provider selection, or native review authority."));
 });
 
-test("S4-S5: worker exhaustion exposes a bounded continuation without waiving proof", async () => {
-	includesAll(await delivered(), [
-		"An exhausted worker-local correction limit ends that automatic cycle, not necessarily the feature.",
-		"Stop and report the remaining work, failed checks and missing proof, and offer an explicit human-controlled bounded continuation.",
-		"Name its scope, executor, correction limit and checks, or let the human stop.",
-		"Before any worker continuation, confirm no child is active or has an uncertain status.",
-		"A new session does not reset any limit.",
-		"When specifically authorized and not prohibited by actual native authority, continue ordinary in-scope compilation or implementation; unavailable proof still blocks completion and delivery.",
+test("S3: a true human decision and denial stop only the work they apply to", async () => {
+	includesAll(await closeStep(), [
+		"Only a real human decision, explicit user stop, denial, missing consent, exhausted limit, or failure without a permitted route stops only affected work.",
+		"Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
+		"Never turn a report into a blind self-reprompt loop.",
 	]);
+});
+
+test("S3 F1/F2: a partial stop or exhausted limit affects only that work while unrelated runnable work continues", async () => {
+	const close = await closeStep();
+	includesAll(close, [
+		"A tracked task ends the turn pending only for launched work still running, a real human decision, denial, missing consent, explicit stop, or exhausted limit.",
+		"Report failures without a permitted route as incomplete. Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
+	]);
+	// Denied destructive migration, exhausted verifier/correction limit, missing
+	// consent, and a partial user stop each stop their affected work; a waiting
+	// child resumes automatically; unrelated runnable work is never abandoned.
+	const tracking = readFileSync(new URL("../assets/orchestrator-tracking.md", import.meta.url), "utf8");
+	const gateStart = tracking.indexOf("Close gate:");
+	assert.ok(gateStart >= 0, "the tracking module keeps its Close gate");
+	const gate = tracking.slice(gateStart);
+	for (const clause of [
+		"unless it waits on a launched child",
+		"an already-decided denial, missing consent, or exhausted limit applies to that affected work",
+		"the user stopped only that work",
+		"or a genuine human decision is open",
+		"Unrelated runnable authorized work continues",
+	]) assert.ok(gate.includes(clause), `tracking Close gate is missing: ${clause}`);
+	assert.ok(!gate.includes("tracked or untracked work alike"), "the unscoped stop exception must go");
+	assert.ok(close.includes("Missing, partial, unavailable, or declined proof bars claiming completion of affected work"), "no fake complete");
+});
+
+// #2919 and turn-end-coherence S11: the parent takes over with evidence and never repeats an attempt.
+test("a repeated-cause worker stop hands the next step to the parent without ending independent work", async () => {
+	const prompt = await delivered();
+	includesAll(prompt, [
+		"A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
+		"The parent owns the next step, unasked, within native authority.",
+		"On any partial, diagnose from evidence; confirm no child is active or uncertain.",
+		"Within user-authorized scope: fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence.",
+		"Never repeat an attempt or swap executors to dodge limits.",
+		"No permitted route: report only that work incomplete; continue independent work.",
+		"Never reset, widen or dodge a limit, even in a new session.",
+		"Honor one-run, no-retry and diagnostic-only limits.",
+	]);
+	for (const removed of ["human-controlled bounded continuation", "let the human stop"]) {
+		assert.ok(!prompt.includes(removed), `worker exhaustion must not route to the human: ${removed}`);
+	}
 });
 
 test("worker-prohibited maintenance has a bounded parent-only route, not a permission bypass", async () => {
 	includesAll(await delivered(), [
-		"worker prohibitions remain unchanged",
-		"parent only",
-		"human explicitly authorized the operation itself",
-		"exact scope, ownership, and preservation",
+		"Worker-prohibited maintenance or rollback: Only the parent may act; load `orchestrator-maintenance.md` and verify its prerequisites first.",
+	]);
+	const maintenance = readFileSync(new URL("../assets/orchestrator-maintenance.md", import.meta.url), "utf8");
+	includesAll(maintenance, [
+		"Worker prohibitions remain unchanged.",
+		"Only the parent may act",
+		"explicit human authorization for the operation itself",
+		"established exact scope, ownership and preservation",
 		"available permitted tools",
-		"fresh runtime/native consent and guards remain binding",
-		"broad feature authorization is not destructive authority",
-		"never substitute another worker or tool to bypass a denial",
+		"Fresh runtime/native consent and guards remain binding.",
+		"Broad feature authorization is not destructive authority.",
+		"Never bypass a denial via another worker or tool.",
 		"validated backup",
 		"artifact and migration validation where applicable",
 		"recovery path",
 		"preserve unrelated edits even in the same file",
 		"remove only proven task-created helpers",
-		"never blanket restore, reset, or clean",
-		"ambiguous ownership or denial stops",
+		"never blanket restore, reset or clean",
+		"Do not proceed with ambiguous ownership, a denial or any missing prerequisite.",
 		"This route is guidance, not authorization.",
 	]);
 });

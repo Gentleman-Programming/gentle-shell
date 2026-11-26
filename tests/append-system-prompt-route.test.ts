@@ -117,22 +117,38 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 	const appended = event.systemPromptOptions.appendSystemPrompt;
 	assert.match(appended, /el Gentleman Identity and Harness/);
 	const continuityStart = appended.indexOf("## Authorized work continuity");
-	const coreStart = appended.indexOf("# el Gentleman Orchestrator");
+	const coreStart = appended.indexOf("Default workflow: Organic Driven Development");
 	assert.ok(continuityStart >= 0 && continuityStart < coreStart,
 		"continuity must be always injected in the identity/harness, outside the budgeted core");
 	assert.equal(appended.split("## Authorized work continuity").length - 1, 1);
 	const continuity = appended.slice(continuityStart, coreStart);
 	for (const clause of [
-		"necessary in-scope implementation, documentation and verification steps",
-		"Never end a turn merely announcing an immediately executable authorized next step; execute it instead",
-		"required explicit consent, a denied action, or the human's explicit stop",
-		"Unavailable required proof blocks completion and delivery; it does not alone prohibit specifically authorized in-scope implementation where actual native authority and other limits permit it.",
+		"Do in-scope implementation, docs and verification without asking at each step.",
+		"Run the authorized next step now.",
+		"A progress update is not a request for permission.",
+		"An explicit user stop applies only to the work it names.",
 		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
-		"Report a concrete blocker and the exact decision needed",
-		"launch the bounded action and end the turn when no independent in-scope work remains",
-		"Retain its identity and resume the already-authorized continuation automatically on its completion event",
-		"do not ask the human to say \"continue\", poll, or claim completion while checks remain pending",
+		"Honor one-run, no-retry and diagnostic-only limits.",
+		"Correct checks within their correction limit.",
+		"Worker exhaustion: Keep the worker correcting while attempts name the cause from output and change the fix to address it.",
+		"A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
+		"Never reset, widen or dodge a limit, even in a new session.",
+		"Do not add retry allowances.",
+		"Never weaken checks or override final outcomes.",
+		"work that will wake you is running (a wait) and no independent authorized work remains",
+		"Launch the bounded action and keep its identity.",
+		"A wait is launched work whose completion event resumes the turn and authorized work without the human.",
+		"Do not poll or ask the human to continue.",
 	]) assert.ok(continuity.includes(clause), `missing continuity clause: ${clause}`);
+	// The general turn-end rule complements, but does not duplicate, the
+	// canonical Close's tracked-work and proof clauses.
+	for (const duplicated of [
+		"Needs your decision",
+		"never more verification",
+		"Before a terminal bounded-stop outcome",
+		"A pending child is a wait: completion resumes the turn without asking.",
+		"Missing, partial, unavailable, or declined proof",
+	]) assert.ok(!continuity.includes(duplicated), `continuity must not duplicate or license: ${duplicated}`);
 	// cost-speed-painpoints S15 P4: the verifier-setup rules load with the Verification rule, not on every turn.
 	const verification = readFileSync(new URL("../assets/orchestrator-verification.md", import.meta.url), "utf8");
 	for (const clause of [

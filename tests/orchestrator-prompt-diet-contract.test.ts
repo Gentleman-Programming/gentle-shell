@@ -159,7 +159,32 @@ test("S5 change 5: gentle_odd_phase does not restate the Phase reporting cadence
 	assert.ok(prose.includes("Pass phase exactly as its schema enum"), "schema rule must stay");
 	assert.ok(prose.includes("Never call this from a subagent or background/child task"), "child rule must stay: children do not receive Phase reporting");
 	for (const mode of MODES) {
-		assert.ok(render("gentleman", mode).includes("call `gentle_odd_phase` only when the primary session's ODD phase actually changes, never per tool call or on a fixed cadence, and never from a subagent"), `[${mode}] Phase reporting keeps the cadence`);
+		assert.ok(render("gentleman", mode).includes("call it from the primary session only when its ODD phase actually changes, never per tool call or on a fixed cadence"), `[${mode}] Phase reporting keeps the cadence`);
+	}
+});
+
+// --- harness-continuity S3: the authorized-work boundary is mode- and RDD-stable ---
+
+const CANONICAL_CLOSE = [
+	"Run authorized in-scope steps. Work through failures with a permitted route. A pending child is a wait: completion resumes the turn without asking.",
+	"A tracked task ends the turn pending only for launched work still running, a real human decision, denial, missing consent, explicit stop, or exhausted limit.",
+	"Only a real human decision, explicit user stop, denial, missing consent, exhausted limit, or failure without a permitted route stops only affected work.",
+	"Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
+	"Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget.",
+	"Never turn a report into a blind self-reprompt loop.",
+] as const;
+
+test("S3: organic and full delegation keep the authorized-work boundary under RDD on and off", () => {
+	const statuses = [
+		"Receipt-driven development: on (decided by global)",
+		"Receipt-driven development: off (decided by global)",
+	];
+	for (const status of statuses) for (const mode of MODES) {
+		const prompt = __testing.buildGentlePrompt("gentleman", join(scratch, "project"), ACTIVE_TOOLS, status, undefined, mode).replaceAll(ASSETS, "/a");
+		for (const clause of CANONICAL_CLOSE) assert.ok(prompt.includes(clause), `[${status}/${mode}] canonical Close is missing: ${clause}`);
+		assert.ok(prompt.includes("An explicit user stop applies only to the work it names."), `[${status}/${mode}] explicit-stop coverage`);
+		assert.ok(!prompt.includes("Needs your decision"), `[${status}/${mode}] no generic terminal phrase`);
+		assert.ok(!prompt.includes("never more verification"), `[${status}/${mode}] no broad verification stop`);
 	}
 });
 
@@ -173,12 +198,15 @@ test("S5 change 5: gentle_odd_phase does not restate the Phase reporting cadence
 // cost-speed P14: the duplicate gentleman Language line (-80 B, PD-57) and the core's evidence-budget number aligned
 // to the runtime (-12 B in both modes, PD-81); measured organic 24,164/24,416 B and full delegation 22,131/22,383 B.
 const PRIMARY_PROMPT_BUDGETS: Record<(typeof MODES)[number], Record<(typeof PERSONAS)[number], number>> = {
-	organic: { gentleman: 24_164, neutral: 24_416 },
+	// fix/temp-dir-exemption (user decision 2026-11-16, approved up to +175 B): the confinement clause exempts the OS temp
+	// directory in every mode and persona; measured organic 24,164/24,416 -> 24,251/24,503 B and full delegation
+	// 22,128/22,380 -> 22,210/22,462 B.
+	organic: { gentleman: 24_251, neutral: 24_503 },
 	// cost-speed P6 (X9): launch form, continue-one-worker rule and the tracking pointer, paid by the motivation
 	// sentence and a duplicate of step 6's verbatim-request rule (22,253/22,425 -> 22,223/22,395 B).
 	// cost-speed P6b: the launch sentence names the same assistant message, the `codemode` route and the sequential
 	// tools (+126 B), paid by tightening five sentences of the same asset (22,131/22,383 -> 22,128/22,380 B).
-	"full-delegation": { gentleman: 22_128, neutral: 22_380 },
+	"full-delegation": { gentleman: 22_210, neutral: 22_462 },
 };
 
 test("S5: the rendered primary prompt fits the lowered per-mode budgets", (t) => {

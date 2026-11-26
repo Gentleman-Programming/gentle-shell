@@ -154,10 +154,18 @@ for (const [origin, defaults] of Object.entries(startupDefaults) as Array<[keyof
 		assert.ok(notice?.includes(`this session keeps "${name}" (${origin})`), "the inherited drift notice");
 		assert.equal(replay("v1", transcript).notice, undefined, "v1 finds no definition drift");
 	});
-	test(`follow mode routes a ${origin} startup bind as v1 does`, () => {
+	// A3 S4 (gentle-shell#1064), changed on purpose: the documented follow
+	// divergence. Follow ignores the startup bind and resolves the current
+	// defaults; v1 routes the recorded bind.
+	test(`follow mode ignores a ${origin} startup bind and resolves the current defaults, diverging from v1`, () => {
 		const transcript = { records: [record], defaults: { profiles, active: "local", foreignPin: "frontier" }, env: { GENTLE_PI_PROFILE_FOLLOW: "1" } };
-		assert.deepEqual(launchRouting("current", transcript), launchRouting("v1", transcript));
-		assert.deepEqual(launchRouting("current", transcript).foreignRouting, roles(profiles[name]));
+		const current = replay("current", transcript), v1 = launchRouting("v1", transcript);
+		assert.equal(current.kind, "follow");
+		assert.equal(current.notice, undefined, "follow sessions are never compared");
+		assert.deepEqual(launchRouting("current", transcript).routing, roles(LOCAL), "the current defaults outrank the startup bind");
+		assert.deepEqual(launchRouting("current", transcript).foreignRouting, roles(FRONTIER), "a foreign launch reads that repository's own pin");
+		assert.deepEqual(v1.routing, roles(profiles[name]), "v1 still routes the recorded startup bind");
+		assert.deepEqual(v1.foreignRouting, roles(profiles[name]));
 	});
 }
 
@@ -233,6 +241,26 @@ test("gap (section 10): after a startup-none clear a pin appears; a reviewer wit
 	const transcript = { records: [createSessionProfileClear("none")], defaults: { profiles: { ...profiles, pinned: PINNED }, localPin: "pinned" } };
 	assert.deepEqual(replayReviewerRouting("v1", transcript), PINNED, "v1 without A1 follows the new pin");
 	assert.deepEqual(replayReviewerRouting("current", transcript), {}, "current keeps no session profile");
+});
+
+test("gap (section 10): at own start the frozen profile's orchestrator feeds provider review roles; v1 without A1 reads the persisted default", (t) => {
+	const agentHome = mkdtempSync(join(tmpdir(), "gentle-pi-v1-frozen-agent-home-"));
+	const previous = process.env.GENTLE_PI_AGENT_HOME;
+	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previous;
+		rmSync(agentHome, { recursive: true, force: true });
+	});
+	writeFileSync(join(agentHome, "settings.json"), JSON.stringify({ defaultProvider: "pidefault", defaultModel: "settings-model" }));
+	const transcript = { records: [], defaults: { profiles, localPin: "team" }, ownStart: true };
+	const current = replayReviewerRouting("current", transcript), v1 = replayReviewerRouting("v1", transcript);
+	assert.deepEqual(current, TEAM, "current keeps the in-memory frozen orchestrator without a startup record");
+	assert.deepEqual(roles(v1), roles(TEAM), "v1 keeps the same pinned role routing");
+	for (const role of ["review-refuter", "review-validator"]) {
+		assert.deepEqual(__testing.reviewHostRelaySelection(role, current), { selection: "openai/gpt-5", routingKey: role });
+		assert.deepEqual(v1ReviewHostRelaySelection(role, v1), { selection: "pidefault/settings-model", routingKey: role });
+	}
 });
 
 test("a startup record's orchestrator feeds the current refuter and validator; a reviewer without A1 falls back to settings.json", (t) => {

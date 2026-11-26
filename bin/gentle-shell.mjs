@@ -34,7 +34,10 @@ import {
 	checkPiVersion,
 	decideTakeOver,
 	declaredPackageSkewMessage,
+	describeSetupCheck,
+	describeSetupCheckError,
 	describeVersion,
+	describeVersionJson,
 	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
 	forceJsonFieldIfAbsentInOriginal,
@@ -44,11 +47,12 @@ import {
 	launcherConfigPath,
 	MIN_SETUP_GENTLE_AI_VERSION,
 	missingPiMessage,
-	needsProvisioning,
 	otherPackageInjections,
 	parseLauncherArgs,
 	parseLauncherConfig,
+	parseTowerArgs,
 	parseRawLauncherConfig,
+	parseSetupCheckArgs,
 	planSpawn,
 	POST_INSTALL_REMOVAL_SOURCES,
 	withLauncherPackagesExcluded,
@@ -60,6 +64,9 @@ import {
 	resolvePiRuntime,
 	restoreJsonField,
 	separateHomeHint,
+	setupCheck,
+	setupCheckErrorMessage,
+	SETUP_CHECK_ERROR_EXIT_CODE,
 	shellQuote,
 	standaloneConfigHome,
 	userPiHome,
@@ -1545,6 +1552,34 @@ async function removePostInstallSources(sources, index, home, runtime, stdio, ti
 	return removePostInstallSources(sources, index + 1, home, runtime, stdio, timeoutMs);
 }
 
+// `gentle-shell [home selectors] setup --check [--json]`: whether the resolved
+// home needs setup and why, from the same config marker, pin and gentle-pi
+// version automatic setup compares (setupCheck). Only reads: no bootstrap,
+// no config write, no download, no Pi. Exit 0 set up, 1 needs setup, 3 when
+// the config or home cannot be read. It compares this running copy's pin and
+// version, the ones automatic setup in this same copy uses; a bundled launch
+// only moves to another copy after an update accepted at its interactive
+// startup prompt, which never runs for a command.
+function handleSetupCheck(args, json) {
+	let home, result, foreign;
+	try {
+		home = resolveHome({ args, env: process.env, homedir: homedir(), config: loadConfig() });
+		if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
+		// A missing home just needs setup; one that exists but cannot be listed
+		// is a read error (exit 3), not a home to report as empty.
+		if (existsSync(home.dir)) readdirSync(home.dir);
+		result = setupCheck(readRawConfig(resolveConfigPath()), safeRealpath(home.dir), resolveSetupGentleAiPin(), ownPackageVersion());
+		// Automatic setup never touches a --link home, so it is foreign here too.
+		foreign = home.mode === "link" || homeIsForeign(home, result.previous, homeHasContent(home.dir));
+	} catch (error) {
+		const report = describeSetupCheckError(setupCheckErrorMessage(error), json);
+		(json ? process.stdout : process.stderr).write(`${report}\n`);
+		return SETUP_CHECK_ERROR_EXIT_CODE;
+	}
+	process.stdout.write(`${describeSetupCheck(result, { home, foreign, json })}\n`);
+	return result.needsSetup ? 1 : 0;
+}
+
 // CLI entry for `gentle-shell [home selectors] setup [--dry-run]`: parses
 // --dry-run, runs the shared flow with the child's stdio inherited (today's
 // behavior, unchanged), then exits with its result — this is the one place
@@ -1630,6 +1665,17 @@ async function bootstrapOwnedHome(home) {
 	mkdirSync(home.dir, { recursive: true, mode: 0o700 });
 	await installIsolatedTuiModeSetting(home.dir);
 	writeHomeOwnershipMarker(home); // R3-001: lets a failed first auto-provision attempt still be retried later
+}
+
+// Whether `dir` exists with at least one entry; unreadable counts as empty.
+// The ownership signal homeIsForeign takes, read before any bootstrap.
+function homeHasContent(dir) {
+	if (!existsSync(dir)) return false;
+	try {
+		return readdirSync(dir).length > 0;
+	} catch {
+		return false;
+	}
 }
 
 function homeNeedsBootstrap(dir) {
@@ -1763,9 +1809,11 @@ async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBoots
 	const pin = resolveSetupGentleAiPin();
 	const gentlePiVersion = ownPackageVersion();
 	const beforeConfig = readRawConfig(configPath);
-	if (!needsProvisioning(beforeConfig, homeKey, pin, gentlePiVersion)) return undefined;
+	// The same comparison `setup --check` reports (setupCheck), so the two never drift.
+	const check = setupCheck(beforeConfig, homeKey, pin, gentlePiVersion);
+	if (!check.needsSetup) return undefined;
 
-	const previous = provisionedEntry(beforeConfig, homeKey);
+	const previous = check.previous;
 	if (homeIsForeign(home, previous, homeHadContentBeforeBootstrap)) {
 		const reason =
 			safeRealpath(home.dir) === safeRealpath(defaultPiAgentDir())
@@ -1785,11 +1833,11 @@ async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBoots
 			);
 		} else {
 			// A marker written before gentle-pi version tracking existed (S8)
-			// has no `gentlePi` field: needsProvisioning above already treats
+			// has no `gentlePi` field: setupCheck above already reports
 			// that as changed, so this reports "unknown" as its prior value
 			// instead of "undefined".
-			const gentleAiChanged = previous.gentleAi !== pin;
-			const gentlePiChanged = previous.gentlePi !== gentlePiVersion;
+			const gentleAiChanged = check.reasons.includes("gentle-ai-changed");
+			const gentlePiChanged = check.reasons.includes("gentle-pi-changed");
 			if (gentleAiChanged && gentlePiChanged) {
 				process.stderr.write(
 					`gentle-shell: gentle-ai pin changed (${previous.gentleAi} -> ${pin}) and gentle-pi changed (${previous.gentlePi ?? "unknown"} -> ${gentlePiVersion}): updating ${home.dir}\n`,
@@ -1871,12 +1919,73 @@ async function handleUpgradeCommand(commandArgs) {
 			packageRoot,
 			currentVersion: ownPackageVersion(),
 			adapters: { fetch: globalThis.fetch, ...managers, migrate },
+			progressStream: process.stdin.isTTY && process.stderr.isTTY && process.stdout.isTTY && !process.env.CI && process.env.TERM !== "dumb" ? process.stderr : undefined,
 			out,
 		});
 	} catch (error) {
 		if (error instanceof MainChannelError) fail(`gentle-shell upgrade: ${error.message}`, error.code === "upgrade-usage" ? 2 : 1);
 		throw error;
 	}
+	if (process.exitCode === 0) await refreshDesktopAfterUpgrade(undefined);
+}
+
+// After a forward upgrade the new Gentle Shell refreshes Gentle Shell Desktop's
+// gentle-* mods and layout, only when `gentle-shell desktop` installed them (its
+// state file); a user who never ran desktop gets nothing installed. The old
+// process cannot do it: the new mods ship with the new package. A target
+// without the desktop command (an older release) would take `desktop` as a
+// prompt for the model, so it is never launched. `upgrade --rollback` never
+// calls this.
+async function refreshDesktopAfterUpgrade(bundled) {
+	let stateFile;
+	let supportsDesktop;
+	try {
+		// After an npm upgrade this package folder holds the new version, which may not ship desktop.
+		const desktop = await import("../runtime/gentle-shell-desktop.mjs");
+		stateFile = desktop.desktopPaths(process.env, homedir()).stateFile;
+		supportsDesktop = desktop.supportsDesktop;
+	} catch {
+		return;
+	}
+	if (!existsSync(stateFile)) return;
+	const warn = (reason) => process.stderr.write(`gentle-shell upgrade: could not refresh Gentle Shell Desktop's mods (${reason}); run 'gentle-shell desktop'.\n`);
+	try {
+		const next = bundled
+			? await resolveStartupRelaunch({ root: bundled.root, home: homedir(), platform: process.platform, env: process.env, argv: ["desktop", "--refresh"] })
+			: { command: process.execPath, args: [join(packageRoot, "bin", "gentle-shell.mjs"), "desktop", "--refresh"], env: process.env };
+		// next.args[0] is the target's bin/gentle-shell.mjs.
+		if (!supportsDesktop(dirname(dirname(next.args[0])))) return;
+		const result = spawnSync(next.command, next.args, { stdio: "inherit", env: next.env });
+		if (result.error) warn(result.error.message);
+		else if (result.status !== 0) warn(`exit ${result.status}`);
+	} catch (error) {
+		warn(error.message);
+	}
+}
+
+// `gentle-shell desktop` (Gentle Shell Desktop): before any Pi runtime check,
+// since it never runs Pi; lib/gentle-shell-desktop.ts owns the decisions.
+async function handleDesktopCommand(commandArgs) {
+	const { nodeDesktopIO, runDesktop } = await import("../runtime/gentle-shell-desktop.mjs");
+	const { askLine } = await import("../runtime/gentle-shell-uninstall.mjs");
+	return runDesktop({
+		args: commandArgs,
+		env: process.env,
+		home: homedir(),
+		platform: process.platform,
+		arch: process.arch,
+		cwd: process.cwd(),
+		interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+		packageRoot,
+		shellVersion: ownPackageVersion(),
+		io: {
+			...nodeDesktopIO(),
+			// End of input or Ctrl+C answers No.
+			ask: (question) => askLine(question, { input: process.stdin, output: process.stdout }).catch(() => ""),
+			out: (line) => process.stdout.write(`${line}\n`),
+			err: (line) => process.stderr.write(`${line}\n`),
+		},
+	});
 }
 
 // `gentle-shell upgrade` in a bundled install: the latest release installed
@@ -1907,11 +2016,12 @@ async function handleBundledUpgrade(bundled, commandArgs) {
 			adapters: { latest: () => latestRelease(globalThis.fetch), distribution: (version) => fetchDistribution({ version }) },
 			out,
 		});
-		return 0;
 	} catch (error) {
 		process.stderr.write(`gentle-shell upgrade: ${error.message}${error.stderr ? `\n${error.stderr}` : ""}\n`);
 		return 1;
 	}
+	await refreshDesktopAfterUpgrade(bundled);
+	return 0;
 }
 
 // `gentle-shell update` in a bundled install: the newest published
@@ -2095,7 +2205,7 @@ async function main() {
 	const args = parseLauncherArgs(process.argv.slice(2));
 	if (args.error !== undefined) fail(`${args.error}\nRun 'gentle-shell --help' for usage.`, 2);
 	if (args.help) {
-		process.stdout.write("Pi updates: update resolves the newest published stable Pi and updates its verified supplier\n(a global Pi, or its Shell package at the same Shell version), then reads the Pi version back.\npnpm temporarily exempts only Pi and the @earendil-works packages it pins exactly (transitively) from\nminimumReleaseAge, merged into their existing exclusions; other exclusions and policy stay in force.\nA linked source Shell updates local Pi with its project manager and one matching lockfile;\npnpm may be newer than the declared minimum; npm must match its pin. No manager is downloaded;\nGit roots only, no lifecycle scripts or manifest range changes. Root-only pnpm configuration is preserved;\nmulti-project/ancestor workspaces and conflicting lockfiles refuse before installation. Unknown ownership refuses; update --extensions-only stays Pi-only.\nPrefix-bundled update also selects the latest stable Pi; upgrade updates Shell.\n");
+		process.stdout.write("Pi updates: update resolves the newest published stable Pi and updates its verified supplier\n(a global Pi, or its Shell package at the same Shell version), then reads the Pi version back.\npnpm temporarily exempts only Pi and the @earendil-works packages it pins exactly (transitively) from\nminimumReleaseAge, merged into their existing exclusions; other exclusions and policy stay in force.\nA linked source Shell updates local Pi, and the directly declared @earendil-works packages (pi-ai, pi-tui)\nto the exact versions that Pi pins, with its project manager and one matching lockfile;\npnpm may be newer than the declared minimum; npm must match its pin. No manager is downloaded;\nGit roots only, no lifecycle scripts or manifest range changes. Root-only pnpm configuration is preserved;\nmulti-project/ancestor workspaces and conflicting lockfiles refuse before installation. Unknown ownership refuses; update --extensions-only stays Pi-only.\nPrefix-bundled update also selects the latest stable Pi; upgrade updates Shell.\n");
 		process.stdout.write(`${helpText()}\nBundled Engram memory: Shell shares the global Engram server on 127.0.0.1:7437, like other agents' hooks.\nA running server is reused only with verified /compatibility evidence; when nothing listens, Shell starts the\nbundled core's engram serve (default ~/.engram) and waits for that evidence. Otherwise ENGRAM_BIN is Shell's\nguard and memory stays off for that launch. Matching versions or updating alone do not prove compatibility.\nBack up existing data before manual changes; do not delete it or bypass the safety check.\nShell rechecks on every launch and remains usable without memory.\nAn explicit ENGRAM_BIN or ENGRAM_URL is kept and bypasses the guard.\n`);
 		process.exit(0);
 	}
@@ -2103,6 +2213,30 @@ async function main() {
 		if (args.commandArgs[0] === "import-pi") await handleImportPiCommand(args);
 		else handleHomeCommand(args.commandArgs);
 		return;
+	}
+	if (args.command === "desktop") {
+		process.exitCode = await handleDesktopCommand(args.commandArgs);
+		return;
+	}
+	// `gentle-shell tower`: the same local web view as /gentle:tower, without a
+	// session or a Pi runtime; serves until SIGINT/SIGTERM.
+	if (args.command === "tower") {
+		const tower = parseTowerArgs(args.commandArgs);
+		if (tower.error !== undefined) fail(`gentle-shell tower: ${tower.error}\nRun 'gentle-shell --help' for usage.`, 2);
+		const { runTower } = await import("../runtime/tower-open.mjs");
+		process.exitCode = await runTower({ env: process.env, open: tower.open, port: tower.port, json: tower.json === true,
+			stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text) });
+		return;
+	}
+	// `setup --check [--json]`: read-only, so it runs before the bundled-install
+	// resolution, the startup update check, Pi resolution and the home bootstrap.
+	if (args.command === "setup") {
+		const setupArgs = parseSetupCheckArgs(args.commandArgs);
+		if (setupArgs.check) {
+			if (setupArgs.unrecognized !== undefined) fail(`Unrecognized argument for 'gentle-shell setup': ${setupArgs.unrecognized}\nRun 'gentle-shell --help' for usage.`, 2);
+			process.exitCode = handleSetupCheck(args, setupArgs.json);
+			return;
+		}
 	}
 	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).
 	const verifying = args.version && args.command === undefined ? process.env[BUNDLED_VERIFY_ENV] : undefined;
@@ -2178,11 +2312,15 @@ async function main() {
 	if (!versionCheck.ok && !managedSelfUpdate) fail(versionCheck.message, 1);
 
 	if (args.version) {
-		// A link home keeps its own gentle-pi declaration by contract, so the
-		// bundle version alone can hide that pi loads an older package.
-		const versionDeclaration = findGentlePiDeclaration(readJsonIfExists(join(home.dir, "settings.json")), { agentDir: home.dir, readPackageName });
-		const declaredGentlePiVersion = versionDeclaration?.kind === "npm" ? versionDeclaration.version : undefined;
-		process.stdout.write(`${describeVersion({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home, declaredGentlePiVersion })}\n`);
+		let declaredGentlePiVersion;
+		// The JSON surface keeps exactly its existing fields; only the plain
+		// report gains the optional declaration-skew line.
+		if (args.json !== true) {
+			const versionDeclaration = findGentlePiDeclaration(readJsonIfExists(join(home.dir, "settings.json")), { agentDir: home.dir, readPackageName });
+			if (versionDeclaration?.kind === "npm") declaredGentlePiVersion = versionDeclaration.version;
+		}
+		const describe = args.json === true ? describeVersionJson : describeVersion;
+		process.stdout.write(`${describe({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home, declaredGentlePiVersion })}\n`);
 		process.exit(0);
 	}
 
@@ -2217,14 +2355,7 @@ async function main() {
 	// brand-new --home directory with its own settings.json — after that
 	// bootstrap runs, "did this home already have content" can no longer be
 	// answered by looking at the directory.
-	let homeHadContentBeforeBootstrap = false;
-	if (existsSync(home.dir)) {
-		try {
-			homeHadContentBeforeBootstrap = readdirSync(home.dir).length > 0;
-		} catch {
-			homeHadContentBeforeBootstrap = false;
-		}
-	}
+	const homeHadContentBeforeBootstrap = homeHasContent(home.dir);
 
 	// Isolated-home bootstrap: only on a home gentle-shell has not seen before
 	// (link never bootstraps — it reuses the user's own pi agent home as-is).
@@ -2375,9 +2506,9 @@ async function main() {
 			realDeclaredDir,
 			packageRootExplicit: home.mode === "link" && packageRootExplicit,
 		});
-		// Not taking over means pi loads the declared package, which may be an
-		// older gentle-pi than this launcher. Say so once: a silent skew is how a
-		// user believes an upgrade took effect when only the bundle moved.
+		// Without a take-over Pi loads the home's own package. If it is
+		// installed, that version is what loads; the pin alone is only a
+		// fallback. A stale copy left by a failed upgrade is worth naming once.
 		let installedVersion;
 		try {
 			const installedText = readJsonIfExists(join(home.dir, "npm", "node_modules", "gentle-pi", "package.json"));

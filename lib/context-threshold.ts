@@ -1,6 +1,6 @@
 /**
- * Fixed product threshold for the high-context warning. The latch lives outside
- * the notification and visual stores so both warnings share one episode.
+ * Fallback percentage when auto-compaction is off or its threshold is unknown.
+ * The latch lives outside the stores so both warnings share one episode.
  */
 export const CONTEXT_HIGH_PERCENT = 90;
 
@@ -15,9 +15,9 @@ export const CONTEXT_HIGH_PERCENT = 90;
  */
 export class ContextHighLatch {
 	private high = false;
-	observe(percent: number | null | undefined): boolean {
-		if (typeof percent !== "number" || !Number.isFinite(percent)) return false;
-		if (percent < CONTEXT_HIGH_PERCENT) { this.high = false; return false; }
+	observe(reading: number | null | undefined, threshold = CONTEXT_HIGH_PERCENT): boolean {
+		if (typeof reading !== "number" || !Number.isFinite(reading)) return false;
+		if (reading < threshold) { this.high = false; return false; }
 		if (this.high) return false;
 		this.high = true;
 		return true;

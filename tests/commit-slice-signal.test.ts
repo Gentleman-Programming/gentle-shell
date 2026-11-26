@@ -100,11 +100,12 @@ test("a lock file whose path Git quotes is still excluded", async (t) => {
 	assert.match(await commitSliceReport(dir) ?? "", /^Commit slice: 10 authored changed lines in 2 commits on feat\/quoted/);
 });
 
-test("past ~400 lines the report says to apply the delivery strategy before the next commit", async (t) => {
+test("past ~400 lines the report says to record the slice boundary and choose the delivery shape when publishing", async (t) => {
 	const { dir, git, commitFile } = repo(t);
 	git("switch", "-q", "-c", "feat/big");
 	commitFile("src/big.ts", 450);
-	assert.match(await commitSliceReport(dir) ?? "", /450 authored changed lines in 1 commit on feat\/big since main\b.*Past the ~400-line slice: apply the feature's delivery strategy before the next commit/);
+	assert.match(await commitSliceReport(dir) ?? "", /450 authored changed lines in 1 commit on feat\/big since main\b.*Past the ~400-line slice: record the slice boundary in the feature document; choose the delivery shape when publishing\.$/);
+	assert.doesNotMatch(await commitSliceReport(dir) ?? "", /before the next commit/, "S7: a local commit never waits on the delivery menu");
 });
 
 // R1 review advisory: the report ran git synchronously in the parent's

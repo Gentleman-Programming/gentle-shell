@@ -99,7 +99,7 @@ export function utf8(bytes) {
 export async function readAfter(file, pos, max = 2 * 1024 * 1024, viaExec = false) {
   if (viaExec) {
     const r = await readOutside(file, pos, max);
-    if (r !== NO_SH) return r;
+    if (r) return r;
   }
   let bytes;
   try {
@@ -107,7 +107,10 @@ export async function readAfter(file, pos, max = 2 * 1024 * 1024, viaExec = fals
   } catch (e) {
     // Herdr grants mods read access to the home folder only; a session resumed from elsewhere
     // (`gentle-shell --session /tmp/x.jsonl`) is read through `exec` instead.
-    if (OUTSIDE.test(String(e?.message ?? e))) return orReset(await readOutside(file, pos, max));
+    if (OUTSIDE.test(String(e?.message ?? e))) {
+      const r = await readOutside(file, pos, max);
+      if (r) return r;
+    }
     return { text: null, end: 0, more: false, size: 0 };
   }
   const size = bytes.length;
@@ -156,9 +159,6 @@ export async function readTail(file, tail, lines = 0, max = Infinity) {
 }
 
 const OUTSIDE = /outside every granted read root/i;
-// readOutside's answer when `exec` rejected (Herdr: `sh` could not start, or it timed out).
-const NO_SH = { text: null, end: 0, more: false };
-const orReset = (r) => (r === NO_SH ? { ...NO_SH } : r);
 const EXEC_MAX = 6 * 1024 * 1024; // exec output is capped at 8 MiB
 
 // Bytes UTF-8 needs for a string (the exec path gets text, the position is in bytes).
@@ -175,15 +175,15 @@ export function utf8Length(s) {
 }
 
 // readAfter for a file outside the read roots: its size, then the bytes after `pos`, from one
-// `sh` (the path and numbers are positional arguments, never part of the script). NO_SH when
-// `exec` rejected.
+// `sh` (the path and numbers are positional arguments, never part of the script). Null when
+// `exec` rejected (Herdr: `sh` could not start, or it timed out).
 async function readOutside(file, pos, max) {
   const cap = Math.max(1, Math.min(max * 3, EXEC_MAX));
   let r;
   try {
     r = await exec("sh", ["-c", 'wc -c < "$2" && tail -c +"$1" "$2" | head -c "$3"', "sh", String(pos + 1), file, String(cap)], { timeout: 15000 });
   } catch {
-    return NO_SH;
+    return null;
   }
   const cut = r.stdout.indexOf("\n");
   const size = Number.parseInt(r.stdout.slice(0, cut), 10);

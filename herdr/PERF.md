@@ -69,9 +69,8 @@ Measured by turning things off one at a time:
   when the event names the session's own file. A long session opens at its end (`readTail`: at
   least 300 KB and 300 lines, at most 3 MB, so a few huge tool results do not leave three
   messages; "Show earlier messages" reads as much again); a file over 1 MB is read through one
-  `sh` (`wc -c` + `tail -c +pos`), which answers "did not grow" without copying the file. Where
-  `sh` cannot start (native Windows, #3352), it is read whole and only the new bytes are decoded,
-  as a smaller file is; a file outside the home folder then cannot be read.
+  `sh` (`wc -c` + `tail -c +pos`), which answers "did not grow" without copying the file.
+  Where `sh` cannot start (native Windows, #3352), it is read whole, as a smaller file is.
   hideThinkingBlock is read when the session shows and when one of its two settings files
   changes (a watch on their folders), not on every refresh.
 - **Inspector**: no 1 s timer. Its render sets a 1 s wake-up only while the Jobs tab shows a

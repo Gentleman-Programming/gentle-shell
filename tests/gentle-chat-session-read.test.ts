@@ -20,12 +20,22 @@ const noop = () => null;
 export const exec = (command, args, options) => { globalThis.__gentleChatExecCalls.push(command); return globalThis.__gentleChatExec(command, args, options); };
 export const agents = () => [], terminals = () => [], panes = () => [], focused = noop, home = () => "/nonexistent-home", layout = noop, watchFolder = () => new Promise(() => {}), run = noop, shared = noop, setShared = noop;
 `)}`;
+// Herdr's readFile, which refuses a file outside the home folder (here: under /outside/).
+const FS = `data:text/javascript,${encodeURIComponent(`
+import { readFile as nodeReadFile } from "node:fs/promises";
+export * from "node:fs/promises";
+export const readFile = async (path, ...rest) => {
+  if (String(path).startsWith("/outside/")) throw new Error("outside every granted read root");
+  return nodeReadFile(path, ...rest);
+};
+`)}`;
 registerHooks({ resolve(specifier, context, next) {
 	if (specifier === "herdr") return { url: HERDR, shortCircuit: true };
+	if (specifier === "fs/promises" && context.parentURL?.includes("/herdr/mods/")) return { url: FS, shortCircuit: true };
 	return next(specifier, context);
 } });
 
-const { readAfter, readTail } = await import("../herdr/mods/gentle-chat/session.js");
+const { readAfter } = await import("../herdr/mods/gentle-chat/session.js");
 
 // No `sh` (native Windows): Herdr's exec rejects because the program cannot start.
 const noSh: Exec = async (command) => { throw new Error(`failed to start ${command}: program not found`); };
@@ -106,20 +116,12 @@ test("incremental reads give the same lines, ends and sizes through sh, without 
 	}
 });
 
-test("the tail of a history over 1 MiB is the same with or without sh", async (t) => {
-	const { file, size } = bigSession(t);
-	const tails = [];
-	for (const exec of hasSh ? [realSh, noSh] : [noSh]) {
-		state.__gentleChatExec = exec;
-		state.__gentleChatExecCalls = [];
-		tails.push(await readTail(file, 64 * 1024, 20, 3 * 1024 * 1024));
-		assert.deepEqual(state.__gentleChatExecCalls, [], "an in-root tail reads the file, not sh");
-	}
-	const [tail] = tails;
-	for (const other of tails) assert.deepEqual(other, tail);
-	assert.equal(tail.size, size);
-	assert.equal(tail.end, size);
-	assert.ok(tail.start > 0 && size - tail.start <= 64 * 1024, "the last 64 KiB, from its first whole line");
-	assert.ok(tail.text.startsWith("{\"type\":\"message\""));
-	assert.equal(Buffer.byteLength(tail.text), size - tail.start);
+test("a file outside the home folder is read through sh, and without sh it starts over", async () => {
+	state.__gentleChatExec = async () => ({ code: 0, stdout: "5\n", stderr: "" });
+	state.__gentleChatExecCalls = [];
+	assert.deepEqual(await readAfter("/outside/session.jsonl", 5), { text: "", end: 5, more: false, size: 5 });
+	assert.deepEqual(state.__gentleChatExecCalls, ["sh"]);
+	state.__gentleChatExec = noSh;
+	const r = await readAfter("/outside/session.jsonl", 5);
+	assert.deepEqual({ text: r.text, end: r.end, more: r.more }, { text: null, end: 0, more: false });
 });

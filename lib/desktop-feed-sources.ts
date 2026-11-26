@@ -48,8 +48,51 @@ export const psParentOf: ParentOf = (pid) => new Promise((resolve) => {
 	}
 });
 
+/** One `pid,ppid` pair per line, as the Windows process-table script prints them; other lines are ignored. */
+export function parseProcessTable(stdout: string): Map<number, number> {
+	const table = new Map<number, number>();
+	for (const line of stdout.split(/\r?\n/)) {
+		const match = /^(\d+),(\d+)$/.exec(line.trim());
+		if (match) table.set(Number(match[1]), Number(match[2]));
+	}
+	return table;
+}
+
+const WINDOWS_TABLE_TIMEOUT_MS = 8000;
+const WINDOWS_TABLE_MAX_BUFFER = 4 * 1024 * 1024;
+const WINDOWS_TABLE_SCRIPT = 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId),$($_.ParentProcessId)" }';
+
+/** The whole Windows process table as text; undefined when PowerShell is missing, fails or times out. */
+function readWindowsProcessTable(): Promise<string | undefined> {
+	return new Promise((resolve) => {
+		try {
+			execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_TABLE_SCRIPT], { encoding: "utf8", windowsHide: true, timeout: WINDOWS_TABLE_TIMEOUT_MS, maxBuffer: WINDOWS_TABLE_MAX_BUFFER }, (error, stdout) => {
+				resolve(error ? undefined : String(stdout));
+			});
+		} catch {
+			resolve(undefined);
+		}
+	});
+}
+
+/**
+ * The parent lookup for one ancestry walk. Outside Windows it is `ps` per hop;
+ * Windows has no `ps`, so the first hop reads the whole process table once and
+ * every later hop of this walk answers from it. A new walk needs a new lookup.
+ * An unreadable table answers undefined (no ancestors), never an error.
+ */
+export function createParentOf(platform: NodeJS.Platform = process.platform, readTable: () => Promise<string | undefined> = readWindowsProcessTable): ParentOf {
+	if (platform !== "win32") return psParentOf;
+	let table: Promise<Map<number, number>> | undefined;
+	return async (pid) => {
+		table ??= readTable().then((text) => parseProcessTable(text ?? ""));
+		const parent = (await table).get(pid);
+		return parent !== undefined && parent > 1 ? parent : undefined;
+	};
+}
+
 /** Ancestors above `ppid`, nearest first, stopping at init or after `depth` hops. Never rejects. */
-export async function processAncestors(ppid: number, depth: number, parentOf: ParentOf = psParentOf): Promise<number[]> {
+export async function processAncestors(ppid: number, depth: number, parentOf: ParentOf = createParentOf()): Promise<number[]> {
 	const chain: number[] = [];
 	let current = ppid;
 	for (let hop = 0; hop < depth; hop++) {

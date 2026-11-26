@@ -18,7 +18,7 @@ import {
 	type DesktopFeedTimers,
 } from "../lib/desktop-feed.ts";
 import { createDesktopFeedStore, desktopFeedFile } from "../lib/desktop-feed-store.ts";
-import { createUntrackedLineCounter } from "../lib/desktop-feed-sources.ts";
+import { createParentOf, createUntrackedLineCounter, parseProcessTable, processAncestors, psParentOf } from "../lib/desktop-feed-sources.ts";
 import { SESSION_WORKTREE_ENTRY } from "../lib/session-worktree-registry.ts";
 import { changesModel, type ChangedFile } from "../lib/shell-changes.ts";
 import { DESKTOP_JOBS_SERVICE_CHANNEL, DESKTOP_JOBS_SERVICE_SCHEMA, type DesktopJobEntry } from "../lib/desktop-rpc-jobs.ts";
@@ -282,6 +282,47 @@ test("S3: the snapshot names its agent dir as an absolute path, bundled, Pi exte
 	}
 	const relative = buildDesktopFeedSnapshot(fixtureInput({ identity: { ...fixtureInput().identity, agentDir: "rel/agent" } })).identity.agentDir;
 	assert.equal(relative, join(process.cwd(), "rel", "agent"));
+});
+
+// ---- Process ancestry (how a Herdr terminal finds its session) ----
+
+// agent 33128 <- launch.mjs 44120 <- terminal shell 44712 <- 30320 <- 38628 (no parent).
+const WINDOWS_TABLE = "33128,44120\r\n44120,44712\r\n44712,30320\r\n30320,38628\r\n38628,0\r\n";
+
+test("should parse the pid,ppid lines of a Windows process table and ignore other output", () => {
+	const table = parseProcessTable(`${WINDOWS_TABLE}warning: something\r\n\r\nabc,def\r\n`);
+	assert.equal(table.size, 5);
+	assert.equal(table.get(33128), 44120);
+	assert.equal(table.get(38628), 0);
+});
+
+test("should walk the Windows process table up to the terminal shell with one read per walk", async () => {
+	let reads = 0;
+	const read = async () => { reads += 1; return WINDOWS_TABLE; };
+	assert.deepEqual(await processAncestors(44120, 8, createParentOf("win32", read)), [44712, 30320, 38628]);
+	assert.equal(reads, 1);
+	assert.deepEqual(await processAncestors(44120, 8, createParentOf("win32", read)), [44712, 30320, 38628]);
+	assert.equal(reads, 2, "a new walk reads the table again");
+});
+
+test("should publish no ancestors when the Windows process table cannot be read", async () => {
+	assert.deepEqual(await processAncestors(44120, 8, createParentOf("win32", async () => undefined)), []);
+	assert.deepEqual(await processAncestors(44120, 8, createParentOf("win32", async () => { throw new Error("no powershell"); })), []);
+	assert.deepEqual(await processAncestors(44120, 8, createParentOf("win32", () => { throw new Error("spawn failed"); })), []);
+});
+
+test("should stop at a Windows parent that is not a real process", async () => {
+	assert.deepEqual(await processAncestors(10, 8, createParentOf("win32", async () => "10,20\r\n20,1\r\n")), [20]);
+	assert.deepEqual(await processAncestors(20, 8, createParentOf("win32", async () => "20,0\r\n")), []);
+	assert.deepEqual(await processAncestors(99, 8, createParentOf("win32", async () => WINDOWS_TABLE)), []);
+});
+
+test("should keep asking ps per hop outside Windows and never read a process table", async () => {
+	let reads = 0;
+	const parentOf = createParentOf("linux", async () => { reads += 1; return WINDOWS_TABLE; });
+	assert.equal(parentOf, psParentOf);
+	await processAncestors(process.ppid, 8, parentOf);
+	assert.equal(reads, 0);
 });
 
 // ---- Bounds ----

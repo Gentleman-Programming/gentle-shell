@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { networkInterfaces, tmpdir } from "node:os";
+import { type NetworkInterfaceInfo, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
 import { helpText, parseLauncherArgs, parseTowerArgs } from "../lib/gentle-shell-launcher.ts";
 import { runTower } from "../lib/tower-open.ts";
 import { encodeQr, renderQrTerminal } from "../lib/tower-qr.ts";
-import { lanIpv4Addresses, type TowerServer } from "../lib/tower-server.ts";
+import { type TowerServer } from "../lib/tower-server.ts";
 
 const binPath = fileURLToPath(new URL("../bin/gentle-shell.mjs", import.meta.url));
 const packageRoot = dirname(dirname(binPath));
@@ -109,11 +109,18 @@ function towerEnv(root: string): NodeJS.ProcessEnv {
 	return { GENTLE_TOWER_HOME: join(root, "hub"), GENTLE_SHELL_NO_AUTO_SETUP: "1" };
 }
 
+// A fixed interface list, given before the tower starts: the report must name
+// exactly these addresses, whatever the OS says by the time it is asserted.
+const LAN_NIC: NetworkInterfaceInfo = { address: "192.168.0.2", netmask: "255.255.255.0", mac: "00:00:00:00:00:00", internal: false, cidr: null, family: "IPv4" };
+const LAN_INTERFACES: NodeJS.Dict<readonly NetworkInterfaceInfo[]> = { en0: [LAN_NIC] };
+
+const lanUrl = (server: TowerServer) => `http://192.168.0.2:${server.port}/${new URL(server.url).pathname.replaceAll("/", "")}/`;
+
 test("runTower --lan --json prints one line adding lan, urls and the warning", async () => {
 	const root = scratch();
 	const out: string[] = [], err: string[] = [], opened: string[] = [];
 	let server: TowerServer | undefined;
-	const code = await runTower({ env: towerEnv(root), open: false, lan: true, json: true, webDir: builtWeb(root), presenceDirs: [],
+	const code = await runTower({ env: towerEnv(root), open: false, lan: true, json: true, webDir: builtWeb(root), presenceDirs: [], interfaces: LAN_INTERFACES,
 		stdout: (s) => out.push(s), stderr: (s) => err.push(s), openUrl: (u) => opened.push(u),
 		untilStopped: async (s) => { server = s; } });
 	assert.equal(code, 0);
@@ -131,17 +138,14 @@ test("runTower --lan --json prints one line adding lan, urls and the warning", a
 	assert.equal(parsed.port, server.port);
 	assert.equal(parsed.lan, true);
 	assert.equal(parsed.warning, LAN_WARNING);
-	// Every non-internal IPv4 address of this machine appears; with none, only the loopback entry.
-	const token = new URL(server.url).pathname.replaceAll("/", "");
-	const ips = lanIpv4Addresses(networkInterfaces());
-	assert.deepEqual(parsed.urls, [server.url, ...ips.map((ip) => `http://${ip}:${server.port}/${token}/`)]);
+	assert.deepEqual(parsed.urls, [server.url, lanUrl(server)]);
 });
 
 test("runTower --lan prints every LAN URL, the QR of the first and the warning", async () => {
 	const root = scratch();
 	const out: string[] = [], err: string[] = [], opened: string[] = [];
 	let server: TowerServer | undefined;
-	const code = await runTower({ env: towerEnv(root), open: true, lan: true, webDir: builtWeb(root), presenceDirs: [],
+	const code = await runTower({ env: towerEnv(root), open: true, lan: true, webDir: builtWeb(root), presenceDirs: [], interfaces: LAN_INTERFACES,
 		stdout: (s) => out.push(s), stderr: (s) => err.push(s), openUrl: (u) => opened.push(u),
 		untilStopped: async (s) => {
 			server = s;
@@ -153,14 +157,13 @@ test("runTower --lan prints every LAN URL, the QR of the first and the warning",
 	assert.deepEqual(err, []);
 	// The browser still opens the loopback URL, exactly as today.
 	assert.deepEqual(opened, [server.url]);
-	const token = new URL(server.url).pathname.replaceAll("/", "");
-	const lanUrls = lanIpv4Addresses(networkInterfaces()).map((ip) => `http://${ip}:${server.port}/${token}/`);
+	const lanUrls = [lanUrl(server)];
 	assert.deepEqual(server.urls, [server.url, ...lanUrls]);
 	const lines = [`Gentle Tower: ${server.url}`, ...lanUrls.map((u) => `  ${u}`)];
-	if (lanUrls.length > 0) for (const line of renderQrTerminal(encodeQr(lanUrls[0]))) lines.push(`  ${line}`);
+	for (const line of renderQrTerminal(encodeQr(lanUrls[0]))) lines.push(`  ${line}`);
 	lines.push(LAN_WARNING, "Press Ctrl+C to stop.");
 	assert.equal(out.join(""), `${lines.join("\n")}\n`);
-	if (lanUrls.length === 0) assert.ok(!QR_BLOCKS.test(out.join("")), "no QR without a LAN address");
+	assert.ok(QR_BLOCKS.test(out.join("")), "the QR of the first LAN address is printed");
 });
 
 const built = existsSync(join(packageRoot, "web", "tower", "dist", "index.html"));

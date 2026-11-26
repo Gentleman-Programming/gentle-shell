@@ -2,7 +2,7 @@
 import "pixi.js/unsafe-eval";
 import "./style.css";
 import { floorTop } from "./art";
-import { fitBuilding, sheetReserve } from "./layout";
+import { fitBuilding, sheetReserve, useBottomSheet } from "./layout";
 import { FLOOR_COLORS, floorState, groupProjects, money, todoProgress } from "./model";
 import { TowerScene, type Pick } from "./scene";
 import { closeIntercom, closeModals, intercomSession, openArtifact, openArtifacts, openLibrary, openNewFloor, openTab, postAction, renderIntercom } from "./panels";
@@ -44,16 +44,26 @@ function renderFloors(p: Project) {
 	el.innerHTML = p.sessions.map((s, i) => {
 		const st = floorState(s), col = FLOOR_COLORS[i % FLOOR_COLORS.length], prog = todoProgress(s.todos);
 		const crew = s.subagents.map((a) => a.name).join(", ") || "no helpers";
+		// On touch the scene's helpers are too small and too close to tap; these chips
+		// are the accessible way to select one (details and stop live in the selection panel).
+		const crewChips = s.subagents.map((a) => `<button class="crew" data-i="${i}" data-id="${esc(a.id)}" aria-label="Select ${esc(a.name)}">${esc(a.name)}</button>`).join("");
 		const segs = s.todos.filter((t) => t.status !== "dropped").map((t) => `<i class="${t.status}" style="background:${TODO_COLOR[t.status]}"></i>`).join("");
 		const now = prog.now ? `${prog.now.status === "blocked" ? '<b class="warn">blocked:</b>' : "now:"} <b>${esc(prog.now.title)}</b>` : prog.total ? "<b>all done</b>" : "no task list yet";
 		return `<div class="floor" style="top:${(floorTop(L, i) + 50) * scale}px;--c:${col}">
-			<button class="fl px" data-i="${i}" aria-pressed="${selected?.floor === i}"><span class="fkey" style="background:${col}">${i + 1}</span><span class="nm">${esc(s.name)}</span><span class="st ${st}">${GLYPH[st]}</span><span class="sub">${s.basic ? "" : `${money(s.cost.total)} · `}${esc(crew)}</span></button>
+			<button class="fl px" data-i="${i}" aria-pressed="${selected?.floor === i}"><span class="fkey" style="background:${col}">${i + 1}</span><span class="nm">${esc(s.name)}</span><span class="st ${st}">${GLYPH[st]}</span><span class="sub">${s.basic ? "" : `${money(s.cost.total)} · `}<span class="crew-txt">${esc(crew)}</span></span></button>
+			${s.basic || !crewChips ? "" : `<div class="crew-row">${crewChips}</div>`}
 			${s.basic
 				? `<div class="prog px" style="opacity:.6;cursor:default"><span class="now">Details need the tower in this session</span></div>`
 				: `<button class="prog px" data-i="${i}" aria-expanded="${todoSession === s.sessionId}" aria-label="Tasks of floor ${i + 1}: ${prog.done} of ${prog.total} done"><span class="segs">${segs}</span><span class="now">${prog.done}/${prog.total} · ${now}</span></button>`}
 		</div>`;
 	}).join("");
 	el.querySelectorAll<HTMLButtonElement>(".fl").forEach((b) => b.addEventListener("click", () => { const i = +b.dataset.i!; select({ kind: "orchestrator", floor: i, session: p.sessions[i] }); }));
+	el.querySelectorAll<HTMLButtonElement>(".crew").forEach((b) => b.addEventListener("click", () => {
+		const i = Number(b.dataset.i);
+		const session = p.sessions[i];
+		const helper = session?.subagents.find((a) => a.id === b.dataset.id);
+		if (session && helper) select({ kind: "helper", floor: i, session, helper });
+	}));
 	el.querySelectorAll<HTMLButtonElement>("button.prog").forEach((b) => b.addEventListener("click", () => { const id = p.sessions[+b.dataset.i!]?.sessionId; todoSession = todoSession === id ? undefined : id; render(); }));
 }
 
@@ -114,6 +124,8 @@ function renderSelection() {
 function openIntercom(sessionId: string | undefined) {
 	const p = project(); const floor = p ? p.sessions.findIndex((x) => x.sessionId === sessionId) : -1;
 	if (!p || floor < 0 || p.sessions[floor].basic) return;
+	// On a phone the intercom and the task list share the bottom area: Talk wins, Tasks closes.
+	if (todoSession !== undefined && useBottomSheet(innerWidth, matchMedia("(pointer: coarse)").matches)) { todoSession = undefined; render(); }
 	renderIntercom(p.sessions[floor], floor);
 }
 

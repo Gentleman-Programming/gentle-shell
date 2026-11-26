@@ -31,6 +31,9 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .fl .nm { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fl .sub { grid-column: 2; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fl .st { grid-row: span 2; font-weight: 800; }
+/* Helper chips: hidden on desktop, where the scene and the crew text select helpers; on touch they are the tappable route. */
+.crew-row { display: none; }
+.crew { font: inherit; color: var(--muted); border: 1px solid #5a3a6e; background: #0d0816e6; border-radius: 2px; }
 .st.need { color: var(--warn); } .st.done { color: var(--ok); } .st.work { color: var(--teal); }
 .prog { display: grid; gap: 3px; padding: 6px 9px; text-align: left; }
 .prog:hover, .prog[aria-expanded="true"] { border-color: var(--accent); }
@@ -182,6 +185,9 @@ kbd { font: 700 10px var(--mono); border: 1px solid currentColor; border-radius:
 	.floors { position: static; width: 100%; display: grid; gap: 8px; padding: 8px 10px 96px; }
 	.floor { position: static; left: auto; transform: none; width: auto; }
 	.fl, button.prog { min-height: 44px; }
+	.fl .sub .crew-txt { display: none; }
+	.crew-row { display: flex; flex-wrap: wrap; gap: 4px; }
+	.crew { min-height: 44px; padding: 4px 10px; color: var(--text); }
 	.sel { left: 0; right: 0; bottom: 0; transform: none; width: auto; border-radius: 6px 6px 0 0; padding: 8px 10px max(8px, env(safe-area-inset-bottom)); }
 	.todo { left: 10px; right: 10px; top: auto; bottom: calc(84px + env(safe-area-inset-bottom)); width: auto; max-height: min(48dvh, 420px); }
 	.intercom { left: 10px; right: 10px; top: max(56px, env(safe-area-inset-top)); bottom: calc(84px + env(safe-area-inset-bottom)); width: auto; }

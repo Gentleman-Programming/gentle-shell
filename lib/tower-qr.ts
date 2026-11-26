@@ -20,10 +20,12 @@
 //   QrSegment.mode, QrSegment.numChars, QrSegment.bitData, Ecc.ordinal,
 //   Ecc.formatBits, Mode.modeBits, Mode.numBitsCharCount);
 // - three side-effecting callbacks were rewritten from single-expression bodies
-//   returning the assignment value into block bodies returning nothing, and one
+//   returning the assignment value into block bodies returning nothing, one
 //   unused callback parameter was dropped (`map(_ => 0)` became `map(() => 0)`),
-//   to satisfy the repository's lint blockers; behavior is unchanged. The upstream
-//   `==` comparisons and naming are kept verbatim.
+//   and the upstream `==`/`!=` comparisons were tightened to `===`/`!==` with one
+//   single-assigned `let` becoming `const`, to satisfy the repository's lint
+//   blockers; every one of these is semantics-preserving for the number and
+//   boolean comparisons involved. The upstream naming is kept verbatim.
 // Everything between the "Vendored" markers below stays reviewable against the
 // upstream file (only the adaptations listed above differ).
 //
@@ -147,14 +149,14 @@ export class QrCode {
 			for (const b of seg.getData())
 				bb.push(b);
 		}
-		assert(bb.length == dataUsedBits);
+		assert(bb.length === dataUsedBits);
 
 		// Add terminator and pad up to a byte if applicable
 		const dataCapacityBits: int = QrCode.getNumDataCodewords(version, ecl) * 8;
 		assert(bb.length <= dataCapacityBits);
 		appendBits(0, Math.min(4, dataCapacityBits - bb.length), bb);
 		appendBits(0, (8 - bb.length % 8) % 8, bb);
-		assert(bb.length % 8 == 0);
+		assert(bb.length % 8 === 0);
 
 		// Pad with alternating bytes until data capacity is reached
 		for (let padByte = 0xEC; bb.length < dataCapacityBits; padByte ^= 0xEC ^ 0x11)
@@ -237,7 +239,7 @@ export class QrCode {
 		this.drawCodewords(allCodewords);
 
 		// Do masking
-		if (msk == -1) {  // Automatically choose best mask
+		if (msk === -1) {  // Automatically choose best mask
 			let minPenalty: int = 1000000000;
 			for (let i = 0; i < 8; i++) {
 				this.applyMask(i);
@@ -275,8 +277,8 @@ export class QrCode {
 	private drawFunctionPatterns(): void {
 		// Draw horizontal and vertical timing patterns
 		for (let i = 0; i < this.size; i++) {
-			this.setFunctionModule(6, i, i % 2 == 0);
-			this.setFunctionModule(i, 6, i % 2 == 0);
+			this.setFunctionModule(6, i, i % 2 === 0);
+			this.setFunctionModule(i, 6, i % 2 === 0);
 		}
 
 		// Draw 3 finder patterns (all corners except bottom right; overwrites some timing modules)
@@ -289,7 +291,7 @@ export class QrCode {
 		alignPatPos.forEach((x: int, i: int): void => {
 			alignPatPos.forEach((y: int, j: int): void => {
 				// Don't draw on the three finder corners
-				if (!(i == 0 && j == 0 || i == 0 && j == alignPatPos.length - 1 || i == alignPatPos.length - 1 && j == 0))
+				if (!(i === 0 && j === 0 || i === 0 && j === alignPatPos.length - 1 || i === alignPatPos.length - 1 && j === 0))
 					this.drawAlignmentPattern(x, y);
 			});
 		});
@@ -309,7 +311,7 @@ export class QrCode {
 		for (let i = 0; i < 10; i++)
 			rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
 		const bits = (data << 10 | rem) ^ 0x5412;  // uint15
-		assert(bits >>> 15 == 0);
+		assert(bits >>> 15 === 0);
 
 		// Draw first copy
 		for (let i = 0; i <= 5; i++)
@@ -340,7 +342,7 @@ export class QrCode {
 		for (let i = 0; i < 12; i++)
 			rem = (rem << 1) ^ ((rem >>> 11) * 0x1F25);
 		const bits: int = this.version << 12 | rem;  // uint18
-		assert(bits >>> 18 == 0);
+		assert(bits >>> 18 === 0);
 
 		// Draw two copies
 		for (let i = 0; i < 18; i++) {
@@ -362,7 +364,7 @@ export class QrCode {
 				const xx: int = x + dx;
 				const yy: int = y + dy;
 				if (0 <= xx && xx < this.size && 0 <= yy && yy < this.size)
-					this.setFunctionModule(xx, yy, dist != 2 && dist != 4);
+					this.setFunctionModule(xx, yy, dist !== 2 && dist !== 4);
 			}
 		}
 	}
@@ -373,7 +375,7 @@ export class QrCode {
 	private drawAlignmentPattern(x: int, y: int): void {
 		for (let dy = -2; dy <= 2; dy++) {
 			for (let dx = -2; dx <= 2; dx++)
-				this.setFunctionModule(x + dx, y + dy, Math.max(Math.abs(dx), Math.abs(dy)) != 1);
+				this.setFunctionModule(x + dx, y + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
 		}
 	}
 
@@ -393,7 +395,7 @@ export class QrCode {
 	private addEccAndInterleave(data: Readonly<Array<byte>>): Array<byte> {
 		const ver: int = this.version;
 		const ecl: Ecc = this.errorCorrectionLevel;
-		if (data.length != QrCode.getNumDataCodewords(ver, ecl))
+		if (data.length !== QrCode.getNumDataCodewords(ver, ecl))
 			throw new RangeError("Invalid argument");
 
 		// Calculate parameter numbers
@@ -420,11 +422,11 @@ export class QrCode {
 		for (let i = 0; i < blocks[0].length; i++) {
 			blocks.forEach((block: Array<byte>, j: int): void => {
 				// Skip the padding byte in short blocks
-				if (i != shortBlockLen - blockEccLen || j >= numShortBlocks)
+				if (i !== shortBlockLen - blockEccLen || j >= numShortBlocks)
 					result.push(block[i]);
 			});
 		}
-		assert(result.length == rawCodewords);
+		assert(result.length === rawCodewords);
 		return result;
 	}
 
@@ -432,17 +434,17 @@ export class QrCode {
 	// Draws the given sequence of 8-bit codewords (data and error correction) onto the entire
 	// data area of this QR Code. Function modules need to be marked off before this is called.
 	private drawCodewords(data: Readonly<Array<byte>>): void {
-		if (data.length != Math.floor(QrCode.getNumRawDataModules(this.version) / 8))
+		if (data.length !== Math.floor(QrCode.getNumRawDataModules(this.version) / 8))
 			throw new RangeError("Invalid argument");
 		let i: int = 0;  // Bit index into the data
 		// Do the funny zigzag scan
 		for (let right = this.size - 1; right >= 1; right -= 2) {  // Index of right column in each column pair
-			if (right == 6)
+			if (right === 6)
 				right = 5;
 			for (let vert = 0; vert < this.size; vert++) {  // Vertical counter
 				for (let j = 0; j < 2; j++) {
 					const x: int = right - j;  // Actual x coordinate
-					const upward: boolean = ((right + 1) & 2) == 0;
+					const upward: boolean = ((right + 1) & 2) === 0;
 					const y: int = upward ? this.size - 1 - vert : vert;  // Actual y coordinate
 					if (!this.isFunction[y][x] && i < data.length * 8) {
 						this.modules[y][x] = getBit(data[i >>> 3], 7 - (i & 7));
@@ -453,7 +455,7 @@ export class QrCode {
 				}
 			}
 		}
-		assert(i == data.length * 8);
+		assert(i === data.length * 8);
 	}
 
 
@@ -469,14 +471,14 @@ export class QrCode {
 			for (let x = 0; x < this.size; x++) {
 				let invert: boolean;
 				switch (mask) {
-					case 0:  invert = (x + y) % 2 == 0;                                  break;
-					case 1:  invert = y % 2 == 0;                                        break;
-					case 2:  invert = x % 3 == 0;                                        break;
-					case 3:  invert = (x + y) % 3 == 0;                                  break;
-					case 4:  invert = (Math.floor(x / 3) + Math.floor(y / 2)) % 2 == 0;  break;
-					case 5:  invert = x * y % 2 + x * y % 3 == 0;                        break;
-					case 6:  invert = (x * y % 2 + x * y % 3) % 2 == 0;                  break;
-					case 7:  invert = ((x + y) % 2 + x * y % 3) % 2 == 0;                break;
+					case 0:  invert = (x + y) % 2 === 0;                                  break;
+					case 1:  invert = y % 2 === 0;                                        break;
+					case 2:  invert = x % 3 === 0;                                        break;
+					case 3:  invert = (x + y) % 3 === 0;                                  break;
+					case 4:  invert = (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0;  break;
+					case 5:  invert = x * y % 2 + x * y % 3 === 0;                        break;
+					case 6:  invert = (x * y % 2 + x * y % 3) % 2 === 0;                  break;
+					case 7:  invert = ((x + y) % 2 + x * y % 3) % 2 === 0;                break;
 					default:  throw new Error("Unreachable");
 				}
 				if (!this.isFunction[y][x] && invert)
@@ -497,9 +499,9 @@ export class QrCode {
 			let runX: int = 0;
 			let runHistory: Array<int> = [0,0,0,0,0,0,0];
 			for (let x = 0; x < this.size; x++) {
-				if (this.modules[y][x] == runColor) {
+				if (this.modules[y][x] === runColor) {
 					runX++;
-					if (runX == 5)
+					if (runX === 5)
 						result += QrCode.PENALTY_N1;
 					else if (runX > 5)
 						result++;
@@ -519,9 +521,9 @@ export class QrCode {
 			let runY: int = 0;
 			let runHistory: Array<int> = [0,0,0,0,0,0,0];
 			for (let y = 0; y < this.size; y++) {
-				if (this.modules[y][x] == runColor) {
+				if (this.modules[y][x] === runColor) {
 					runY++;
-					if (runY == 5)
+					if (runY === 5)
 						result += QrCode.PENALTY_N1;
 					else if (runY > 5)
 						result++;
@@ -540,9 +542,9 @@ export class QrCode {
 		for (let y = 0; y < this.size - 1; y++) {
 			for (let x = 0; x < this.size - 1; x++) {
 				const color: boolean = this.modules[y][x];
-				if (  color == this.modules[y][x + 1] &&
-				      color == this.modules[y + 1][x] &&
-				      color == this.modules[y + 1][x + 1])
+				if (  color === this.modules[y][x + 1] &&
+				      color === this.modules[y + 1][x] &&
+				      color === this.modules[y + 1][x + 1])
 					result += QrCode.PENALTY_N2;
 			}
 		}
@@ -551,7 +553,7 @@ export class QrCode {
 		let dark: int = 0;
 		for (const row of this.modules)
 			dark = row.reduce((sum: int, color: boolean): int => sum + (color ? 1 : 0), dark);
-		const total: int = this.size * this.size;  // Note that size is odd, so dark/total != 1/2
+		const total: int = this.size * this.size;  // Note that size is odd, so dark/total !== 1/2
 		// Compute the smallest integer k >= 0 such that (45-5k)% <= dark/total <= (55+5k)%
 		const k: int = Math.ceil(Math.abs(dark * 20 - total * 10) / total) - 1;
 		assert(0 <= k && k <= 9);
@@ -567,12 +569,12 @@ export class QrCode {
 	// Each position is in the range [0,177), and are used on both the x and y axes.
 	// This could be implemented as lookup table of 40 variable-length lists of integers.
 	private getAlignmentPatternPositions(): Array<int> {
-		if (this.version == 1)
+		if (this.version === 1)
 			return [];
 		else {
 			const numAlign: int = Math.floor(this.version / 7) + 2;
 			const step: int = Math.floor((this.version * 8 + numAlign * 3 + 5) / (numAlign * 4 - 4)) * 2;
-			let result: Array<int> = [6];
+			const result: Array<int> = [6];
 			for (let pos = this.size - 7; result.length < numAlign; pos -= step)
 				result.splice(1, 0, pos);
 			return result;
@@ -654,7 +656,7 @@ export class QrCode {
 	// Returns the product of the two given field elements modulo GF(2^8/0x11D). The arguments and result
 	// are unsigned 8-bit integers. This could be implemented as a lookup table of 256*256 entries of uint8.
 	private static reedSolomonMultiply(x: byte, y: byte): byte {
-		if (x >>> 8 != 0 || y >>> 8 != 0)
+		if (x >>> 8 !== 0 || y >>> 8 !== 0)
 			throw new RangeError("Byte out of range");
 		// Russian peasant multiplication
 		let z: int = 0;
@@ -662,7 +664,7 @@ export class QrCode {
 			z = (z << 1) ^ ((z >>> 7) * 0x11D);
 			z ^= ((y >>> i) & 1) * x;
 		}
-		assert(z >>> 8 == 0);
+		assert(z >>> 8 === 0);
 		return z as byte;
 	}
 
@@ -672,7 +674,7 @@ export class QrCode {
 	private finderPenaltyCountPatterns(runHistory: Readonly<Array<int>>): int {
 		const n: int = runHistory[1];
 		assert(n <= this.size * 3);
-		const core: boolean = n > 0 && runHistory[2] == n && runHistory[3] == n * 3 && runHistory[4] == n && runHistory[5] == n;
+		const core: boolean = n > 0 && runHistory[2] === n && runHistory[3] === n * 3 && runHistory[4] === n && runHistory[5] === n;
 		return (core && runHistory[0] >= n * 4 && runHistory[6] >= n ? 1 : 0)
 		     + (core && runHistory[6] >= n * 4 && runHistory[0] >= n ? 1 : 0);
 	}
@@ -692,7 +694,7 @@ export class QrCode {
 
 	// Pushes the given value to the front and drops the last value. A helper function for getPenaltyScore().
 	private finderPenaltyAddHistory(currentRunLength: int, runHistory: Array<int>): void {
-		if (runHistory[0] == 0)
+		if (runHistory[0] === 0)
 			currentRunLength += this.size;  // Add light border to initial run
 		runHistory.pop();
 		runHistory.unshift(currentRunLength);
@@ -736,7 +738,7 @@ export class QrCode {
 // Appends the given number of low-order bits of the given value
 // to the given buffer. Requires 0 <= len <= 31 and 0 <= val < 2^len.
 function appendBits(val: int, len: int, bb: Array<bit>): void {
-	if (len < 0 || len > 31 || val >>> len != 0)
+	if (len < 0 || len > 31 || val >>> len !== 0)
 		throw new RangeError("Value out of range");
 	for (let i = len - 1; i >= 0; i--)  // Append bit by bit
 		bb.push((val >>> i) & 1);
@@ -745,7 +747,7 @@ function appendBits(val: int, len: int, bb: Array<bit>): void {
 
 // Returns true iff the i'th bit of x is set to 1.
 function getBit(x: int, i: int): boolean {
-	return ((x >>> i) & 1) != 0;
+	return ((x >>> i) & 1) !== 0;
 }
 
 
@@ -822,7 +824,7 @@ export class QrSegment {
 	// The result may use various segment modes and switch modes to optimize the length of the bit stream.
 	public static makeSegments(text: string): Array<QrSegment> {
 		// Select the most efficient segment encoding automatically
-		if (text == "")
+		if (text === "")
 			return [];
 		else if (QrSegment.isNumeric(text))
 			return [QrSegment.makeNumeric(text)];
@@ -923,7 +925,7 @@ export class QrSegment {
 		str = encodeURI(str);
 		let result: Array<byte> = [];
 		for (let i = 0; i < str.length; i++) {
-			if (str.charAt(i) != "%")
+			if (str.charAt(i) !== "%")
 				result.push(str.charCodeAt(i));
 			else {
 				result.push(parseInt(str.substring(i + 1, i + 3), 16));
@@ -1053,7 +1055,7 @@ export function encodeQr(text: string): QrMatrix {
 }
 
 export interface QrTerminalOptions {
-	/** Quiet zone width in modules on every side. Default 2. */
+	/** Quiet zone width in modules on every side. Default 4, the QR Code Model 2 spec's margin. */
 	quiet?: number;
 }
 
@@ -1063,7 +1065,7 @@ export interface QrTerminalOptions {
  * Dark-on-light as terminals draw; every line has the same width.
  */
 export function renderQrTerminal(qr: QrMatrix, options: QrTerminalOptions = {}): string[] {
-	const quiet = options.quiet ?? 2;
+	const quiet = options.quiet ?? 4;
 	const width = qr.size + quiet * 2;
 	const dark = (x: number, y: number): boolean => {
 		const mx = x - quiet, my = y - quiet;
@@ -1074,7 +1076,12 @@ export function renderQrTerminal(qr: QrMatrix, options: QrTerminalOptions = {}):
 		let line = "";
 		for (let x = 0; x < width; x++) {
 			const top = dark(x, y), bottom = dark(x, y + 1);
-			line += top && bottom ? "█" : top ? "▀" : bottom ? "▄" : " ";
+			let glyph: string;
+			if (top && bottom) glyph = "█";
+			else if (top) glyph = "▀";
+			else if (bottom) glyph = "▄";
+			else glyph = " ";
+			line += glyph;
 		}
 		lines.push(line);
 	}

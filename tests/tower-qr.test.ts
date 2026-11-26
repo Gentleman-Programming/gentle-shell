@@ -72,31 +72,32 @@ test("encodeQr refuses text that no QR Code can carry", () => {
 	assert.throws(() => encodeQr("x".repeat(4000)), RangeError);
 });
 
-test("renderQrTerminal draws half blocks with a two-module quiet zone and the fixture's modules", () => {
+test("renderQrTerminal draws half blocks with a four-module quiet zone and the fixture's modules", () => {
 	for (const f of fixtures) {
 		const qr: QrMatrix = { ...encodeQr(f.text) };
 		const lines = renderQrTerminal(qr);
-		const width = f.size + 4;
-		assert.equal(lines.length, Math.ceil((f.size + 4) / 2), f.name);
+		const width = f.size + 8;
+		assert.equal(lines.length, Math.ceil((f.size + 8) / 2), f.name);
 		for (const line of lines) {
 			assert.equal(line.length, width, f.name);
 			assert.ok([...line].every((g) => HALF_BLOCKS.has(g)), `${f.name}: only space, ▀, ▄, █`);
 		}
-		// The quiet zone: two light module rows on every side.
+		// The quiet zone: four light module rows on every side.
 		assert.equal(lines[0].trim(), "", `${f.name}: top quiet rows`);
+		assert.equal(lines[1].trim(), "", `${f.name}: top quiet rows`);
 		assert.equal(lines[lines.length - 1].trim(), "", `${f.name}: bottom quiet row`);
-		assert.ok(lines.every((l) => l.startsWith("  ") && l.endsWith("  ")), `${f.name}: side quiet columns`);
-		// The symbol itself: the finder pattern's dark ring starts at module (2, 2) of the padded grid.
-		assert.equal(lines[1][2], "█", `${f.name}: the top-left finder's corner is dark`);
-		assert.deepEqual(modulesFromLines(lines, 2), f.rows.map((r) => [...r].map((c) => c === "#")), f.name);
+		assert.ok(lines.every((l) => l.startsWith("    ") && l.endsWith("    ")), `${f.name}: side quiet columns`);
+		// The symbol itself: the finder pattern's dark ring starts at module (4, 4) of the padded grid.
+		assert.equal(lines[2][4], "█", `${f.name}: the top-left finder's corner is dark`);
+		assert.deepEqual(modulesFromLines(lines, 4), f.rows.map((r) => [...r].map((c) => c === "#")), f.name);
 	}
 });
 
 test("a rendered QR keeps its modules when the quiet zone width changes", () => {
 	const f = fixtures.find((x) => x.name === "loopback")!;
 	const qr = encodeQr(f.text);
-	const lines = renderQrTerminal(qr, { quiet: 4 });
-	assert.equal(lines.length, Math.ceil((f.size + 8) / 2));
-	assert.ok(lines.every((l) => l.length === f.size + 8 && l.startsWith("    ") && l.endsWith("    ")));
-	assert.deepEqual(modulesFromLines(lines, 4), f.rows.map((r) => [...r].map((c) => c === "#")));
+	const lines = renderQrTerminal(qr, { quiet: 6 });
+	assert.equal(lines.length, Math.ceil((f.size + 12) / 2));
+	assert.ok(lines.every((l) => l.length === f.size + 12 && l.startsWith("      ") && l.endsWith("      ")));
+	assert.deepEqual(modulesFromLines(lines, 6), f.rows.map((r) => [...r].map((c) => c === "#")), f.name);
 });

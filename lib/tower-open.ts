@@ -5,6 +5,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { type NetworkInterfaceInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { towerHubDir } from "./tower-hub.ts";
@@ -34,6 +35,8 @@ export interface OpenTowerOptions {
 	presenceDirs?: readonly string[];
 	/** Opt-in LAN mode: bind every IPv4 interface and serve one URL per LAN address. */
 	lan?: boolean;
+	/** Network interfaces to enumerate the LAN addresses from (defaults to the OS's). */
+	interfaces?: NodeJS.Dict<readonly NetworkInterfaceInfo[]>;
 }
 
 /** The warning every LAN-mode report prints, exactly. */
@@ -50,6 +53,7 @@ export function openTowerServer(env: NodeJS.ProcessEnv, options: OpenTowerOption
 		presenceDirs: options.presenceDirs ?? defaultPresenceDirs(),
 		...(options.port === undefined ? {} : { port: options.port }),
 		...(options.lan ? { lan: true } : {}),
+		...(options.interfaces === undefined ? {} : { interfaces: options.interfaces }),
 		onNewFloor: (cwd, prompt) => launchInTerminal({ cwd, node: process.execPath, launcher: LAUNCHER, ...(prompt ? { prompt } : {}) }),
 	});
 }

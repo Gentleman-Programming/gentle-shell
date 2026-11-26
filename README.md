@@ -228,7 +228,7 @@ To open it without a session, run `gentle-shell tower` from any terminal: it pri
 - **Engram library and your tab**: a read-only window on the project's memories and on what the open sessions spent, by model and by project.
 - **Controls**: stop a helper, change a floor's permissions, and switch review mode.
 
-On a phone (or any touch screen) the same view adapts: the building scales to the viewport width, the floor cards become a tappable list under it with at least 44px targets, and the panels — Talk, tasks, artifacts, the Engram library, your tab, permissions — dock into a bottom sheet.
+On a phone (or any touch screen) the same view adapts: the building scales to the viewport width, the floor cards become a tappable list under it with at least 44px targets, the helpers on a floor get their own tappable chips, and the panels — Talk, tasks, artifacts, the Engram library, your tab, permissions — dock into a bottom sheet. `/gentle:tower-mobile` (or `/gentle:tower --lan`) serves the view on your network for the phone; `gentle-shell tower --lan` from a terminal prints a QR code to scan.
 
 The web never has more power than the terminal: it listens on `127.0.0.1` only (`--lan` additionally serves the machine's own addresses), with a fresh token in the path on every launch, refuses other origins. Lowering a floor's permissions applies at once; raising them asks for confirmation in that session's terminal. Each session runs the requests itself, with its own rules. `--lan` is for a trusted home network: anyone on it who opens the URL can read and drive your sessions, and the traffic is not encrypted — the launch prints this warning.
 

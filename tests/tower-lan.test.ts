@@ -5,10 +5,10 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
-import { type NetworkInterfaceInfo, networkInterfaces, tmpdir } from "node:os";
+import { type NetworkInterfaceInfo, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { lanIpv4Addresses, startTowerServer, type TowerServer } from "../lib/tower-server.ts";
+import { lanAllowedHosts, lanIpv4Addresses, startTowerServer, type TowerServer } from "../lib/tower-server.ts";
 
 const roots: string[] = [];
 const servers: TowerServer[] = [];
@@ -40,8 +40,8 @@ function call(host: string, port: number, path: string, method: "GET" | "POST" =
 	});
 }
 
-async function start(hub: string, web: string, lan = false) {
-	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", ...(lan ? { lan: true } : {}) });
+async function start(hub: string, web: string, lan = false, interfaces?: NodeJS.Dict<readonly NetworkInterfaceInfo[]>) {
+	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", ...(lan ? { lan: true } : {}), ...(interfaces ? { interfaces } : {}) });
 	servers.push(s);
 	return s;
 }
@@ -72,20 +72,41 @@ test("without lan the server stays loopback-only and urls holds just the loopbac
 	assert.equal((await call("127.0.0.1", s.port, "/tok-123/api/sessions", "GET", { Origin: `http://127.0.0.1:${s.port}` })).status, 200);
 });
 
+test("the LAN host allowlist uses canonical HTTP authorities", () => {
+	// On port 80 a browser serializes http://<host> without the default port, so
+	// both spellings are approved; anywhere else the authority carries the port.
+	const port80 = lanAllowedHosts(["192.168.1.3"], 80);
+	assert.ok(port80.has("192.168.1.3") && port80.has("192.168.1.3:80"));
+	assert.ok(port80.has("127.0.0.1") && port80.has("localhost") && port80.has("localhost:80"));
+	assert.ok(!port80.has("evil.example") && !port80.has("192.168.1.3:8080"));
+	const lanPort = lanAllowedHosts(["192.168.1.3"], 51730);
+	assert.ok(lanPort.has("192.168.1.3:51730"));
+	assert.ok(!lanPort.has("192.168.1.3") && !lanPort.has("192.168.1.3:80"));
+});
+
 test("with lan the server reports one URL per LAN address after the loopback URL", async () => {
 	const { hub, web } = scratch();
-	const s = await start(hub, web, true);
+	// A fixed interface list, given before the server starts: the report must
+	// come from exactly these addresses, whatever the OS says by now.
+	const s = await start(hub, web, true, { en0: [nic("192.168.0.2")], lo0: [nic("127.0.0.1", true)] });
 	assert.equal(s.lan, true);
 	assert.equal(s.host, "0.0.0.0");
-	// Recomputed from the OS, independently of the server: every non-internal
-	// IPv4 address except link-local 169.254.0.0/16.
-	const expected = new Set<string>();
-	for (const nics of Object.values(networkInterfaces()))
-		for (const nic of nics ?? []) if (nic.family === "IPv4" && !nic.internal && !nic.address.startsWith("169.254.")) expected.add(nic.address);
-	assert.deepEqual(new Set(s.lanIps), expected);
-	assert.deepEqual(s.urls, [`http://127.0.0.1:${s.port}/tok-123/`, ...s.lanIps.map((ip) => `http://${ip}:${s.port}/tok-123/`)]);
+	assert.deepEqual(s.lanIps, ["192.168.0.2"]);
+	assert.deepEqual(s.urls, ["http://127.0.0.1:" + s.port + "/tok-123/", `http://192.168.0.2:${s.port}/tok-123/`]);
 	// Loopback keeps working as before.
 	assert.equal((await call("127.0.0.1", s.port, "/tok-123/")).status, 200);
+});
+
+test("with lan an Origin-less GET names a host this launch must answer to", async () => {
+	const { hub, web } = scratch();
+	const s = await start(hub, web, true);
+	// A navigation GET can omit Origin: the Host allowlist still applies, so a
+	// rebinding host cannot fetch the app even with a valid token.
+	const denied = await call("127.0.0.1", s.port, "/tok-123/", "GET", { Host: `evil.example:${s.port}` });
+	assert.deepEqual([denied.status, denied.body], [403, "Forbidden"]);
+	// An approved host without an Origin still serves the app.
+	assert.equal((await call("127.0.0.1", s.port, "/tok-123/", "GET", { Host: `127.0.0.1:${s.port}` })).status, 200);
+	assert.equal((await call("127.0.0.1", s.port, "/tok-123/", "GET", { Host: `localhost:${s.port}` })).status, 200);
 });
 
 test("with lan the token still gates every request as before", async () => {

@@ -30,6 +30,8 @@ export interface TowerServerOptions {
 	onNewFloor?: (cwd: string, prompt?: string) => Promise<void>;
 	/** Opt-in LAN mode: bind every IPv4 interface and serve one URL per LAN address. */
 	lan?: boolean;
+	/** Network interfaces to enumerate the LAN addresses from (defaults to the OS's). */
+	interfaces?: NodeJS.Dict<readonly NetworkInterfaceInfo[]>;
 }
 
 const ARTIFACT_TYPES: Record<string, string> = { ".md": "text/plain; charset=utf-8", ".markdown": "text/plain; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".mmd": "text/plain; charset=utf-8", ".mermaid": "text/plain; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
@@ -90,13 +92,23 @@ export function lanIpv4Addresses(interfaces: NodeJS.Dict<readonly NetworkInterfa
 	return [...ips].sort(compareLanIpv4);
 }
 
+/** The `host` or `host:port` authorities a lan launch answers to, canonical for HTTP: on port 80 both the bare host and the explicit `:80` are approved (WHATWG URL serialization drops the default port); on any other port the authority always carries it. */
+export function lanAllowedHosts(lanIps: readonly string[], port: number): Set<string> {
+	const hosts = new Set<string>();
+	for (const host of ["127.0.0.1", "localhost", ...lanIps]) {
+		if (port === 80) { hosts.add(host); hosts.add(`${host}:80`); }
+		else hosts.add(`${host}:${port}`);
+	}
+	return hosts;
+}
+
 export function startTowerServer(options: TowerServerOptions): Promise<TowerServer> {
 	const webRoot = realpathSync(options.webDir);
 	const clients = new Set<ServerResponse>();
 	let lastBody = "";
 	const now = options.now ?? Date.now;
 	const lan = options.lan === true;
-	const lanIps = lan ? lanIpv4Addresses(networkInterfaces()) : [];
+	const lanIps = lan ? lanIpv4Addresses(options.interfaces ?? networkInterfaces()) : [];
 	/** The `host:port` values an Origin may name in lan mode; filled once the port is known. */
 	let allowedHosts = new Set<string>();
 	// Detailed floors (tower extension) win; every other live session joins as a basic floor.
@@ -205,15 +217,15 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 	const handler = (req: IncomingMessage, res: ServerResponse) => {
 		if (req.method !== "GET" && req.method !== "POST") return deny(res, 405);
 		const origin = req.headers.origin;
-		if (origin) {
-			if (lan) {
-				// The Origin must be the address the page was served on, and that
-				// host must be one this launch answers to: a rebinding Host that
-				// spells its own origin still fails the allowlist.
-				const host = req.headers.host ?? "";
-				if (origin !== `http://${host}` || !allowedHosts.has(host)) return deny(res);
-			} else if (origin !== `http://127.0.0.1:${port}`) return deny(res);
-		}
+		if (lan) {
+			// Every request names the host it wants, even a navigation GET without an
+			// Origin: it must be one this launch answers to, so a rebinding Host is
+			// refused before the token or the page is even considered. The Origin,
+			// when a browser sends one, must name that same host.
+			const host = req.headers.host ?? "";
+			if (!allowedHosts.has(host)) return deny(res);
+			if (origin && origin !== `http://${host}`) return deny(res);
+		} else if (origin && origin !== `http://127.0.0.1:${port}`) return deny(res);
 		// A browser always sends Origin on POST; a missing one is not our page.
 		if (req.method === "POST" && !origin) return deny(res);
 		// The token is the first path segment, so every relative request the app
@@ -262,7 +274,7 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 		server.listen(options.port ?? 0, lan ? "0.0.0.0" : "127.0.0.1", () => {
 			const addr = server.address();
 			port = typeof addr === "object" && addr ? addr.port : 0;
-			if (lan) allowedHosts = new Set(["127.0.0.1", "localhost", ...lanIps].map((host) => `${host}:${port}`));
+			if (lan) allowedHosts = lanAllowedHosts(lanIps, port);
 			const url = `http://127.0.0.1:${port}/${options.token}/`;
 			lastBody = sessionsBody();
 			resolveStart({

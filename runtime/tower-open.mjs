@@ -6,6 +6,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import {                           } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { towerHubDir } from "./tower-hub.mjs";
@@ -37,6 +38,8 @@ export class TowerNotBuiltError extends Error {
 
 
 
+
+
 /** The warning every LAN-mode report prints, exactly. */
 export const TOWER_LAN_WARNING = "LAN mode: anyone on this network who opens the URL can read and drive your sessions; traffic is not encrypted. Use it only on a trusted home network.";
 
@@ -51,6 +54,7 @@ export function openTowerServer(env                   , options                 
 		presenceDirs: options.presenceDirs ?? defaultPresenceDirs(),
 		...(options.port === undefined ? {} : { port: options.port }),
 		...(options.lan ? { lan: true } : {}),
+		...(options.interfaces === undefined ? {} : { interfaces: options.interfaces }),
 		onNewFloor: (cwd, prompt) => launchInTerminal({ cwd, node: process.execPath, launcher: LAUNCHER, ...(prompt ? { prompt } : {}) }),
 	});
 }

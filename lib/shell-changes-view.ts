@@ -317,12 +317,16 @@ export class WorktreeChangesView {
 		}
 		if (event.type !== "click" || event.button !== "left") return undefined;
 		const index = this.listOffset + event.y - 1;
-		if (index < 0 || index >= this.visibleRows().length) return { handled: true, render: false };
+		const rows = this.visibleRows();
+		if (index < 0 || index >= rows.length) return { handled: true, render: false };
+		const row = rows[index]!;
 		const changed = index !== this.selected;
 		this.selected = index;
+		if (!row.file && !this.expanded.delete(row.tree.root)) this.expanded.add(row.tree.root);
+		this.ensureSelectedVisible();
 		this.ensurePreview();
 		this.deps.requestRender();
-		return { handled: true, render: changed };
+		return { handled: true, render: changed || !row.file };
 	}
 
 	// Row hover: the shared hover role paints an unselected row while the

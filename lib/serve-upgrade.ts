@@ -40,6 +40,8 @@ export interface ServeUpgradeOptions {
 	onUpgraded: () => void;
 	/** The setup command: `gentle-shell [home flags] setup` in production. Without it the server has no `setup` capability. */
 	setup?: () => SessionLaunch;
+	/** A job ended, before its `finished` is sent (the server forgets its cached readiness checks). */
+	onFinished?: (kind: ServeJobKind) => void;
 	limits?: Partial<typeof SERVE_UPGRADE_LIMITS>;
 	log?: (line: string) => void;
 }
@@ -203,6 +205,8 @@ export class UpgradeService {
 		job.finished = finished;
 		job.child = undefined;
 		this.options.log?.(`${job.kind} ${job.jobId}: ${finished.ok ? `done${finished.version === undefined ? "" : ` (${finished.version})`}` : `failed: ${finished.error}`}`);
+		// Before `finished` reaches a client, so what it asks next reflects the job.
+		this.options.onFinished?.(job.kind);
 		const event = sseEvent("finished", finished);
 		for (const res of job.streams) res.end(event);
 		job.streams.clear();

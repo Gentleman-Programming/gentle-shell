@@ -14,6 +14,7 @@ import { hasScope, isServeScope, type Principal, type ServeAuth, type ServeScope
 import { startDiscoveryResponder, type DiscoveryResponder } from "./serve-discovery.ts";
 import { FileService, type SERVE_FS_LIMITS } from "./serve-files.ts";
 import { GitService, type SERVE_GIT_LIMITS } from "./serve-git.ts";
+import { ServeChecks, type ServeChecksOptions } from "./serve-checks.ts";
 import { ForwardError, ForwardManager, type ForwardInfo, type SERVE_FORWARD_LIMITS } from "./serve-forward.ts";
 import { HttpError, need, readJsonBody, realDirectory, SECURITY_HEADERS, sendError, sendJson } from "./serve-http.ts";
 import { UploadStore, type SERVE_UPLOAD_LIMITS } from "./serve-uploads.ts";
@@ -30,7 +31,7 @@ export const SERVE_PROTOCOL = 1;
 export const SERVE_IDENTITY_SCHEMA = "gentle-shell.serve.identity/v1";
 /** Public identity path: a client holding a connection code probes it to find the address that reaches this server. */
 export const SERVE_IDENTITY_PATH = "/.well-known/gentle-shell";
-export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "desktop", "sse", "stream-tickets", "pairing", "devices", "forwards", "server-forwards", "services", "tower", "files", "git", "unpair"] as const;
+export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "desktop", "sse", "stream-tickets", "pairing", "devices", "forwards", "server-forwards", "services", "tower", "files", "git", "unpair", "checks"] as const;
 
 export const SERVE_SERVER_LIMITS = {
 	heartbeatMs: 20_000,
@@ -124,7 +125,9 @@ export interface ServeServerOptions {
 	/** Keep a registration with this relay (`gsr://host:port`), reachable by the certificate's fingerprint; needs `tls`. */
 	relay?: { url: string; secret?: string; retryMinMs?: number };
 	/** `POST /api/upgrade` (admin): runs the upgrade command and, on success, calls `onUpgraded` so the owner restarts the server. Without it the server has no `upgrade` capability. */
-	upgrade?: Omit<ServeUpgradeOptions, "log">;
+	upgrade?: Omit<ServeUpgradeOptions, "log" | "onFinished">;
+	/** `GET /api/checks`: the companion setup check and the agent home; tools are looked up in `env`. */
+	checks?: Partial<Omit<ServeChecksOptions, "env">>;
 }
 
 /** A running Gentle Tower: its loopback port, the path that carries its token, and how to stop it. */
@@ -241,10 +244,13 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 	const files = new FileService({ limits: options.fsLimits, now, log });
 	// git commands in folders on this machine.
 	const git = new GitService({ env: options.env ?? process.env, limits: options.gitLimits, log });
+	// Whether this machine has what sessions need (`GET /api/checks`).
+	const checks = new ServeChecks({ env: options.env ?? process.env, version: options.version, ...options.checks });
 	// One-shot prompts (commit messages) answered by this machine's Gentle Shell.
 	const prints = new PrintService({ ...(options.launchPrint ? { launchPrint: options.launchPrint } : {}), limits: options.printLimits, log });
 	// Upgrades of Gentle Shell itself, from an admin client.
-	const upgrade = options.upgrade ? new UpgradeService({ ...options.upgrade, log }) : undefined;
+	// A finished setup or upgrade changes what the readiness checks see.
+	const upgrade = options.upgrade ? new UpgradeService({ ...options.upgrade, onFinished: () => checks.forget(), log }) : undefined;
 	// Files a client sends for the agent to see.
 	const uploads = options.serveDir === undefined ? undefined : new UploadStore({ dir: join(options.serveDir, "uploads"), limits: options.uploadLimits, now, log });
 	// Persistent terminals in the native terminal host, which outlives this server.
@@ -877,6 +883,11 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 			return git.route(req, res, principal);
 		}
 		if (path === "/api/tower") return towerRoute(req, res, method, principal);
+		if (path === "/api/checks") {
+			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
+			need(principal, "sessions:read");
+			return sendJson(res, 200, { checks: await checks.checks() });
+		}
 		if (path === "/api/services") {
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			need(principal, "sessions:read");

@@ -169,11 +169,12 @@ Stopping the server (`serve stop`, SIGTERM from a service manager, Ctrl+C on a f
 | --- | --- | --- |
 | `GET /.well-known/gentle-shell` | none | `{ schema: "gentle-shell.serve.identity/v1", serverId, name, protocol, version }`: who answers at this address (`name` is the machine's hostname). No secrets; `Host` and `Origin` rules still apply. A client holding a [connection code](#connection-code) probes it before pairing. |
 | `POST /api/pair` | none (the code) | `{ code, name? }` → `201 { id, name, scopes, createdAt, token }`. `403 invalid_code`, `429 rate_limited`, `409 too_many_devices`. |
-| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `desktop` ([Desktop RPC without a session](#desktop-rpc-without-a-session-post-apidesktop)), `forwards`, `server-forwards`, `services`, `tower`, `files`, `git`, `uploads`, `print` ([one-shot prompts](#one-shot-prompts)), `persistent-sessions` ([sessions survive a server restart](#sessions-across-server-restarts)), `upgrade` ([upgrade from a client](#upgrade-from-a-client)), `setup` ([setup from a client](#setup-from-a-client)), `unpair` (a device can revoke itself: `DELETE /api/devices/self`), and `terminals` when a [terminal host](#persistent-terminals) binary is there. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. No configuration file path is reported: a client reads and changes Gentle Shell's and Pi's configuration (model defaults, custom models, MCP servers, …) through Desktop RPC config stores ([`get_config`/`set_config`](desktop-rpc.md#set_config)), never the files. |
+| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `desktop` ([Desktop RPC without a session](#desktop-rpc-without-a-session-post-apidesktop)), `forwards`, `server-forwards`, `services`, `tower`, `files`, `git`, `checks` ([readiness checks](#readiness-checks)), `uploads`, `print` ([one-shot prompts](#one-shot-prompts)), `persistent-sessions` ([sessions survive a server restart](#sessions-across-server-restarts)), `upgrade` ([upgrade from a client](#upgrade-from-a-client)), `setup` ([setup from a client](#setup-from-a-client)), `unpair` (a device can revoke itself: `DELETE /api/devices/self`), and `terminals` when a [terminal host](#persistent-terminals) binary is there. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. No configuration file path is reported: a client reads and changes Gentle Shell's and Pi's configuration (model defaults, custom models, MCP servers, …) through Desktop RPC config stores ([`get_config`/`set_config`](desktop-rpc.md#set_config)), never the files. |
 | `POST /api/server/stop` | `admin` | `{ endSessions? }` → `202 { stopping: true, endSessions }`; the server exits. Its sessions keep running for the next server unless `endSessions` is `true`. |
 | `POST /api/upgrade` | `admin` | `{ channel? }` (`release` or `main`) → `202 { jobId }`: runs `gentle-shell upgrade` on this machine. `409 upgrade_running` while one runs. See [Upgrade from a client](#upgrade-from-a-client). |
 | `POST /api/setup` | `admin` | `{}` → `202 { jobId }` (`setup_…`): runs `gentle-shell setup` for this server's home. `409 setup_running` or `upgrade_running` while a job runs. See [Setup from a client](#setup-from-a-client). |
 | `GET /api/setup/:jobId/stream` | `admin` | SSE as the upgrade stream: `line` `{ line }`, then `finished` `{ ok, error? }`. `404` for another job id. |
+| `GET /api/checks` | `sessions:read` | `{ checks: [{ id, state, version, detail }] }`: whether Node.js, the companion setup, Git and Engram are ready on this machine. See [Readiness checks](#readiness-checks). |
 | `GET /api/upgrade/:jobId/stream` | `admin` | SSE: `line` `{ line }` for each output line (those so far first), then `finished` `{ ok, error?, version? }`, then the stream ends. `404` for another job id. |
 | `POST /api/pairing-codes` | `admin` | `{ scopes? }` → `201 { code, scopes, expiresAt }` |
 | `GET /api/devices` | `admin` | `{ devices: [{ id, name, scopes, createdAt, lastUsedAt? }] }` |
@@ -355,6 +356,30 @@ curl -N http://127.0.0.1:PORT/api/setup/setup_…/stream -H "Authorization: Bear
 - **One job at a time.** Setup and upgrade share one runner: while either runs, `POST /api/setup` and `POST /api/upgrade` answer `409` with `setup_running` or `upgrade_running` (whichever job is running).
 - **No restart.** Setup installs packages into the agent home and never replaces the launcher, so the server keeps running; sessions started afterwards load the new packages, and running ones after `/reload`.
 
+## Readiness checks
+
+`GET /api/checks` (`sessions:read`) says whether this machine has what its sessions need: the same four rows, by the same rules, as Gentle Shell GPUI's setup checklist shows for the computer it runs on, so a client shows a server's setup the way it shows its own. `GET /api/server` lists the capability `checks`.
+
+```sh
+curl http://127.0.0.1:PORT/api/checks -H "Authorization: Bearer $TOKEN"
+# → {"checks":[{"id":"node","state":"ok","version":"22.19.0","detail":"npm 10.9.0"},
+#              {"id":"companion","state":"ok","version":"1.40.2","detail":"Set up 2026-11-20"},
+#              {"id":"git","state":"ok","version":"2.47.1","detail":null},
+#              {"id":"engram","state":"missing","version":null,"detail":"Not installed"}]}
+```
+
+Each row is `{ id, state, version, detail }`: `state` is `ok`, `missing` or `error`; `version` is what was found (`X.Y.Z`, or `null`); `detail` says why in words (or `null`). A tool that is there but too old is an `error` whose `detail` names what it needs.
+
+| `id` | `ok` | `missing` | `error` |
+| --- | --- | --- | --- |
+| `node` | `node --version` is 22.19.0 or newer (gentle-pi's `engines.node`) and `npm --version` answers (`detail`: `npm <version>`) | no `node` on the server's `PATH`; or Node found, but not npm (`version` set) | older than 22.19.0; `node` doesn't run or prints something else |
+| `companion` | the launcher's own `gentle-shell [home selector] setup --check --json` says the home is set up (`version`: the Gentle AI it was set up with; `detail`: `Set up <date>`); a `--link` home whose `settings.json` lists `gentle-engram` | never set up (a `--link` home that doesn't list it) | set up with another Gentle AI or gentle-pi (run [setup](#setup-from-a-client)); the check fails or can't run |
+| `git` | `git --version` answers | no `git`, or it doesn't run; on macOS, `/usr/bin/git` while the Command Line Tools aren't installed (`xcode-select -p` fails) | — |
+| `engram` | `engram version` answers 3.0.0 or newer (or a version it can't read; `detail`: its first line) | no `engram`, or it doesn't run | older than 3.0.0; `ENGRAM_BIN` names something that can't be run |
+
+- **How.** Every tool runs directly (no shell) with the server's environment, all at once, each stopped after 5 s (15 s for `setup --check`), which then counts as not running. `ENGRAM_BIN`, when set, is the Engram that runs. On Windows npm's `npm-cli.js` runs under `node`, since `npm.cmd` needs a shell.
+- **Cached.** One result answers every request for 10 s, and is dropped when a [setup](#setup-from-a-client) or [upgrade](#upgrade-from-a-client) job ends (before its `finished` event), so a client that asks again then sees what the job changed.
+
 ## Authentication
 
 There is no unauthenticated mode: every endpoint except `GET /.well-known/gentle-shell` (public identity, no secrets) and `POST /api/pair` needs a token.
@@ -363,7 +388,7 @@ There is no unauthenticated mode: every endpoint except `GET /.well-known/gentle
 - **Device tokens.** `gss_` plus 32 random bytes (base64url). Shown once, in the pairing answer. Stored only as a sha256 hash; compared in constant time. Sent as `Authorization: Bearer <token>`. At most 64 devices.
 - **Scopes.**
   - `sessions:read` — list and read sessions, follow their streams, mint stream tickets, read-only Pi RPC commands (`get_state`, `get_messages`, `get_available_models`, `get_available_thinking_levels`, `get_session_stats`, `get_fork_messages`, `get_entries`, `get_tree`, `get_last_assistant_text`, `get_commands`) and read-only Desktop RPC methods (`capabilities`, `get_*`, `list_*`).
-  - `sessions:operate` — start and stop sessions, every other Pi RPC command (prompts, steering, aborts, bash, model changes, `extension_ui_response`), and every other Desktop RPC method; [file](#files-on-the-server) changes, [git](#git-on-the-server) operations, [uploads](#uploads) and [forwards](#port-forwarding). (`sessions:read` also reads files and runs read-only git commands.)
+  - `sessions:operate` — start and stop sessions, every other Pi RPC command (prompts, steering, aborts, bash, model changes, `extension_ui_response`), and every other Desktop RPC method; [file](#files-on-the-server) contents and changes, [git](#git-on-the-server) commands that print file contents (`show`, patches, blobs, `blame`, `grep`) or change anything, [uploads](#uploads) and [forwards](#port-forwarding). (`sessions:read` also lists, stats, searches and watches files, runs git commands that print no file contents — status, branches, the log, changed paths and line counts — and reads the [readiness checks](#readiness-checks).)
   - `terminal` — open, list, drive and close [persistent terminals](#persistent-terminals): a shell as the server user. In the default pairing scopes; `serve pair --scope sessions:read,sessions:operate` leaves it out. Devices paired before it existed do not have it: pair them again.
   - `admin` — pairing codes, devices, stopping the server, installing the terminal host; sees every device's forwards and terminals.
 

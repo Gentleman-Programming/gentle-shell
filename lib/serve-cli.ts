@@ -354,10 +354,10 @@ export function upgradeLaunch(ctx: Pick<ServeCommandContext, "launcher" | "nodeP
 }
 
 /** `gentle-shell [home flags] setup` for this server's home, run by this launcher outside any session, never prompting. */
-export function setupLaunch(ctx: Pick<ServeCommandContext, "homeFlags" | "launcher" | "nodePath" | "env">): SessionLaunch {
+export function setupLaunch(ctx: Pick<ServeCommandContext, "homeFlags" | "launcher" | "nodePath" | "env">, args: readonly string[] = []): SessionLaunch {
 	const env: NodeJS.ProcessEnv = { ...ctx.env, NO_COLOR: "1", FORCE_COLOR: "0", GENTLE_SHELL_SKIP_STARTUP_UPDATE: "1" };
 	delete env[INTERACTIVE_HOST_ENV];
-	return { command: ctx.nodePath, args: [ctx.launcher, ...ctx.homeFlags, "setup"], cwd: homedir(), env };
+	return { command: ctx.nodePath, args: [ctx.launcher, ...ctx.homeFlags, "setup", ...args], cwd: homedir(), env };
 }
 
 /** The version the launcher's package now holds, read after an upgrade. */
@@ -504,6 +504,8 @@ async function serveForeground(ctx: ServeCommandContext, args: StartArgs & { jso
 				// Setup installs the home's companion packages, never the launcher: no restart.
 				setup: () => (ctx.setupCommand ?? (() => setupLaunch(ctx)))(),
 			},
+			// `GET /api/checks`: the companion row is the launcher's own read-only `setup --check`.
+			checks: { companion: () => setupLaunch(ctx, ["--check", "--json"]), agentHome: ctx.agentHome },
 		});
 		const file: ServerFile = {
 			schema: SERVE_SERVER_FILE_SCHEMA,

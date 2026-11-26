@@ -15,6 +15,7 @@ import { hasScope, isServeScope,                                                
 import { startDiscoveryResponder,                         } from "./serve-discovery.mjs";
 import { FileService,                      } from "./serve-files.mjs";
 import { GitService,                       } from "./serve-git.mjs";
+import { ServeChecks,                         } from "./serve-checks.mjs";
 import { ForwardError, ForwardManager,                                             } from "./serve-forward.mjs";
 import { HttpError, need, readJsonBody, realDirectory, SECURITY_HEADERS, sendError, sendJson } from "./serve-http.mjs";
 import { UploadStore,                          } from "./serve-uploads.mjs";
@@ -31,7 +32,7 @@ export const SERVE_PROTOCOL = 1;
 export const SERVE_IDENTITY_SCHEMA = "gentle-shell.serve.identity/v1";
 /** Public identity path: a client holding a connection code probes it to find the address that reaches this server. */
 export const SERVE_IDENTITY_PATH = "/.well-known/gentle-shell";
-export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "desktop", "sse", "stream-tickets", "pairing", "devices", "forwards", "server-forwards", "services", "tower", "files", "git", "unpair"]         ;
+export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "desktop", "sse", "stream-tickets", "pairing", "devices", "forwards", "server-forwards", "services", "tower", "files", "git", "unpair", "checks"]         ;
 
 export const SERVE_SERVER_LIMITS = {
 	heartbeatMs: 20_000,
@@ -86,6 +87,8 @@ export function carriesHostToolRequest(message        )          {
 	}
 	return !!request && typeof request === "object" && "method" in request && typeof request.method === "string" && Object.hasOwn(HOST_TOOL_METHODS, request.method);
 }
+
+
 
 
 
@@ -242,10 +245,13 @@ export function startServeServer(options                    )                   
 	const files = new FileService({ limits: options.fsLimits, now, log });
 	// git commands in folders on this machine.
 	const git = new GitService({ env: options.env ?? process.env, limits: options.gitLimits, log });
+	// Whether this machine has what sessions need (`GET /api/checks`).
+	const checks = new ServeChecks({ env: options.env ?? process.env, version: options.version, ...options.checks });
 	// One-shot prompts (commit messages) answered by this machine's Gentle Shell.
 	const prints = new PrintService({ ...(options.launchPrint ? { launchPrint: options.launchPrint } : {}), limits: options.printLimits, log });
 	// Upgrades of Gentle Shell itself, from an admin client.
-	const upgrade = options.upgrade ? new UpgradeService({ ...options.upgrade, log }) : undefined;
+	// A finished setup or upgrade changes what the readiness checks see.
+	const upgrade = options.upgrade ? new UpgradeService({ ...options.upgrade, onFinished: () => checks.forget(), log }) : undefined;
 	// Files a client sends for the agent to see.
 	const uploads = options.serveDir === undefined ? undefined : new UploadStore({ dir: join(options.serveDir, "uploads"), limits: options.uploadLimits, now, log });
 	// Persistent terminals in the native terminal host, which outlives this server.
@@ -878,6 +884,11 @@ export function startServeServer(options                    )                   
 			return git.route(req, res, principal);
 		}
 		if (path === "/api/tower") return towerRoute(req, res, method, principal);
+		if (path === "/api/checks") {
+			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
+			need(principal, "sessions:read");
+			return sendJson(res, 200, { checks: await checks.checks() });
+		}
 		if (path === "/api/services") {
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			need(principal, "sessions:read");

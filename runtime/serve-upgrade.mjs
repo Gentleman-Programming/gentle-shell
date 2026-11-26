@@ -62,6 +62,8 @@ export const UPGRADE_CHANNELS = ["release", "main"]         ;
 
 
 
+
+
 export const UPGRADE_JOB_ID = /^upg_[0-9a-f]{16}$/;
 export const SETUP_JOB_ID = /^setup_[0-9a-f]{16}$/;
 const JOB_ID_PREFIX                               = { upgrade: "upg_", setup: "setup_" };
@@ -204,6 +206,8 @@ export class UpgradeService {
 		job.finished = finished;
 		job.child = undefined;
 		this.options.log?.(`${job.kind} ${job.jobId}: ${finished.ok ? `done${finished.version === undefined ? "" : ` (${finished.version})`}` : `failed: ${finished.error}`}`);
+		// Before `finished` reaches a client, so what it asks next reflects the job.
+		this.options.onFinished?.(job.kind);
 		const event = sseEvent("finished", finished);
 		for (const res of job.streams) res.end(event);
 		job.streams.clear();

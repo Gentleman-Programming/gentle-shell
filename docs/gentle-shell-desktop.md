@@ -182,6 +182,9 @@ from another session, until the next Expand all / Collapse all.
 | Paperclip | Pastes the clipboard (an image, or files on macOS) into the session's draft, as `Ctrl+V` does in the TUI. It goes with your next message. |
 | **Stop** | Replaces Send while the agent works and the draft is empty. Stops the turn, as `Esc Esc` does in the TUI. Typing brings Send back: the message is queued, as in the TUI. |
 
+Send, answers, **Apply** and the chat's other actions go to the session the window shows at that
+moment, also while the chat still reads the session shown before.
+
 ### Inspector
 
 | Tab | Controls |
@@ -192,6 +195,9 @@ from another session, until the next Expand all / Collapse all.
 | **Jobs** | **Cancel** stops a running job; **Output** (on a failed job) opens `/gentle:jobs` in the Terminal. |
 | **Review** | **Start review** and **Skip for this change** show the Terminal, where you answer the review consent. The **RDD** row turns receipt-driven review on or off **for every repository**, after a dialog that says so. |
 | **Session** | Read only: stats, cost by model, integrations. |
+
+A refusal or notice under the panel belongs to the session it came from: it is cleared when
+the window shows another session.
 
 ### Status bar
 

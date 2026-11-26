@@ -229,10 +229,28 @@ export default class GentleChat extends View {
     return targetSession(this.source.feeds, this.key);
   }
 
+  // The shown session follows the pick at once, before any await: Send, answers and actions go to
+  // it even while a refresh of the session shown before still reads.
   tick(cx) {
     this.want = this.pick();
     this.wantFeeds = this.source.feeds;
+    this.show(this.want, cx);
     cx.spawn(async (cx) => { await this.refreshNow(cx); });
+  }
+
+  // Makes `s` the shown session: its key, its Herdr terminal and its snapshot (where actions go).
+  show(s, cx) {
+    const key = s?.key ?? null;
+    const address = s?.terminal?.address ?? null;
+    if (key !== this.key) {
+      this.key = key;
+      this.cwd = s?.terminal?.cwd ?? s?.feed?.identity?.cwd ?? null;
+      this.dir = null;
+      this.reset(null);
+      this.setSnap(s?.feed ?? null);
+      cx.notify();
+    }
+    if (address !== this.address) { this.address = address; cx.notify(); }
   }
 
   // One refresh at a time; a call during one runs it again after, for the newest `want`.
@@ -259,15 +277,7 @@ export default class GentleChat extends View {
     const s = this.want;
     const key = s?.key ?? null;
     const address = s?.terminal?.address ?? null;
-    if (key !== this.key) {
-      this.key = key;
-      this.cwd = s?.terminal?.cwd ?? s?.feed?.identity?.cwd ?? null;
-      this.dir = null;
-      this.reset(null);
-      this.setSnap(null);
-      cx.notify();
-    }
-    if (address !== this.address) { this.address = address; cx.notify(); }
+    this.show(s, cx);
     if (!s && this.foreign) { this.foreign = false; cx.notify(); }
     if (!s) return;
     // S14: a terminal on another machine. Its session file and snapshot are on that machine and the
@@ -295,6 +305,7 @@ export default class GentleChat extends View {
     if (this.key !== key) return;
     if (this.setSnap(where?.feed ?? s.feed ?? null)) cx.notify();
     if (this.settingsOf !== key) await this.readSettings(s, cx);
+    if (this.key !== key) return;
     if (!where) return;
     if (where.dir !== this.dir) { this.dir = where.dir; this.watch(where.dir, cx); }
     if (where.file !== this.file) { this.reset(where.file); cx.notify(); }

@@ -41,8 +41,12 @@ Every live snapshot is a session the desktop shows, wherever it runs: in a
 terminal of the Herdr app window (kind **Herdr**), or in any other terminal —
 the Herdr TUI, Ghostty, a herdr-core terminal this window does not show (kind
 **TUI**). A snapshot counts as live while its publisher's `identity.pid` runs
-(one `ps -p` per refresh for the pids not checked in the last 5 s; without `ps`
-every snapshot counts). A Herdr session takes typed input in its terminal; a TUI
+(one `ps -p` per refresh for the pids not checked in the last 5 s; where `ps`
+cannot start or does not answer, as on Windows, one `tasklist` instead). Only a
+listing that answered decides: `ps` exiting 0, or 1 with nothing on stderr (a pid
+is gone), or `tasklist` exiting 0. A `ps` that rejects its own flags (an MSYS/Git
+`ps` on a Windows `PATH`) decides nothing, and when no listing answers every
+snapshot counts. A Herdr session takes typed input in its terminal; a TUI
 session takes prompts and answers through its inbox (`send_prompt`,
 `answer_question` with `via: "session"`, below). A
 snapshot from an older Gentle Shell without `identity.agentDir` is treated as

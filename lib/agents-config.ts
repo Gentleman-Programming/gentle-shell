@@ -499,6 +499,13 @@ export interface ResolvedProfileWithFallback {
 export interface ProfileFallbackContext {
 	/** Returns true when `provider` has configured credentials. */
 	isProviderConfigured: (provider: string) => boolean;
+	/**
+	 * Resolves a providerless model id to a configured `ModelRef` matching child
+	 * resolution, or `undefined` when no configured provider uniquely serves it.
+	 * Providerless fallback candidates are skipped when this cannot confirm a
+	 * configured provider.
+	 */
+	resolveBareModel?: (id: string) => ModelRef | undefined;
 	/** Global-only `subagents.json` config, used when a project override or pin fails. */
 	globalConfig?: AgentsConfig;
 	/** Project-only `subagents.json` config, used to attribute the offending config file. */
@@ -654,8 +661,15 @@ export function resolveAgentProfileWithFallback(
 		return { profile: primary, fallback: undefined };
 	}
 
-	const isUsable = (candidate: ModelRef | undefined): candidate is ModelRef =>
-		candidate !== undefined && (candidate.provider === undefined || options.isProviderConfigured(candidate.provider));
+	const resolveCandidate = (candidate: ModelRef | undefined): ModelRef | undefined => {
+		if (candidate === undefined) return undefined;
+		if (candidate.provider !== undefined) {
+			return options.isProviderConfigured(candidate.provider) ? candidate : undefined;
+		}
+		const resolved = options.resolveBareModel?.(candidate.id);
+		if (resolved?.provider === undefined) return undefined;
+		return options.isProviderConfigured(resolved.provider) ? resolved : undefined;
+	};
 
 	let sourcePath: string | undefined;
 	if (primary.source.model === PROFILE_SOURCE.PROFILE) {
@@ -673,24 +687,34 @@ export function resolveAgentProfileWithFallback(
 	let chosenTier: ServiceTier | undefined;
 
 	const globalRoleProfile = primary.source.model === PROFILE_SOURCE.PROFILE ? options.globalConfig?.modelProfiles[agent.name] : undefined;
-	if (isUsable(globalRoleProfile?.model)) {
-		chosenModel = globalRoleProfile.model;
+	const resolvedGlobalRole = resolveCandidate(globalRoleProfile?.model);
+	const resolvedDefinition = resolvedGlobalRole === undefined ? resolveCandidate(agent.model) : undefined;
+	const resolvedDefault = resolvedGlobalRole === undefined && resolvedDefinition === undefined ? resolveCandidate(config.defaultModel) : undefined;
+	const resolvedGlobalDefault = resolvedGlobalRole === undefined && resolvedDefinition === undefined && resolvedDefault === undefined
+		? resolveCandidate(options.globalConfig?.defaultModel)
+		: undefined;
+
+	if (resolvedGlobalRole !== undefined) {
+		chosenModel = resolvedGlobalRole;
 		chosenSource = PROFILE_SOURCE.PROFILE;
-		chosenTier = globalRoleProfile.tier;
-	} else if (isUsable(agent.model)) {
-		chosenModel = agent.model;
+		chosenTier = globalRoleProfile?.tier;
+	} else if (resolvedDefinition !== undefined) {
+		chosenModel = resolvedDefinition;
 		chosenSource = PROFILE_SOURCE.DEFINITION;
-	} else if (isUsable(config.defaultModel)) {
-		chosenModel = config.defaultModel;
+	} else if (resolvedDefault !== undefined) {
+		chosenModel = resolvedDefault;
 		chosenSource = PROFILE_SOURCE.DEFAULT;
-	} else if (isUsable(options.globalConfig?.defaultModel)) {
-		chosenModel = options.globalConfig.defaultModel;
+	} else if (resolvedGlobalDefault !== undefined) {
+		chosenModel = resolvedGlobalDefault;
 		chosenSource = PROFILE_SOURCE.DEFAULT;
 	} else {
-		const sessionCandidate = (options.sessionDefaultModels ?? []).find(isUsable);
-		if (sessionCandidate !== undefined) {
-			chosenModel = sessionCandidate;
-			chosenSource = PROFILE_SOURCE.DEFAULT;
+		for (const sessionModel of options.sessionDefaultModels ?? []) {
+			const resolvedSession = resolveCandidate(sessionModel);
+			if (resolvedSession !== undefined) {
+				chosenModel = resolvedSession;
+				chosenSource = PROFILE_SOURCE.DEFAULT;
+				break;
+			}
 		}
 	}
 

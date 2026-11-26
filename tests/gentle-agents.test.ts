@@ -9820,3 +9820,71 @@ test("issue #3563: falls back to settings.json defaultProvider/defaultModel when
 		await h.fire("session_shutdown", ctx);
 	}
 });
+
+test("issue #3563: providerless definition model matching only an unconfigured provider is skipped in favor of session default", async (t) => {
+	const projectDir = mkdtempSync(join(root, "issue-3563-bare-def-project-"));
+	const agentHomeDir = mkdtempSync(join(root, "issue-3563-bare-def-agent-"));
+	const configHomeDir = mkdtempSync(join(root, "issue-3563-bare-def-config-"));
+	t.after(() => {
+		rmSync(projectDir, TEST_DIR_REMOVAL);
+		rmSync(agentHomeDir, TEST_DIR_REMOVAL);
+		rmSync(configHomeDir, TEST_DIR_REMOVAL);
+	});
+	mkdirSync(join(agentHomeDir, "agents"), { recursive: true });
+	mkdirSync(join(projectDir, ".pi"), { recursive: true });
+	writeFileSync(join(agentHomeDir, "agents", "gentle-ai-explore.md"), "---\ndescription: Explore codebase\nmodel: glm5.3-flash\ntools: [read]\n---\nMap files.");
+	writeFileSync(join(agentHomeDir, "agents", "gentle-ai-verify.md"), "---\ndescription: Verify codebase\nmodel: claude-haiku-4-5\ntools: [read]\n---\nVerify files.");
+	writeFileSync(join(projectDir, ".pi", "subagents.json"), `${JSON.stringify({
+		model_profiles: {
+			"gentle-ai-explore": { model: "nan/glm5.3-flash" },
+			"gentle-ai-verify": { model: "nan/glm5.3-flash" },
+		},
+	})}\n`);
+
+	const h = fakePi();
+	const harness = deps();
+	const { home: _home, env: _env, ...overrides } = harness.deps;
+	const captures = captureLaunches(t);
+	gentleAgents(h.pi, { GENTLE_PI_AGENT_HOME: agentHomeDir, GENTLE_PI_CONFIG_HOME: configHomeDir }, overrides);
+	const { ctx } = fakeContext();
+	ctx.cwd = projectDir;
+	ctx.sessionManager.getCwd = () => projectDir;
+	Object.assign(ctx, {
+		model: { provider: "anthropic", id: "claude-sonnet-4" },
+		modelRegistry: {
+			getAll: () => [
+				{ provider: "nan", id: "glm5.3-flash" },
+				{ provider: "anthropic", id: "claude-haiku-4-5" },
+				{ provider: "anthropic", id: "claude-sonnet-4" },
+			],
+			getAvailable: () => [
+				{ provider: "anthropic", id: "claude-haiku-4-5" },
+				{ provider: "anthropic", id: "claude-sonnet-4" },
+			],
+			getProviderAuthStatus: (provider: string) => ({ configured: provider === "anthropic" }),
+		},
+	});
+
+	await h.fire("session_start", ctx);
+	try {
+		await h.tools.get("subagent_run")!.execute("run-bare-unconfigured", { agent: "gentle-ai-explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(captures.length, 1);
+		assert.deepEqual(
+			captures[0]!.request.model,
+			{ provider: "anthropic", id: "claude-sonnet-4" },
+			"bare definition model served only by unconfigured nan must be skipped so the configured session model wins",
+		);
+
+		await h.tools.get("subagent_run")!.execute("run-bare-configured", { agent: "gentle-ai-verify", task: "Verify", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(captures.length, 2);
+		assert.deepEqual(
+			captures[1]!.request.model,
+			{ provider: "anthropic", id: "claude-haiku-4-5" },
+			"bare definition model served uniquely by a configured provider must be qualified with that provider",
+		);
+	} finally {
+		await h.fire("session_shutdown", ctx);
+	}
+});

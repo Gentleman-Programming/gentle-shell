@@ -546,7 +546,9 @@ test("resolveAgentProfileWithFallback walks global profile, definition, default_
 	assert.equal(toSession.profile.source.model, "default");
 
 	// 4. No configured fallback anywhere -> falls back to undefined (inherit Pi default) and drops tier.
-	const withTier = parseAgentsConfig(undefined, { model_profiles: { "gentle-ai-explore": { model: "nan/glm5.3-flash", tier: "fast" } } });
+	const withTier = parseAgentsConfig(undefined, { model_profiles: { "gentle-ai-explore": { model: "nan/glm5.3-flash" } } });
+	withTier.modelProfiles["gentle-ai-explore"]!.tier = "fast";
+	assert.equal(withTier.modelProfiles["gentle-ai-explore"]?.tier, "fast");
 	const toUnresolved = resolveAgentProfileWithFallback(bareAgent, withTier, {
 		isProviderConfigured: (provider) => configured.has(provider),
 		projectConfig: withTier,
@@ -566,4 +568,66 @@ test("resolveAgentProfileWithFallback walks global profile, definition, default_
 	});
 	assert.deepEqual(unchanged.profile.model, { provider: "nan", id: "glm5.3-flash" });
 	assert.equal(unchanged.fallback, undefined);
+});
+
+test("resolveAgentProfileWithFallback skips providerless candidates unless they resolve to a configured provider", () => {
+	const configured = new Set(["anthropic", "openai"]);
+	const catalog = [
+		{ provider: "nan", id: "glm5.3-flash" },
+		{ provider: "anthropic", id: "claude-haiku-4-5" },
+		{ provider: "anthropic", id: "claude-sonnet-4" },
+	];
+	const resolveBareModel = (id: string) => {
+		const lower = id.toLowerCase();
+		const matches = catalog.filter((m) => m.id.toLowerCase() === lower && configured.has(m.provider));
+		return new Set(matches.map((m) => m.provider)).size === 1 ? matches[0] : undefined;
+	};
+
+	const bareUnconfiguredDef = parseAgentDefinition("---\nname: gentle-ai-explore\nmodel: glm5.3-flash\n---\nMap files.", "/x/gentle-ai-explore.md", "global");
+	const bareConfiguredDef = parseAgentDefinition("---\nname: gentle-ai-explore\nmodel: claude-haiku-4-5\n---\nMap files.", "/x/gentle-ai-explore.md", "global");
+	const bareAgent = parseAgentDefinition("---\nname: gentle-ai-explore\n---\nMap files.", "/x/gentle-ai-explore.md", "global");
+	assert.ok(!("error" in bareUnconfiguredDef) && !("error" in bareConfiguredDef) && !("error" in bareAgent));
+
+	// Providerless definition model whose id matches only unconfigured `nan` must be skipped in favor of session default.
+	const projectOnly = parseAgentsConfig(undefined, { model_profiles: { "gentle-ai-explore": { model: "nan/glm5.3-flash" } } });
+	const skipBareDef = resolveAgentProfileWithFallback(bareUnconfiguredDef, projectOnly, {
+		isProviderConfigured: (provider) => configured.has(provider),
+		resolveBareModel,
+		projectConfig: projectOnly,
+		sessionDefaultModels: [{ provider: "anthropic", id: "claude-sonnet-4" }],
+	});
+	assert.deepEqual(skipBareDef.profile.model, { provider: "anthropic", id: "claude-sonnet-4" });
+	assert.equal(skipBareDef.profile.source.model, "default");
+
+	// Same guard applies to providerless `default_model` (merged and global).
+	const globalBareDefault = parseAgentsConfig({ default_model: "glm5.3-flash" }, undefined);
+	const mergedBareDefault = parseAgentsConfig({ default_model: "glm5.3-flash" }, { default_model: "glm5.3-flash", model_profiles: { "gentle-ai-explore": { model: "nan/glm5.3-flash" } } });
+	const skipBareDefault = resolveAgentProfileWithFallback(bareAgent, mergedBareDefault, {
+		isProviderConfigured: (provider) => configured.has(provider),
+		resolveBareModel,
+		globalConfig: globalBareDefault,
+		projectConfig: projectOnly,
+		sessionDefaultModels: [{ provider: "anthropic", id: "claude-sonnet-4" }],
+	});
+	assert.deepEqual(skipBareDefault.profile.model, { provider: "anthropic", id: "claude-sonnet-4" });
+	assert.equal(skipBareDefault.profile.source.model, "default");
+
+	// Providerless definition model matching a configured provider is accepted and qualified with that provider.
+	const qualifiedDef = resolveAgentProfileWithFallback(bareConfiguredDef, projectOnly, {
+		isProviderConfigured: (provider) => configured.has(provider),
+		resolveBareModel,
+		projectConfig: projectOnly,
+		sessionDefaultModels: [{ provider: "anthropic", id: "claude-sonnet-4" }],
+	});
+	assert.deepEqual(qualifiedDef.profile.model, { provider: "anthropic", id: "claude-haiku-4-5" });
+	assert.equal(qualifiedDef.profile.source.model, "definition");
+
+	// Without `resolveBareModel`, providerless candidates cannot be verified and are skipped.
+	const unverifiedBare = resolveAgentProfileWithFallback(bareConfiguredDef, projectOnly, {
+		isProviderConfigured: (provider) => configured.has(provider),
+		projectConfig: projectOnly,
+		sessionDefaultModels: [{ provider: "anthropic", id: "claude-sonnet-4" }],
+	});
+	assert.deepEqual(unverifiedBare.profile.model, { provider: "anthropic", id: "claude-sonnet-4" });
+	assert.equal(unverifiedBare.profile.source.model, "default");
 });

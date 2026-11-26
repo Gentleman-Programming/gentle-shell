@@ -281,6 +281,11 @@ function modelSourceToken(
 	return resolveUnversionedProjectProfile(routingTarget.cwd, routingTarget.configHome) !== undefined ? "declaration" : "profile";
 }
 
+interface ProviderAuthContext {
+	isProviderConfigured: (provider: string) => boolean;
+	resolveBareModel: (id: string) => ModelRef | undefined;
+}
+
 // gentle-shell#3563: inspect the host modelRegistry's local auth snapshot so
 // subagent routing can detect unconfigured providers (such as a project-local
 // .pi/subagents.json pinning `nan/glm5.3-flash` with no `nan` credential)
@@ -288,33 +293,41 @@ function modelSourceToken(
 // absent or does not expose auth status, so minimal stubs stay untouched.
 async function createProviderAuthChecker(
 	registry: ExtensionContext["modelRegistry"] | undefined,
-): Promise<((provider: string) => boolean) | undefined> {
+): Promise<ProviderAuthContext | undefined> {
 	if (!registry) return undefined;
 	const candidate = registry as unknown as {
 		getAvailable?: () => unknown;
+		getAll?: () => unknown;
 		getProviderAuthStatus?: (provider: string) => { configured?: boolean } | undefined;
 		hasConfiguredAuth?: (model: { provider: string; id: string }) => boolean;
 	};
 	let availableProviders: Set<string> | undefined;
+	let availableModels: Array<{ provider: string; id: string }> | undefined;
 	if (typeof candidate.getAvailable === "function") {
 		try {
 			const raw = candidate.getAvailable();
 			const models = Array.isArray(raw) ? raw : await raw;
 			if (Array.isArray(models)) {
-				availableProviders = new Set(
-					models
-						.map((model) => (model && typeof model === "object" && typeof (model as { provider?: unknown }).provider === "string"
-							? (model as { provider: string }).provider
-							: undefined))
-						.filter((provider): provider is string => provider !== undefined && provider.length > 0),
-				);
+				availableProviders = new Set();
+				availableModels = [];
+				for (const model of models) {
+					if (!model || typeof model !== "object") continue;
+					const provider = (model as { provider?: unknown }).provider;
+					const id = (model as { id?: unknown }).id;
+					if (typeof provider === "string" && provider.length > 0) {
+						availableProviders.add(provider);
+						if (typeof id === "string" && id.length > 0) {
+							availableModels.push({ provider, id });
+						}
+					}
+				}
 			}
 		} catch { /* Fall through to other auth signals if available. */ }
 	}
 	const hasStatusFn = typeof candidate.getProviderAuthStatus === "function";
 	const hasAuthFn = typeof candidate.hasConfiguredAuth === "function";
 	if (availableProviders === undefined && !hasStatusFn && !hasAuthFn) return undefined;
-	return (provider: string): boolean => {
+	const isProviderConfigured = (provider: string): boolean => {
 		if (availableProviders?.has(provider)) return true;
 		if (hasStatusFn) {
 			try {
@@ -329,6 +342,35 @@ async function createProviderAuthChecker(
 		}
 		return availableProviders !== undefined ? availableProviders.has(provider) : true;
 	};
+	const configuredModels = (): Array<{ provider: string; id: string }> => {
+		if (availableModels !== undefined) return availableModels;
+		if (typeof candidate.getAll !== "function") return [];
+		try {
+			const raw = candidate.getAll();
+			if (!Array.isArray(raw)) return [];
+			const models: Array<{ provider: string; id: string }> = [];
+			for (const model of raw) {
+				if (!model || typeof model !== "object") continue;
+				const provider = (model as { provider?: unknown }).provider;
+				const id = (model as { id?: unknown }).id;
+				if (typeof provider === "string" && provider.length > 0 && typeof id === "string" && id.length > 0 && isProviderConfigured(provider)) {
+					models.push({ provider, id });
+				}
+			}
+			return models;
+		} catch {
+			return [];
+		}
+	};
+	const resolveBareModel = (id: string): ModelRef | undefined => {
+		const lowerId = id.trim().toLowerCase();
+		if (lowerId.length === 0) return undefined;
+		const matches = configuredModels().filter((model) => model.id.toLowerCase() === lowerId);
+		const providers = new Set(matches.map((model) => model.provider));
+		if (providers.size !== 1) return undefined;
+		return { provider: matches[0]!.provider, id: matches[0]!.id };
+	};
+	return { isProviderConfigured, resolveBareModel };
 }
 
 function readSettingsDefaultModel(homeDir: string): ModelRef | undefined {
@@ -2756,13 +2798,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const resolveLaunchProfile = (
 			layers: AgentsConfigLayers,
 			pinnedRouting: ReturnType<typeof sessionProfileRoutingAt>,
-			isProviderConfigured: ((provider: string) => boolean) | undefined,
+			providerAuth: ProviderAuthContext | undefined,
 			sessionDefaultModels: ReadonlyArray<ModelRef | undefined>,
 		): ResolvedProfileWithFallback => {
 			const config = withPinnedModelProfiles(layers.merged, pinnedRouting);
-			if (!isProviderConfigured) return { profile: resolveAgentProfile(agent, config), fallback: undefined };
+			if (!providerAuth) return { profile: resolveAgentProfile(agent, config), fallback: undefined };
 			return resolveAgentProfileWithFallback(agent, config, {
-				isProviderConfigured,
+				isProviderConfigured: providerAuth.isProviderConfigured,
+				resolveBareModel: providerAuth.resolveBareModel,
 				globalConfig: layers.global,
 				projectConfig: layers.project,
 				configPaths: layers.paths,
@@ -2770,7 +2813,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				sessionDefaultModels,
 			});
 		};
-		const isProviderConfigured = await createProviderAuthChecker(ctx.modelRegistry);
+		const providerAuth = await createProviderAuthChecker(ctx.modelRegistry);
 		const sessionDefaultModels: ReadonlyArray<ModelRef | undefined> = [
 			ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined,
 			readSettingsDefaultModel(agentHome),
@@ -2780,7 +2823,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (!root || (workspaceRoot !== undefined && (!isAbsolute(workspaceRoot) || safeBootstrapDirectory(workspaceRoot) !== root))) throw new Error("Writer bootstrap requires the original safe project root.");
 			const bootstrapLayers = loadAgentsConfigLayers(roots(ctx));
 			const bootstrapPinned = sessionProfileRoutingAt(sessionProfile, { cwd: root, configHome: profileConfigHome, resolveWorktree: deps.resolveWorktree });
-			const model = resolveLaunchProfile(bootstrapLayers, bootstrapPinned, isProviderConfigured, sessionDefaultModels).profile.model ?? ctx.model;
+			const model = resolveLaunchProfile(bootstrapLayers, bootstrapPinned, providerAuth, sessionDefaultModels).profile.model ?? ctx.model;
 			const catalogModel = model?.provider ? ctx.modelRegistry?.find(model.provider, model.id) : ctx.modelRegistry?.getAll().find(candidate => candidate.id === model?.id);
 			if (!catalogModel) throw new Error("Writer bootstrap requires a valid effective model in this session's catalog.");
 			admittedModel = `${catalogModel.provider}/${catalogModel.id}`;
@@ -2857,7 +2900,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			});
 			if (drift !== undefined) ctx.ui.notify(drift, "info");
 		}
-		const { profile, fallback: unconfiguredFallback } = resolveLaunchProfile(layers, pinnedRouting, isProviderConfigured, sessionDefaultModels);
+		const { profile, fallback: unconfiguredFallback } = resolveLaunchProfile(layers, pinnedRouting, providerAuth, sessionDefaultModels);
 		if (unconfiguredFallback !== undefined && ctx.hasUI) {
 			ctx.ui.notify(formatUnconfiguredModelFallbackWarning(agent.name, unconfiguredFallback), "warning");
 		}
@@ -3737,8 +3780,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// path and role before any subagent is launched.
 		if (ctx.hasUI) {
 			try {
-				const isProviderConfigured = await createProviderAuthChecker(ctx.modelRegistry);
-				if (isProviderConfigured) {
+				const providerAuth = await createProviderAuthChecker(ctx.modelRegistry);
+				if (providerAuth) {
+					const { isProviderConfigured } = providerAuth;
 					const sessionCwd = ctx.sessionManager.getCwd();
 					const configHome = gentlePiConfigHome(deps.env);
 					const sessionProfile = resolveSessionProfile({

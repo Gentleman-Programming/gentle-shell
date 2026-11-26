@@ -23,6 +23,7 @@ import { h_flex, ScrollHandle } from "gpui-base";
 import { spaces, agents, terminals, run, openOverlay, window, layout, settings } from "herdr";
 import { tokens, stateDot, sessionTitle, kindBadge } from "./tokens.js";
 import { FeedSource, isGentle, followHerdr, selectSession, projectOf, spaceFor, machineOf, liveState, SESSION_KINDS } from "./snapshot.js";
+import { newTabArgs } from "./new-tab.js";
 
 const MOD = "gentle-tabs";
 
@@ -160,8 +161,8 @@ export default class GentleTabs extends View {
         .child(div().id("tab-new").size(32).ml(4).mb(4).flex_none().flex().items_center().justify_center().rounded(8).text_color(c.muted)
           .hover((s) => s.bg(c.selected).text_color(c.text)).tooltip("New Gentle Shell session")
           .on_mouse_down("left", stop)
-          // A new Gentle Shell session in the shown project's folder (the space's own folder).
-          .on_click(() => run("tab.new", { argv: ["gentle-shell"], ...(space?.id ? { space: space.id } : {}), ...(space?.folder ? { folder: space.folder } : project ? { folder: project } : {}) }))
+          // A new Gentle Shell session in the shown session's project folder, else the space's (new-tab.js).
+          .on_click(() => run("tab.new", newTabArgs(space, target?.feed ? projectOf(target.feed) : null)))
           .child(svg("mods/gentle-tabs/icons/plus.svg").size(13))))
       .when(Boolean(w?.buttons), (el) => el.child(h_flex().id("window-buttons").flex_none().items_end().gap(2).ml(6)
         .child(control("minimize", win ? svg("mods/gentle-tabs/icons/win-min.svg").size(16) : "−", "Minimise", "window.minimize"))

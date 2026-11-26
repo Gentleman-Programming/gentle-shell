@@ -90,28 +90,128 @@ export async function readFeeds(roots) {
 
 const positive = (n) => Number.isInteger(n) && n > 0;
 
-// Whether each publisher still runs: one `ps` for the pids not checked in the last ALIVE_MS (a
-// crashed session leaves its snapshot behind until the next session start sweeps it). Without
-// `ps` (Windows) every snapshot counts as live.
+// Whether each publisher still runs: one process-list read for the feeds not checked in the last
+// ALIVE_MS (a crashed session leaves its snapshot behind until the next session start sweeps it).
+// POSIX hosts ask `ps`. Windows has none, so it enumerates its processes once (PowerShell: pid and
+// creation time) and falls back to `tasklist` when that fails; a pid that is listed can still be
+// another process (Windows reuses pids), so a feed that carries `identity.startedAt` is also
+// checked, on every expired check, against the creation time the OS reports for that pid. Each
+// feed is judged on its own: two snapshots may share a pid and differ in start time.
 const ALIVE_MS = 5000;
-const alive = new Map(); // pid -> { ok, at }
+const SAME_START_MS = 10000; // startedAt estimated from the publisher's clock vs the OS creation time
+const SAME_OS_START_MS = 1000; // startedAt the publisher read from the OS (startedAtSource "os")
+const alive = new Map(); // liveKey -> { ok, at, seq, mismatch }
+let checkSeq = 0; // orders the checks by when they started; `at` only drives the expiry
+
+// A feed's identity for liveness: its pid, the start time it published and where that time came from.
+// The source is kept as the two classes sameProcess tells apart ("os" or an estimate), never as the raw value.
+const liveKey = (f) => `${f.identity?.pid}:${positive(f.identity?.startedAt) ? f.identity.startedAt : ""}:${f.identity?.startedAtSource === "os" ? "os" : ""}`;
+
+// A Windows home starts with a drive ("C:/Users/x", "C:\Users\x") or is a UNC path; a backslash
+// elsewhere in a POSIX path is just a character.
+const isWindowsHost = () => /^(?:[A-Za-z]:|\\\\)/.test(String(home() ?? ""));
+
+// `tasklist /NH /FO CSV` rows: "Image Name","PID","Session Name","Session#","Mem Usage".
+export const parseTasklistPids = (stdout) =>
+  new Set([...String(stdout).matchAll(/^"[^"]*","(\d+)"/gm)].map((m) => Number(m[1])));
+
+// "<pid>,<creation time in epoch ms>" lines; the time is empty when the OS gave none.
+export const parseStartTimes = (stdout) =>
+  new Map([...String(stdout).matchAll(/^(\d+),(\d*)\s*$/gm)].map((m) => [Number(m[1]), m[2] ? Number(m[2]) : undefined]));
+
+// Unknown on either side means "cannot tell", which counts as the same process. `fromOs` says the
+// publisher read startedAt from the OS, so the two readings agree to the millisecond; an estimate
+// from the publisher's clock gets a wider margin.
+export const sameProcess = (startedAt, startMs, fromOs = false) =>
+  !Number.isFinite(startedAt) || !Number.isFinite(startMs) || Math.abs(startedAt - startMs) <= (fromOs ? SAME_OS_START_MS : SAME_START_MS);
+
+// pid -> creation time (undefined when the OS gave none) for the listed pids among `pids`; undefined
+// when the enumeration failed. `$ErrorActionPreference = 'Stop'` turns a failed CIM query into a
+// non-zero exit, so an empty list only ever means that none of the pids runs.
+async function windowsProcesses(pids) {
+  try {
+    const script = `$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Where-Object { @(${pids.join(",")}) -contains $_.ProcessId } | ForEach-Object { $c = $_.CreationDate; "$($_.ProcessId),$(if ($c) { [int64](($c.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds) })" }`;
+    const r = await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: 8000 });
+    return r.code === 0 ? parseStartTimes(r.stdout) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// The fallback: pids only, no creation time.
+async function tasklistProcesses() {
+  try {
+    const r = await exec("tasklist", ["/NH", "/FO", "CSV"], { timeout: 4000 });
+    return r.code === 0 ? new Map([...parseTasklistPids(r.stdout)].map((pid) => [pid, undefined])) : undefined;
+  } catch {
+    return undefined; // no tasklist: every snapshot counts as live, as before
+  }
+}
+
+// Stores a check's result. The ordinary verdict (`ok`) comes from the check that started last. A
+// confirmed mismatch (or a publisher found gone) stays true of the identity until a comparable
+// creation time that matches is newer: `lastMismatch` and `lastMatch` hold the start order of the
+// latest of each, so the outcome does not depend on the order the checks finish in.
+function record(key, { ok, matched = false, mismatch = false }, seq) {
+  const prev = alive.get(key) ?? { seq: 0, lastOk: true, lastMatch: 0, lastMismatch: 0, at: 0 };
+  const next = { ...prev };
+  if (matched) next.lastMatch = Math.max(prev.lastMatch, seq);
+  if (mismatch) next.lastMismatch = Math.max(prev.lastMismatch, seq);
+  if (seq >= prev.seq) { next.seq = seq; next.lastOk = ok; next.at = Date.now(); } // the interval starts when the check ends
+  next.mismatch = next.lastMismatch > next.lastMatch;
+  next.ok = next.mismatch ? false : next.lastOk;
+  alive.set(key, next);
+}
+
+async function checkWindows(feeds, seq) {
+  const pids = [...new Set(feeds.map((f) => f.identity.pid))];
+  const procs = (await windowsProcesses(pids)) ?? (await tasklistProcesses());
+  if (!procs) return;
+  for (const f of feeds) {
+    const { pid, startedAt, startedAtSource } = f.identity;
+    const listed = procs.has(pid);
+    const comparable = listed && positive(startedAt) && Number.isFinite(procs.get(pid));
+    const same = !comparable || sameProcess(startedAt, procs.get(pid), startedAtSource === "os");
+    // A publisher that was absent from a successful enumeration is gone for good: a pid seen later
+    // belongs to another process, so an absence is kept like a confirmed mismatch.
+    const gone = !listed && positive(startedAt);
+    record(liveKey(f), { ok: listed && same, matched: comparable && same, mismatch: gone || (comparable && !same && startedAtSource === "os") }, seq);
+  }
+}
+
+// A negative age means the clock moved backward: the verdict is treated as expired.
+const fresh = (age) => age >= 0 && age < ALIVE_MS;
+
 export async function liveFeeds(feeds) {
   const now = Date.now();
-  const want = [...new Set(feeds.map((f) => f.identity?.pid).filter(positive))].filter((pid) => !(now - (alive.get(pid)?.at ?? 0) < ALIVE_MS));
-  if (want.length) {
-    try {
-      // `ps -p` lists the pids that run; it exits 1 when one of them does not.
-      const r = await exec("ps", ["-o", "pid=", "-p", want.join(",")], { timeout: 3000 });
-      if (r.code === 0 || r.code === 1) {
-        const running = new Set(String(r.stdout).split(/\s+/).map(Number).filter(positive));
-        for (const pid of want) alive.set(pid, { ok: running.has(pid), at: now });
+  const due = new Map(); // liveKey -> feed, for the feeds whose last check expired
+  const windows = isWindowsHost();
+  for (const f of feeds) if (positive(f.identity?.pid) && !fresh(now - (alive.get(liveKey(f))?.at ?? 0))) due.set(liveKey(f), f);
+  if (due.size) {
+    const seq = ++checkSeq;
+    if (windows) {
+      await checkWindows([...due.values()], seq);
+    } else {
+      try {
+        // `ps -p` lists the pids that run; it exits 1 when one of them does not.
+        const pids = [...new Set([...due.values()].map((f) => f.identity.pid))];
+        const r = await exec("ps", ["-o", "pid=", "-p", pids.join(",")], { timeout: 3000 });
+        if (r.code === 0 || r.code === 1) {
+          const running = new Set(String(r.stdout).split(/\s+/).map(Number).filter(positive));
+          for (const [key, f] of due) record(key, { ok: running.has(f.identity.pid) }, seq);
+        }
+      } catch {
+        // no ps: the publisher's own sweep is the only cleanup
       }
-    } catch {
-      // no ps: the publisher's own sweep is the only cleanup
     }
-    if (alive.size > 256) for (const [pid, v] of alive) if (now - v.at > 60000) alive.delete(pid);
+    if (alive.size > 256) {
+      // A confirmed replaced-pid verdict is kept past the age limit (it is what hides the stale feed
+      // if the feed file reappears); only a hard cap prunes it.
+      const current = new Set(feeds.map(liveKey));
+      for (const [key, v] of alive) if (!current.has(key) && now - v.at > 60000 && (!v.mismatch || alive.size > 1024)) alive.delete(key);
+    }
   }
-  return feeds.filter((f) => alive.get(f.identity?.pid)?.ok !== false);
+  return feeds.filter((f) => alive.get(liveKey(f))?.ok !== false);
 }
 
 // One session, across every mod and refresh: its agent dir and session id.
@@ -132,7 +232,10 @@ export function matchFeed(terminal, feeds) {
   for (const feed of feeds) {
     const id = feed.identity;
     const chain = [id.pid, id.ppid, ...(Array.isArray(id.ancestors) ? id.ancestors : [])].filter(positive);
-    let rank = chain.findIndex((pid) => pids.includes(pid));
+    // Pids are only comparable inside one pid namespace: a feed that names another platform than this host (a WSL
+    // publisher seen from Windows) is matched by its pane id alone.
+    const sameNamespace = typeof id.platform !== "string" || !id.platform || (id.platform === "win32") === isWindowsHost();
+    let rank = sameNamespace ? chain.findIndex((pid) => pids.includes(pid)) : -1;
     if (rank < 0 && id.herdr?.paneId && ids.includes(id.herdr.paneId)) rank = chain.length;
     if (rank >= 0 && rank < bestRank) { best = feed; bestRank = rank; }
   }

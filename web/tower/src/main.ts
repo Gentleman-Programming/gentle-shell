@@ -64,7 +64,7 @@ function renderFloors(p: Project) {
 		const helper = session?.subagents.find((a) => a.id === b.dataset.id);
 		if (session && helper) select({ kind: "helper", floor: i, session, helper });
 	}));
-	el.querySelectorAll<HTMLButtonElement>("button.prog").forEach((b) => b.addEventListener("click", () => { const id = p.sessions[+b.dataset.i!]?.sessionId; todoSession = todoSession === id ? undefined : id; render(); }));
+	el.querySelectorAll<HTMLButtonElement>("button.prog").forEach((b) => b.addEventListener("click", () => { const id = p.sessions[+b.dataset.i!]?.sessionId; openTasks(todoSession === id ? undefined : id); }));
 }
 
 function renderTodo(p: Project) {
@@ -113,7 +113,7 @@ function renderSelection() {
 		<button class="btn primary" id="talk">Talk <kbd>T</kbd></button><button class="btn" id="tasks">Tasks</button><button class="btn" id="arts">Artifacts${s.artifacts?.length ? ` (${s.artifacts.length})` : ""}</button>
 		${s.permission ? `<label class="door">Permissions <select id="door" aria-label="Permissions (raising is confirmed in the terminal)"><option selected>${esc(s.permission)}</option>${doorOptions}</select></label>` : ""}`;
 	el.querySelector("#talk")!.addEventListener("click", () => openIntercom(s.sessionId));
-	el.querySelector("#tasks")!.addEventListener("click", () => { todoSession = s.sessionId; render(); });
+	el.querySelector("#tasks")!.addEventListener("click", () => openTasks(s.sessionId));
 	el.querySelector("#arts")!.addEventListener("click", () => openArtifacts(s));
 	el.querySelector("#door")?.addEventListener("change", async (e) => {
 		const mode = (e.target as HTMLSelectElement).value;
@@ -127,6 +127,13 @@ function openIntercom(sessionId: string | undefined) {
 	// On a phone the intercom and the task list share the bottom area: Talk wins, Tasks closes.
 	if (todoSession !== undefined && useBottomSheet(innerWidth, matchMedia("(pointer: coarse)").matches)) { todoSession = undefined; render(); }
 	renderIntercom(p.sessions[floor], floor);
+}
+
+/** Opens (or closes) the task list; on a bottom sheet it wins the shared area over the intercom. */
+function openTasks(sessionId: string | undefined) {
+	todoSession = sessionId;
+	if (todoSession !== undefined && useBottomSheet(innerWidth, matchMedia("(pointer: coarse)").matches) && !$("intercom").hidden) closeIntercom();
+	render();
 }
 
 function renderLobby(p: Project) {
@@ -234,7 +241,7 @@ scene.onRoom = (roomId, floor) => {
 	const p = project(); if (!p) return;
 	if (roomId === "engram") return openLibrary(p);
 	if (roomId === "lounge" || roomId === "engine") return openTab(projects);
-	if (roomId === "map") { todoSession = p.sessions[floor]?.sessionId; render(); return; }
+	if (roomId === "map") { openTasks(p.sessions[floor]?.sessionId); return; }
 	select({ kind: "orchestrator", floor, session: p.sessions[floor] });
 };
 scene.onDoor = (floor) => { const p = project(); if (!p) return; select({ kind: "orchestrator", floor, session: p.sessions[floor] }); (document.getElementById("door") as HTMLSelectElement | null)?.focus(); };

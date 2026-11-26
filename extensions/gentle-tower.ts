@@ -301,15 +301,20 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 	};
 
 	const reportTower = async (lan: boolean, notify: (text: string, level: "info" | "warning" | "error") => void): Promise<void> => {
+		let pending: Promise<TowerServer> | undefined;
 		try {
-			const s = await ensureTower(lan);
+			pending = ensureTower(lan);
+			const s = await pending;
 			// The TUI notify box cannot carry QR art; the terminal command prints it.
 			const lines = [`Gentle Tower: ${s.url}`, ...s.urls.slice(1).map((u) => `  ${u}`), ...(s.lan ? [TOWER_LAN_WARNING] : [])];
 			notify(lines.join("\n"), "info");
 			openUrl(s.url);
 		} catch (error) {
-			server = undefined;
-			serverLan = undefined;
+			// Clear only the startup this report owns; a newer command may have replaced it.
+			if (pending === undefined || server === pending) {
+				server = undefined;
+				serverLan = undefined;
+			}
 			if (error instanceof TowerNotBuiltError) return notify(error.message, "warning");
 			notify(`Gentle Tower could not start: ${error instanceof Error ? error.message : String(error)}`, "error");
 		}

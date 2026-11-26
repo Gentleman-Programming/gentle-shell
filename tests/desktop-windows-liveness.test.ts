@@ -462,3 +462,26 @@ test("should settle on the latest comparable evidence whichever order three over
 		(Date.now as unknown as { mock: { restore(): void } }).mock.restore();
 	}
 });
+
+test("should share one verdict between snapshots whose startedAtSource only differs outside the two classes sameProcess uses", async (t) => {
+	const startedAt = Date.UTC(2026, 10, 19, 12, 0, 0);
+	const { mod, calls } = await loadSnapshot(t, { home: WINDOWS_HOME, exec: ({ command }) => (command === "tasklist" ? tasklist(200) : { code: 0, stdout: `200,${startedAt}
+` }) });
+	const withSource = (startedAtSource: unknown) => ({ identity: { pid: 200, sessionId: "s200", startedAt, startedAtSource } });
+	await mod.liveFeeds([withSource("estimate")]);
+	const before = calls.length;
+	await mod.liveFeeds([withSource({ odd: true })]);
+	await mod.liveFeeds([withSource("clock")]);
+	assert.equal(calls.length, before, "an unrecognised source reuses the estimate verdict instead of opening a new cache entry");
+});
+
+test("should keep telling an OS-stamped snapshot apart from an estimated one", async (t) => {
+	const startedAt = Date.UTC(2026, 10, 19, 12, 0, 0);
+	const { mod, calls } = await loadSnapshot(t, { home: WINDOWS_HOME, exec: ({ command }) => (command === "tasklist" ? tasklist(200) : { code: 0, stdout: `200,${startedAt}
+` }) });
+	const withSource = (startedAtSource: string) => ({ identity: { pid: 200, sessionId: "s200", startedAt, startedAtSource } });
+	await mod.liveFeeds([withSource("estimate")]);
+	const before = calls.length;
+	await mod.liveFeeds([withSource("os")]);
+	assert.ok(calls.length > before, "the os class is checked on its own");
+});

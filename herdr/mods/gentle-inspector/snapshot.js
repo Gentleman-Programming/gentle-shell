@@ -104,7 +104,8 @@ const alive = new Map(); // liveKey -> { ok, at, seq, mismatch }
 let checkSeq = 0; // orders the checks by when they started; `at` only drives the expiry
 
 // A feed's identity for liveness: its pid, the start time it published and where that time came from.
-const liveKey = (f) => `${f.identity?.pid}:${positive(f.identity?.startedAt) ? f.identity.startedAt : ""}:${f.identity?.startedAtSource ?? ""}`;
+// The source is kept as the two classes sameProcess tells apart ("os" or an estimate), never as the raw value.
+const liveKey = (f) => `${f.identity?.pid}:${positive(f.identity?.startedAt) ? f.identity.startedAt : ""}:${f.identity?.startedAtSource === "os" ? "os" : ""}`;
 
 // A Windows home starts with a drive ("C:/Users/x", "C:\Users\x") or is a UNC path; a backslash
 // elsewhere in a POSIX path is just a character.
@@ -231,7 +232,10 @@ export function matchFeed(terminal, feeds) {
   for (const feed of feeds) {
     const id = feed.identity;
     const chain = [id.pid, id.ppid, ...(Array.isArray(id.ancestors) ? id.ancestors : [])].filter(positive);
-    let rank = chain.findIndex((pid) => pids.includes(pid));
+    // Pids are only comparable inside one pid namespace: a feed that names another platform than this host (a WSL
+    // publisher seen from Windows) is matched by its pane id alone.
+    const sameNamespace = typeof id.platform !== "string" || !id.platform || (id.platform === "win32") === isWindowsHost();
+    let rank = sameNamespace ? chain.findIndex((pid) => pids.includes(pid)) : -1;
     if (rank < 0 && id.herdr?.paneId && ids.includes(id.herdr.paneId)) rank = chain.length;
     if (rank >= 0 && rank < bestRank) { best = feed; bestRank = rank; }
   }

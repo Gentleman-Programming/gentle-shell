@@ -19,7 +19,7 @@ const STUB = "data:text/javascript," + encodeURIComponent([
 ].join("\n"));
 
 type Terminal = { address: string; id?: string; pid?: number; foreground?: { pid: number }; agent?: string };
-type Feed = { identity: { pid: number; ppid?: number; sessionId: string; agentDir: string; ancestors?: number[]; herdr?: { paneId: string } | null }; updatedAt: string };
+type Feed = { identity: { pid: number; ppid?: number; sessionId: string; agentDir: string; ancestors?: number[]; herdr?: { paneId: string } | null; platform?: string }; updatedAt: string };
 type Row = { key: string; feed: Feed | null; terminal: Terminal | null };
 
 let loads = 0;
@@ -179,4 +179,24 @@ test("should walk every hop of one ancestry on the same table even when the cach
 	clock += 5000;
 	assert.deepEqual(await processAncestors(500, 8, parentOf), [9000, 9001], "the next walk starts on a fresh table");
 	assert.equal(reads, 2);
+});
+
+test("should not rank a feed by pid when its publisher runs on another platform than this Windows host", async (t) => {
+	const { matchFeed } = await loadSnapshot(t);
+	const foreign: Feed = { identity: { pid: 200, sessionId: "wsl", agentDir: "C:/Users/dev/.gentle-shell/agent", platform: "linux" }, updatedAt: "2026-11-21T10:00:00.000Z" };
+	assert.equal(matchFeed({ address: "t1", id: "t1", pid: 200 }, [foreign]), null);
+});
+
+test("should still match a feed from another platform by its Herdr pane id", async (t) => {
+	const { matchFeed } = await loadSnapshot(t);
+	const foreign: Feed = { identity: { pid: 200, sessionId: "wsl", agentDir: "C:/Users/dev/.gentle-shell/agent", platform: "linux", herdr: { paneId: "p1" } }, updatedAt: "2026-11-21T10:00:00.000Z" };
+	assert.equal(matchFeed({ address: "t1", id: "t1", pid: 999, pane: "p1" } as Terminal, [foreign]), foreign);
+});
+
+test("should keep ranking by pid a feed that names win32 or no platform on a Windows host", async (t) => {
+	const { matchFeed } = await loadSnapshot(t);
+	const stamped: Feed = { identity: { pid: 200, sessionId: "a", agentDir: "C:/a", platform: "win32" }, updatedAt: "2026-11-21T10:00:00.000Z" };
+	const legacy: Feed = { identity: { pid: 300, sessionId: "b", agentDir: "C:/b" }, updatedAt: "2026-11-21T10:00:00.000Z" };
+	assert.equal(matchFeed({ address: "t1", id: "t1", pid: 200 }, [stamped]), stamped);
+	assert.equal(matchFeed({ address: "t2", id: "t2", pid: 300 }, [legacy]), legacy);
 });

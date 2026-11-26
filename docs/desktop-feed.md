@@ -93,7 +93,7 @@ can therefore outrank another session whose pid matches farther along its chain.
 
 Matching is best effort, not proof that the terminal owns the session. The ancestors are recorded as
 bare pids without creation times, so a parent that exited and whose pid another terminal reused can
-still match. A wrapper launch without `HERDR_PANE_ID` is left unmatched only when neither the terminal's
+still match. A session whose `identity.platform` names another platform than the reader's host (a WSL publisher seen from Windows) is never ranked by pid, because pids of different platforms are unrelated; only its pane id can match it. A wrapper launch without `HERDR_PANE_ID` is left unmatched only when neither the terminal's
 pid nor its foreground process's pid is in the recorded chain, and no pane id matches: the session is
 then listed as a TUI session in another terminal (no Terminal pane in the window) instead of a
 terminal being guessed for it. When the foreground process is the publisher or one of its recorded

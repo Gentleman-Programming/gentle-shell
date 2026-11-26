@@ -3,13 +3,14 @@
 // fake Pi here: no model, no turn).
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { startServeServer, type ServeServer, type ServeServerOptions } from "../lib/serve-server.ts";
-import { keeperAlive, type KeeperRecord } from "../lib/serve-session-keeper.ts";
+import { keeperAlive, newKeeperToken, spawnKeeper, type KeeperRecord } from "../lib/serve-session-keeper.ts";
 import { after, call, endServeLeftovers, pairDevice, remainingServeLeftovers, stream, test } from "./serve-test-client.ts";
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
@@ -221,26 +222,43 @@ test("the control session stops when idle, not while a stream is open, and start
 	}
 });
 
-test("the control session survives a server restart and stays hidden", { timeout: 30_000 }, async () => {
+test("the control session ends with its server; one an older server left is stopped, never taken back, while agent sessions are", { timeout: 30_000 }, async () => {
 	const dir = serveDir();
+	const sessionsDir = join(dir, "sessions");
 	const launches: Array<{ cwd: string }> = [];
 	const first = await serve(dir, launches);
 	assert.equal((await call(first.url, "POST", "/api/desktop", { token: ADMIN, body: { method: "capabilities" } })).status, 200);
 	const control = controlOf(dir)!;
+	const created = await call(first.url, "POST", "/api/sessions", { token: ADMIN, body: { cwd: realpathSync(homedir()) } });
+	assert.equal(created.status, 201, JSON.stringify(created.body));
+	const agentId = created.body.session.id as string;
 	await first.close();
-	assert.ok(keeperAlive(control.record.keeperPid), "its keeper outlives the server");
+	assert.equal(controlOf(dir), undefined, "the close stops the control session and forgets it");
+	await until(() => !keeperAlive(control.record.keeperPid), "its keeper to end with it");
+
+	// A control session the way a crashed or older server leaves it: its keeper running the old code, named beside the keepers.
+	const staleId = `ses_${randomBytes(8).toString("hex")}`;
+	await spawnKeeper({ id: staleId, dir: sessionsDir, token: newKeeperToken(), launch: { command: process.execPath, args: [FAKE_PI], cwd: homedir(), env: { ...process.env, GENTLE_SHELL_INTERACTIVE_HOST: "1" } } });
+	writeFileSync(join(sessionsDir, "control"), `${staleId}\n`, { mode: 0o600 });
+	const stale = controlOf(dir)!;
+	assert.ok(keeperAlive(stale.record.keeperPid));
 
 	const second = await serve(dir, launches);
 	try {
-		assert.deepEqual((await call(second.url, "GET", "/api/sessions", { token: ADMIN })).body.sessions, [], "reattached, still hidden");
+		await until(() => !keeperAlive(stale.record.keeperPid), "the next server to stop the old control session");
+		await until(() => controlOf(dir) === undefined, "serve to forget it");
+		assert.equal(existsSync(join(sessionsDir, `${staleId}.json`)), false, "its record goes with it");
 		const admin = await call(second.url, "GET", "/api/sessions?includeControl=1", { token: ADMIN });
-		assert.equal(admin.body.sessions[0]?.id, control.id, "the same session");
+		assert.deepEqual(admin.body.sessions.map((s: { id: string; state: string }) => [s.id, s.state]), [[agentId, "running"]], "the agent session reattached, no control session taken back");
+		assert.equal((await call(second.url, "POST", `/api/sessions/${agentId}/rpc`, { token: ADMIN, body: { type: "get_state" } })).status, 200);
+
 		assert.equal((await call(second.url, "POST", "/api/desktop", { token: ADMIN, body: { method: "get_auth_status" } })).status, 200);
-		assert.equal(launches.length, 1, "taken back, not started again");
+		const fresh = controlOf(dir)!;
+		assert.ok(fresh.id !== staleId && fresh.id !== control.id, "a fresh control session, on this server's code");
+		assert.equal(launches.length, 3, "started by this server: the first control, the agent session, the fresh control");
 	} finally {
 		await second.close({ endSessions: true });
 	}
-	await until(() => !keeperAlive(control.record.keeperPid), "the keeper to end with its session");
 	assert.equal(controlOf(dir), undefined);
 });
 

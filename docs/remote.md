@@ -315,7 +315,7 @@ sequenceDiagram
 | Model turns | Never | Prompts, steering, … |
 | Scopes | Per method, as `/desktop`: `capabilities`, `get_*`, `list_*` read; the rest operate | The same |
 
-The control session is a session like the others under the hood: the same launcher, Pi and extensions, its own keeper, so it survives a `serve` restart; it is never listed (an `admin` sees it with `GET /api/sessions?includeControl=1`), not reachable by id, and not counted against the 16 running sessions.
+The control session is a session like the others under the hood: the same launcher, Pi and extensions, its own keeper. Unlike them it ends with its server: it holds no user state, and a `serve` restart (after a `git pull`, a reinstall or an upgrade) must answer with the new code, so the next server starts a fresh one on first use and stops any an earlier server left running. It is never listed (an `admin` sees it with `GET /api/sessions?includeControl=1`), not reachable by id, and not counted against the 16 running sessions.
 
 ## Security model
 

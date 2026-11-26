@@ -91,6 +91,10 @@ test("an admin upgrades the server: lines, finished, then a restart that keeps t
 		assert.equal(created.status, 201, JSON.stringify(created.body));
 		const sessionId = created.body.session.id;
 		const record = JSON.parse(readFileSync(join(root, "serve", "sessions", `${sessionId}.json`), "utf8")) as KeeperRecord;
+		// The control session behind `/api/desktop` runs the old version's code.
+		assert.equal((await call(first.url, "POST", "/api/desktop", { token: ADMIN, body: { method: "capabilities" } })).status, 200);
+		const oldControl = (await call(first.url, "GET", "/api/sessions?includeControl=1", { token: ADMIN })).body.sessions.find((s: { control?: boolean }) => s.control)?.id as string;
+		assert.ok(oldControl);
 
 		// Only an admin token; a known channel only.
 		const device = await pairDevice(first.url, ADMIN, ["sessions:read", "sessions:operate", "terminal"]);
@@ -133,6 +137,10 @@ test("an admin upgrades the server: lines, finished, then a restart that keeps t
 		assert.equal(listed.body.sessions.find((s: { id: string }) => s.id === sessionId)?.state, "running", "the same session, still running");
 		const state = await call(second.url, "POST", `/api/sessions/${sessionId}/rpc`, { token: ADMIN, body: { type: "get_state" } });
 		assert.equal(state.status, 200);
+		// The control session is not: the upgraded server answers `/api/desktop` from a fresh one, on its own code.
+		assert.equal((await call(second.url, "POST", "/api/desktop", { token: ADMIN, body: { method: "capabilities" } })).status, 200);
+		const newControl = (await call(second.url, "GET", "/api/sessions?includeControl=1", { token: ADMIN })).body.sessions.find((s: { control?: boolean }) => s.control)?.id as string;
+		assert.ok(newControl && newControl !== oldControl, "a fresh control session after the upgrade");
 	} finally {
 		await first.close().catch(() => undefined);
 		await second?.close({ endSessions: true });

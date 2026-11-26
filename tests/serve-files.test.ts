@@ -118,29 +118,46 @@ test("read: raw bytes, offset and length, capped per call, conditional requests"
 	const file = join(work, "read.bin");
 	const bytes = Buffer.from(Array.from({ length: 100 }, (_, i) => i));
 	writeFileSync(file, bytes);
-	const first = await call(server.url, "GET", `/api/fs/read?path=${q(file)}`, { token: reader.token });
+	const first = await call(server.url, "GET", `/api/fs/read?path=${q(file)}`, { token: operator.token });
 	assert.equal(first.status, 200);
 	assert.equal(first.headers["content-type"], "application/octet-stream");
 	assert.deepEqual(first.bytes, bytes.subarray(0, 64), "capped at the per-call limit");
 	assert.equal(first.headers["x-file-size"], "100");
 	assert.equal(first.headers["x-truncated"], "1");
-	const rest = await call(server.url, "GET", `/api/fs/read?path=${q(file)}&offset=64`, { token: reader.token });
+	const rest = await call(server.url, "GET", `/api/fs/read?path=${q(file)}&offset=64`, { token: operator.token });
 	assert.deepEqual(rest.bytes, bytes.subarray(64));
 	assert.equal(rest.headers["x-truncated"], "0");
-	const slice = await call(server.url, "GET", `/api/fs/read?path=${q(file)}&offset=10&length=5`, { token: reader.token });
+	const slice = await call(server.url, "GET", `/api/fs/read?path=${q(file)}&offset=10&length=5`, { token: operator.token });
 	assert.deepEqual(slice.bytes, bytes.subarray(10, 15));
-	const past = await call(server.url, "GET", `/api/fs/read?path=${q(file)}&offset=500`, { token: reader.token });
+	const past = await call(server.url, "GET", `/api/fs/read?path=${q(file)}&offset=500`, { token: operator.token });
 	assert.equal(past.status, 200);
 	assert.equal(past.bytes.length, 0);
 
 	const etag = first.headers.etag as string;
-	assert.equal((await call(server.url, "GET", `/api/fs/read?path=${q(file)}`, { token: reader.token, headers: { "If-None-Match": etag } })).status, 304);
+	assert.equal((await call(server.url, "GET", `/api/fs/read?path=${q(file)}`, { token: operator.token, headers: { "If-None-Match": etag } })).status, 304);
 	const since = first.headers["last-modified"] as string;
-	assert.equal((await call(server.url, "GET", `/api/fs/read?path=${q(file)}`, { token: reader.token, headers: { "If-Modified-Since": since } })).status, 304);
-	assert.equal((await call(server.url, "GET", `/api/fs/read?path=${q(file)}`, { token: reader.token, headers: { "If-None-Match": "\"other\"" } })).status, 200);
+	assert.equal((await call(server.url, "GET", `/api/fs/read?path=${q(file)}`, { token: operator.token, headers: { "If-Modified-Since": since } })).status, 304);
+	assert.equal((await call(server.url, "GET", `/api/fs/read?path=${q(file)}`, { token: operator.token, headers: { "If-None-Match": "\"other\"" } })).status, 200);
 
-	assert.equal((await call(server.url, "GET", `/api/fs/read?path=${q(work)}`, { token: reader.token })).body.error.code, "not_a_file");
-	assert.equal((await call(server.url, "GET", `/api/fs/read?path=${q(file)}&offset=-1`, { token: reader.token })).body.error.code, "invalid_offset");
+	assert.equal((await call(server.url, "GET", `/api/fs/read?path=${q(work)}`, { token: operator.token })).body.error.code, "not_a_file");
+	assert.equal((await call(server.url, "GET", `/api/fs/read?path=${q(file)}&offset=-1`, { token: operator.token })).body.error.code, "invalid_offset");
+});
+
+test("a device that only watches lists, stats and searches, but never reads a file's contents", async () => {
+	const dir = join(work, "secrets");
+	mkdirSync(dir);
+	const file = join(dir, "mcp.json");
+	writeFileSync(file, "{\"token\":\"secret\"}");
+	const denied = await call(server.url, "GET", `/api/fs/read?path=${q(file)}`, { token: reader.token });
+	assert.equal(denied.status, 403);
+	assert.equal(denied.body.error.code, "forbidden");
+	assert.match(denied.body.error.message, /sessions:operate/);
+	assert.equal((await call(server.url, "GET", `/api/fs/read?path=${q(file)}`, { token: reader.token, headers: { "If-None-Match": "\"x\"" } })).status, 403);
+	const listed = await call(server.url, "GET", `/api/fs/list?path=${q(dir)}`, { token: reader.token });
+	assert.equal(listed.status, 200);
+	assert.deepEqual(listed.body.entries.map((e: { name: string }) => e.name), ["mcp.json"]);
+	assert.equal((await call(server.url, "GET", `/api/fs/stat?path=${q(file)}`, { token: reader.token })).status, 200);
+	assert.equal((await call(server.url, "GET", `/api/fs/search?root=${q(dir)}&q=mcp`, { token: reader.token })).status, 200);
 });
 
 test("write: atomic create and replace, mode kept, create_only, If-Match, through a link, bounded", async () => {

@@ -59,7 +59,7 @@ test("classifyGitArgs: reads, operations, network commands and refused options",
 	assert.deepEqual(classifyGitArgs(["fetch", "origin"]), { subcommand: "fetch", scope: "sessions:operate", network: true });
 	assert.equal(classifyGitArgs(["ls-remote", "origin"]).scope, "sessions:read");
 	assert.equal(classifyGitArgs(["log", "--output=/tmp/x"]).scope, "sessions:operate", "--output writes a file");
-	assert.equal(classifyGitArgs(["diff", "--output-indicator-new=+"]).scope, "sessions:read");
+	assert.equal(classifyGitArgs(["diff", "--numstat", "--output-indicator-new=+"]).scope, "sessions:read");
 	assert.equal(classifyGitArgs(["grep", "-O", "x"]).scope, "sessions:operate");
 	assert.equal(classifyGitArgs(["-c", "color.ui=false", "status"]).scope, "sessions:operate", "any -c operates");
 	assert.equal(classifyGitArgs(["status", "--", "-c"]).scope, "sessions:read");
@@ -85,6 +85,23 @@ test("classifyGitArgs: reads, operations, network commands and refused options",
 	assert.equal(classifyGitArgs(["log", "--", "--upload-pack=x"]).scope, "sessions:read");
 });
 
+test("classifyGitArgs: file contents (patches, blobs, blame, grep) need sessions:operate; paths and counts do not", () => {
+	for (const args of [["log", "--format=%H%x00%s", "-n", "20"], ["log", "--all", "--no-merges", "--format=%at"], ["log", "--stat"], ["log", "-1", "--format=%B"],
+		["diff", "--numstat", "-z"], ["diff", "--numstat", "-z", "HEAD"], ["diff", "--name-status"], ["diff", "--stat", "main"], ["diff", "--quiet"],
+		["diff-tree", "-r", "-M", "-z", "--no-commit-id", "--name-status", "HEAD"], ["diff-index", "--cached", "HEAD"], ["diff-files"],
+		["stash", "list", "--format=%gd%x00%gs"], ["stash", "show", "stash@{0}"], ["cat-file", "-t", "HEAD"], ["cat-file", "-s", "HEAD:a.txt"],
+		["cat-file", "--batch-check"], ["ls-files", "-z"], ["ls-tree", "-r", "HEAD"], ["rev-parse", "HEAD:a.txt"]]) {
+		assert.equal(classifyGitArgs(args).scope, "sessions:read", args.join(" "));
+	}
+	for (const args of [["show", "HEAD"], ["show", "HEAD:a.txt"], ["show", "-s", "--format=%H"], ["diff"], ["diff", "HEAD"], ["diff", "--no-color", "--no-ext-diff", "a", "b"],
+		["diff", "--numstat", "-p"], ["diff", "--stat", "--patch"], ["diff", "--check"], ["diff", "--name-only", "-U3"], ["diff-tree", "-p", "HEAD"], ["diff-tree", "--cc", "HEAD"],
+		["diff-index", "-p", "HEAD"], ["diff-files", "--patch"], ["log", "-p"], ["log", "-pM"], ["log", "--patch"], ["log", "-L1,2:a.txt"], ["log", "-Ssecret"],
+		["log", "-G", "secret"], ["log", "--word-diff"], ["log", "-c"], ["log", "--diff-merges=on"], ["stash", "show", "-p"], ["stash", "list", "-p"],
+		["cat-file", "-p", "HEAD:a.txt"], ["cat-file", "blob", "HEAD:a.txt"], ["cat-file", "--batch"], ["blame", "a.txt"], ["grep", "secret"]]) {
+		assert.equal(classifyGitArgs(args).scope, "sessions:operate", args.join(" "));
+	}
+});
+
 test("POST /api/git runs git without a shell: exit code, base64 output, stdin and allowed env", async () => {
 	const init = await git(operator.token, ["init", "-q", "-b", "main"]);
 	assert.equal(init.status, 200, JSON.stringify(init.body));
@@ -108,7 +125,7 @@ test("POST /api/git runs git without a shell: exit code, base64 output, stdin an
 	assert.notEqual(failing.body.code, 0);
 	assert.match(text(failing.body.stderr), /fatal|Needed a single revision/);
 
-	const big = await git(reader.token, ["log", "-p"]);
+	const big = await git(operator.token, ["log", "-p"]);
 	assert.equal(big.body.truncated, true);
 	assert.equal(Buffer.from(big.body.stdout, "base64").length, 100);
 
@@ -122,6 +139,18 @@ test("POST /api/git runs git without a shell: exit code, base64 output, stdin an
 test("scopes, refusals and validation", async () => {
 	assert.equal((await git(reader.token, ["commit", "-m", "x"])).status, 403);
 	assert.equal((await git(reader.token, ["-c", "color.ui=false", "status"])).status, 403);
+	// Contents need operate; status, branches, the log and changed paths stay readable.
+	for (const args of [["show", "HEAD:a.txt"], ["diff", "HEAD"], ["cat-file", "-p", "HEAD:a.txt"], ["blame", "a.txt"], ["grep", "hello"], ["log", "-p"]]) {
+		const denied = await git(reader.token, args);
+		assert.equal(denied.status, 403, args.join(" "));
+		assert.equal(denied.body.error.code, "forbidden");
+	}
+	assert.equal(text((await git(operator.token, ["show", "HEAD:a.txt"])).body.stdout), "hello\n");
+	for (const args of [["status", "--porcelain"], ["branch", "--show-current"], ["log", "--format=%s"], ["diff", "--numstat", "HEAD"], ["diff-tree", "-r", "--name-status", "HEAD"]]) {
+		const allowed = await git(reader.token, args);
+		assert.equal(allowed.status, 200, args.join(" "));
+		assert.equal(allowed.body.code, 0, `${args.join(" ")}: ${text(allowed.body.stderr)}`);
+	}
 	const refused = await git(operator.token, ["-c", "core.fsmonitor=touch /tmp/pwned", "status"]);
 	assert.equal(refused.status, 400);
 	assert.equal(refused.body.error.code, "git_refused");

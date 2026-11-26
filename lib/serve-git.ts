@@ -1,8 +1,11 @@
 // `POST /api/git` for `gentle-shell serve`: one `git` command in a folder on
 // the server (no shell), with its exit code and output, so a client shows
-// and drives a repository that lives there. Read-only commands need
-// `sessions:read`; anything else `sessions:operate`, which is the server
-// user's own authority. Configuration and arguments that make git run another
+// and drives a repository that lives there. Commands that only read and print
+// no file contents (status, branches, the log, changed paths and line counts)
+// need `sessions:read`; anything else, contents included (`show`, a patch, a
+// blob, `blame`, `grep`), `sessions:operate`, which is the server user's own
+// authority: a device that only watches could otherwise read secrets the
+// repository holds. Configuration and arguments that make git run another
 // program are refused, so a read-only token cannot turn a read into a command.
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -35,12 +38,25 @@ const GLOBAL_WITH_VALUE: Record<string, true> = { "-C": true, "-c": true, "--git
 const BLOCKED_CONFIG = [/^core\.sshcommand$/, /^core\.fsmonitor$/, /^core\.hookspath$/, /^core\.gitproxy$/, /^uploadpack\./, /^alias\./,
 	/^remote\..+\.(uploadpack|receivepack)$/, /^protocol\.ext\.allow$/];
 
-/** Subcommands that only read. */
+/** Subcommands that only read and never print a file's contents. */
 const READ_SUBCOMMANDS: Record<string, true> = {
-	status: true, diff: true, log: true, show: true, "rev-parse": true, "ls-files": true, "for-each-ref": true, "cat-file": true, "ls-tree": true,
-	"rev-list": true, "merge-base": true, blame: true, describe: true, shortlog: true, "name-rev": true, "check-ignore": true, "check-attr": true,
-	grep: true, "show-ref": true, "diff-tree": true, "diff-files": true, "diff-index": true, "count-objects": true, version: true, "ls-remote": true,
+	status: true, "rev-parse": true, "ls-files": true, "for-each-ref": true, "ls-tree": true, "rev-list": true, "merge-base": true, describe: true,
+	shortlog: true, "name-rev": true, "check-ignore": true, "check-attr": true, "show-ref": true, "count-objects": true, version: true, "ls-remote": true,
 };
+
+/** Reads that print commits or changed paths, and contents (a patch) only when asked; `diff` prints one unless told not to. */
+const DIFF_SUBCOMMANDS: Record<string, true> = { log: true, diff: true, "diff-tree": true, "diff-files": true, "diff-index": true };
+
+/** Long options that print file contents (a patch, changed lines) or search them (a read-only token could guess a secret). */
+const CONTENT_OPTIONS = ["--patch", "--patch-with-raw", "--patch-with-stat", "--unified", "--cc", "--dd", "--word-diff", "--word-diff-regex", "--color-words",
+	"--function-context", "--binary", "--check", "--pickaxe-regex", "--pickaxe-all", "--find-object", "--diff-merges", "--remerge-diff", "--ext-diff", "--textconv"];
+
+/** Short options (alone or bundled, `-pM`, `-U5`) that do the same: patch, unified context, combined diffs, -m, -W, -L, -S, -G. */
+const CONTENT_SHORT = /^-[^-]*[pucmWLSGU]/;
+
+/** `diff` options that print paths, counts or nothing instead of its patch. */
+const NO_PATCH_OPTIONS = ["--name-only", "--name-status", "--numstat", "--stat", "--shortstat", "--compact-summary", "--dirstat", "--dirstat-by-file",
+	"--summary", "--raw", "-s", "--no-patch", "--quiet"];
 
 /** Subcommands that talk to a remote and may run up to `networkTimeoutMs`. */
 const NETWORK_SUBCOMMANDS: Record<string, true> = { fetch: true, push: true, clone: true, pull: true, "ls-remote": true, submodule: true };
@@ -111,12 +127,10 @@ function readOnly(subcommand: string, options: readonly string[]): boolean {
 	const flags = options.filter((a) => a.startsWith("-"));
 	const positionals = options.filter((a) => !a.startsWith("-"));
 	const has = (...names: string[]) => flags.some((f) => names.includes(f.split("=", 1)[0]));
-	if (Object.hasOwn(READ_SUBCOMMANDS, subcommand)) {
-		// Reads that would still write a file or start a pager program.
-		if (has("--output")) return false;
-		if (subcommand === "grep" && flags.some((f) => f === "-O" || f.startsWith("-O") || f.startsWith("--open-files-in-pager"))) return false;
-		return true;
-	}
+	if (has("--output")) return false;
+	if (Object.hasOwn(READ_SUBCOMMANDS, subcommand)) return true;
+	const content = has(...CONTENT_OPTIONS) || flags.some((f) => CONTENT_SHORT.test(f));
+	if (Object.hasOwn(DIFF_SUBCOMMANDS, subcommand)) return !content && (subcommand !== "diff" || has(...NO_PATCH_OPTIONS));
 	switch (subcommand) {
 		case "branch":
 			return !has("-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy", "-f", "--force", "--set-upstream-to", "-u", "--unset-upstream",
@@ -132,7 +146,11 @@ function readOnly(subcommand: string, options: readonly string[]): boolean {
 		case "remote":
 			return positionals.length === 0 || positionals[0] === "get-url" || positionals[0] === "show";
 		case "stash":
-			return positionals[0] === "list" || positionals[0] === "show";
+			// `stash show` prints a diffstat, `stash list` the log; either prints a patch when asked.
+			return (positionals[0] === "list" || positionals[0] === "show") && !content;
+		case "cat-file":
+			// An object's type, size or existence; never its contents (`-p`, `blob`, `--batch`).
+			return has("-t", "-s", "-e", "--batch-check") && !has("-p", "--batch", "--batch-command", "--textconv", "--filters");
 		case "worktree":
 			return positionals[0] === "list";
 		case "symbolic-ref":

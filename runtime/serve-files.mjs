@@ -3,7 +3,8 @@
 // mkdir, rename, remove, filename search and change streams, so a client
 // can browse and edit a project that lives on the server. Paths are absolute
 // server paths; every operation runs as the server user, so `sessions:operate`
-// is that user's file authority (the same as a session's own tools).
+// is that user's file authority (the same as a session's own tools): it reads
+// and changes files. `sessions:read` lists, stats, searches names and watches.
 
 import { randomBytes } from "node:crypto";
 import { constants as fsConstants, realpathSync, statSync, watch,                            } from "node:fs";
@@ -117,7 +118,8 @@ export class FileService {
 		switch (op) {
 			case "list": expect("GET"); need(principal, "sessions:read"); await this.list(res, url); return true;
 			case "stat": expect("GET"); need(principal, "sessions:read"); await this.stat(res, url); return true;
-			case "read": expect("GET"); need(principal, "sessions:read"); await this.read(req, res, url); return true;
+			// Contents need `sessions:operate`: a device that only watches would otherwise read secrets (mcp.json, auth.json).
+			case "read": expect("GET"); need(principal, "sessions:operate"); await this.read(req, res, url); return true;
 			case "search": expect("GET"); need(principal, "sessions:read"); await this.search(res, url); return true;
 			case "watch": expect("GET"); this.watch(req, res, url, need(principal, "sessions:read")); return true;
 			case "write": expect("PUT"); need(principal, "sessions:operate"); await this.write(req, res, url); return true;

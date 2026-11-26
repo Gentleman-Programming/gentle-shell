@@ -210,7 +210,7 @@ Stopping the server (`serve stop`, SIGTERM from a service manager, Ctrl+C on a f
 | `DELETE /api/tower` | `sessions:operate` | `{ stopped }`. Stops Tower and closes its forwards. |
 | `GET /api/fs/list?path=` | `sessions:read` | `{ path, entries: [Entry], truncated }`. See [Files on the server](#files-on-the-server). |
 | `GET /api/fs/stat?path=` | `sessions:read` | `Entry & { path, mode, etag?, linkTarget?, realPath? }` |
-| `GET /api/fs/read?path=&offset=&length=` | `sessions:read` | The file's raw bytes. |
+| `GET /api/fs/read?path=&offset=&length=` | `sessions:operate` | The file's raw bytes. |
 | `PUT /api/fs/write?path=[&create_only=1]` | `sessions:operate` | Raw body → `{ path, size, mtime, etag, created }`. |
 | `POST /api/fs/mkdir` | `sessions:operate` | `{ path }` → `{ path, created }` |
 | `POST /api/fs/rename` | `sessions:operate` | `{ from, to, overwrite? }` → `{ from, to }` |
@@ -463,7 +463,7 @@ Errors are mapped from the file system: `404 not_found`, `400 not_a_directory`, 
 
 ### File safety
 
-- **The server user's authority.** These endpoints run as the user the server runs as, with no folder jail: `sessions:read` can read every file that user can read, and `sessions:operate` can change every file that user can change — the same authority a session's own tools (`bash`, `write`) already have. Pair devices accordingly.
+- **The server user's authority.** These endpoints run as the user the server runs as, with no folder jail: `sessions:operate` can read and change every file that user can — the same authority a session's own tools (`bash`, `write`) already have — while `sessions:read` sees names, sizes and changes but never a file's contents (`403 forbidden` on `read`), so a device that only watches cannot read secrets such as `mcp.json` or `auth.json` that the configuration stores mask. Pair devices accordingly.
 - **Refused targets.** `remove` and `rename` refuse (`403 protected_path`) the file system root, the server user's home folder, and every folder above the home. The check runs on the entry itself with its folder's symlinks resolved, so `/home/you/link-to-root/home` is refused like `/home`, while removing `/home/you/link-to-home` removes only the link.
 - **No partial writes.** A write that fails, is cut short or is too large leaves the target untouched and removes its temporary file.
 
@@ -482,10 +482,14 @@ Errors are mapped from the file system: `404 not_found`, `400 not_a_directory`, 
 
 ### git scopes and refusals
 
-A command that only reads needs `sessions:read`; anything else needs `sessions:operate`. The subcommand is the first argument after git's global options (`-C <dir>`, `--no-pager`, `--git-dir=…`, …). Reads are:
+A command that only reads and prints no file contents needs `sessions:read`; anything else needs `sessions:operate` — including reads that print file contents (a patch, a blob, `blame`, `grep`), so a device that only watches cannot read a secret the repository holds. The subcommand is the first argument after git's global options (`-C <dir>`, `--no-pager`, `--git-dir=…`, …). `sessions:read` runs:
 
-- `status`, `diff`, `log`, `show`, `rev-parse`, `ls-files`, `for-each-ref`, `cat-file`, `ls-tree`, `rev-list`, `merge-base`, `blame`, `describe`, `shortlog`, `name-rev`, `check-ignore`, `check-attr`, `grep`, `show-ref`, `diff-tree`, `diff-files`, `diff-index`, `count-objects`, `version`, `ls-remote`, and git with no subcommand (`--version`) — unless they carry `--output` (writes a file) or, for `grep`, `-O`/`--open-files-in-pager` (runs a program);
-- `branch` and `tag` listing (no name, or `--list`/`-l`, `--contains`, `--merged`, `--points-at`, `--show-current`, …, and no flag that creates, deletes, moves or signs); `config --get`/`--get-all`/`--get-regexp`/`--get-urlmatch`/`--list` and `config get`/`config list`; `remote` with no subcommand, `remote get-url` and `remote show`; `stash list`/`show`; `worktree list`; `symbolic-ref` with one name.
+- `status`, `rev-parse`, `ls-files`, `for-each-ref`, `ls-tree`, `rev-list`, `merge-base`, `describe`, `shortlog`, `name-rev`, `check-ignore`, `check-attr`, `show-ref`, `count-objects`, `version`, `ls-remote`, and git with no subcommand (`--version`);
+- `log`, `diff-tree`, `diff-files` and `diff-index` without an option that prints or searches contents: `-p`/`-u`/`--patch` (and `--patch-with-*`), `-U`/`--unified`, `-c`/`--cc`/`--dd`/`-m`/`--diff-merges`/`--remerge-diff`, `--word-diff`/`--color-words`, `-W`/`--function-context`, `--binary`, `--check`, `-L`, `-S`/`-G`/`--pickaxe-*`/`--find-object`, `--ext-diff`, `--textconv` (also bundled, as in `-pM`); `diff` the same, and only with an option that replaces its patch: `--name-only`, `--name-status`, `--numstat`, `--stat`, `--shortstat`, `--compact-summary`, `--dirstat`, `--summary`, `--raw`, `-s`/`--no-patch` or `--quiet`;
+- `cat-file -t`/`-s`/`-e`/`--batch-check` (an object's type, size or existence, never `-p`, `--batch` or a type name);
+- `branch` and `tag` listing (no name, or `--list`/`-l`, `--contains`, `--merged`, `--points-at`, `--show-current`, …, and no flag that creates, deletes, moves or signs); `config --get`/`--get-all`/`--get-regexp`/`--get-urlmatch`/`--list` and `config get`/`config list`; `remote` with no subcommand, `remote get-url` and `remote show`; `stash list`/`show` without a patch option; `worktree list`; `symbolic-ref` with one name.
+
+`show`, `blame` and `grep` always need `sessions:operate`, and so does anything with `--output` (writes a file).
 
 Any `-c`/`--config-env` override makes a command an operation (configuration can make a read run a program). Some configuration and options are refused outright with `400 git_refused`, whatever the scope, because they make git run another program: the keys `core.sshCommand`, `core.fsmonitor`, `core.hooksPath`, `core.gitProxy`, `uploadpack.*`, `alias.*`, `remote.<name>.uploadpack`, `remote.<name>.receivepack` and `protocol.ext.allow` (in `-c`, `--config-env`, and `clone -c`/`--config`); `--exec-path=<dir>`; `--upload-pack`, `--receive-pack` and `--exec` (and `-u` for `clone` and `ls-remote`). Arguments after `--` are paths and never checked as options.
 

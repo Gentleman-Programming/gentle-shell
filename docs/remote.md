@@ -378,7 +378,7 @@ Without `--listen` the server binds `127.0.0.1` only and speaks plain HTTP to th
 - **Store a token in clear.** Device tokens are kept as sha256 hashes; long-lived tokens never go in URLs.
 - **Open a browser or listen beyond what was asked.** Sessions run with `GENTLE_DESIGN_OPEN_BROWSER=0`; forwards listen only while open; discovery listens only on a network bind.
 
-Note what `sessions:read` means: **the file endpoints run as the server user with no folder jail**, so a read-only device can read every file that user can read (SSH keys, provider credentials in the agent home). Pair `sessions:read` only with devices you would let read your home folder; pair `sessions:operate` and `terminal` only with devices you would hand your terminal.
+Note what `sessions:read` means: **the file endpoints run as the server user with no folder jail**, so a read-only device sees the name, size and changes of every file that user can see, and every session's conversation (including what its tools printed). It never reads a file's contents through the file or git endpoints, so secrets the configuration stores mask (`mcp.json`, provider credentials, SSH keys) stay unread. Pair `sessions:read` only with devices you would let watch your sessions; pair `sessions:operate` and `terminal` only with devices you would hand your terminal.
 
 ## Reference
 

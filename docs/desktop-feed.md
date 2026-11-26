@@ -83,7 +83,7 @@ cached as not running stays hidden until a later check succeeds.
 
 A terminal's own pid, or its foreground process, is compared with each session's chain: the publisher's
 `pid`, its `ppid`, and the `ancestors` above `ppid` (nearest first, at most eight; on Windows they come
-from one process-table read). A launcher can therefore sit up to nine hops above the publisher and
+from one process-table read per walk; a read that fails is not cached, so the next session start tries again). A launcher can therefore sit up to nine hops above the publisher and
 still match.
 
 Each session is ranked on its own: the position of the first pid that matches, or, when only

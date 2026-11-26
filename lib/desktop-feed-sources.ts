@@ -86,7 +86,12 @@ export function createWindowsParentOf(
 			try { started = Promise.resolve(read()); } catch (error) { started = Promise.reject(error); }
 			entry.table = started
 				.then((text) => (text === undefined ? new Map<number, number>() : parseProcessTable(text)), () => new Map<number, number>())
-				.then((map) => { entry.doneAt = now(); return map; });
+				.then((map) => {
+					entry.doneAt = now();
+					// A failed or empty read is not worth keeping: the next walk reads again instead of staying blind for the TTL.
+					if (map.size === 0 && cached === entry) cached = undefined;
+					return map;
+				});
 			cached = entry;
 		}
 		return cached.table;
@@ -125,7 +130,7 @@ export function readProcessStartMs(pid: number = process.pid, run: ProcessStartR
 const windowsParentOf = createWindowsParentOf();
 
 /** `ps -o ppid=` for one pid, or the process table on Windows; undefined when unknown (exited, no ps). */
-export const psParentOf: ParentOf = (pid) => process.platform === "win32" ? windowsParentOf(pid) : new Promise((resolve) => {
+export const psParentOf: WalkableParentOf = (pid) => process.platform === "win32" ? windowsParentOf(pid) : new Promise((resolve) => {
 	try {
 		execFile("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 2000, windowsHide: true }, (error, stdout) => {
 			const parent = error ? Number.NaN : Number.parseInt(String(stdout).trim(), 10);
@@ -135,6 +140,9 @@ export const psParentOf: ParentOf = (pid) => process.platform === "win32" ? wind
 		resolve(undefined);
 	}
 });
+
+// On Windows a walk shares one process table (see createWindowsParentOf); `ps` answers one pid per call.
+psParentOf.walk = process.platform === "win32" ? windowsParentOf.walk : undefined;
 
 /** Ancestors above `ppid`, nearest first, stopping at init or after `depth` hops. Never rejects. */
 export async function processAncestors(ppid: number, depth: number, parentOf: ParentOf = psParentOf): Promise<number[]> {

@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { DESKTOP_FEED_LIMITS } from "../lib/desktop-feed.ts";
-import { createWindowsParentOf, processAncestors, psParentOf } from "../lib/desktop-feed-sources.ts";
+import { createWindowsParentOf, processAncestors, psParentOf, type WalkableParentOf } from "../lib/desktop-feed-sources.ts";
 
 // The mods import the host module "herdr", which only exists inside the Herdr app. Load the real
 // snapshot.js with that import pointed at a stub whose agents(), terminals() and panes() come from globals.
@@ -199,4 +199,38 @@ test("should keep ranking by pid a feed that names win32 or no platform on a Win
 	const legacy: Feed = { identity: { pid: 300, sessionId: "b", agentDir: "C:/b" }, updatedAt: "2026-11-21T10:00:00.000Z" };
 	assert.equal(matchFeed({ address: "t1", id: "t1", pid: 200 }, [stamped]), stamped);
 	assert.equal(matchFeed({ address: "t2", id: "t2", pid: 300 }, [legacy]), legacy);
+});
+
+test("should expose the single-table walk on the exported psParentOf on Windows and not elsewhere", () => {
+	const walk = (psParentOf as WalkableParentOf).walk;
+	if (process.platform === "win32") assert.equal(typeof walk, "function", "production ancestry walks read one table");
+	else assert.equal(walk, undefined, "ps answers one pid per call, there is no table to share");
+});
+
+test("should answer the same ancestors through the exported psParentOf walk as hop by hop on Windows", { skip: process.platform !== "win32" }, async () => {
+	const hopByHop: number[] = [];
+	let current = process.ppid;
+	for (let hop = 0; hop < 3; hop++) {
+		const parent = await psParentOf(current);
+		if (parent === undefined) break;
+		hopByHop.push(parent);
+		current = parent;
+	}
+	assert.deepEqual(await processAncestors(process.ppid, 3, psParentOf), hopByHop);
+});
+
+test("should not keep a failed process-table read for the cache lifetime", async () => {
+	let reads = 0;
+	const parentOf = createWindowsParentOf(async () => { if (reads++ === 0) throw new Error("transient powershell failure"); return processTable(NATIVE_TABLE); }, 60_000, () => 0);
+	assert.deepEqual(await processAncestors(500, 8, parentOf), [], "the failed read finds nothing");
+	assert.deepEqual(await processAncestors(500, 8, parentOf), [400, 300, 200, 100, 50], "the next walk reads again instead of reusing the failure");
+	assert.equal(reads, 2);
+});
+
+test("should keep a successful process-table read for the cache lifetime", async () => {
+	let reads = 0;
+	const parentOf = createWindowsParentOf(async () => { reads++; return processTable(NATIVE_TABLE); }, 60_000, () => 0);
+	await processAncestors(500, 8, parentOf);
+	await processAncestors(500, 8, parentOf);
+	assert.equal(reads, 1);
 });

@@ -54,7 +54,8 @@ Measured by turning things off one at a time:
 ## What changed
 
 - **One reader** (`snapshot.js`, byte-identical in every mod): only the status bar's FeedSource
-  (`gentle-status`, always mounted) watches the snapshot folders, reads them and runs `ps`; it
+  (`gentle-status`, always mounted) watches the snapshot folders, reads them and runs `ps`
+  (`tasklist` where `ps` cannot start or does not answer); it
   publishes `gentle-shell.feeds` (`{ digest, at, feeds }`) and then `gentle-shell.feeds.digest`
   in shared state only when the digest (each live session's agent dir, id and `updatedAt`)
   changes. Setting shared state re-renders every mod, so the others have no timer, watch or `ps`:
@@ -70,6 +71,7 @@ Measured by turning things off one at a time:
   least 300 KB and 300 lines, at most 3 MB, so a few huge tool results do not leave three
   messages; "Show earlier messages" reads as much again); a file over 1 MB is read through one
   `sh` (`wc -c` + `tail -c +pos`), which answers "did not grow" without copying the file.
+  Where `sh` cannot start (native Windows, #3352), it is read whole, as a smaller file is.
   hideThinkingBlock is read when the session shows and when one of its two settings files
   changes (a watch on their folders), not on every refresh.
 - **Inspector**: no 1 s timer. Its render sets a 1 s wake-up only while the Jobs tab shows a

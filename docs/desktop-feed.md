@@ -41,8 +41,12 @@ Every live snapshot is a session the desktop shows, wherever it runs: in a
 terminal of the Herdr app window (kind **Herdr**), or in any other terminal —
 the Herdr TUI, Ghostty, a herdr-core terminal this window does not show (kind
 **TUI**). A snapshot counts as live while its publisher's `identity.pid` runs
-(one `ps -p` per refresh for the pids not checked in the last 5 s; without `ps`
-every snapshot counts). A Herdr session takes typed input in its terminal; a TUI
+(one `ps -p` per refresh for the pids not checked in the last 5 s; where `ps`
+cannot start or does not answer, as on Windows, one `tasklist` instead). Only a
+listing that answered decides: `ps` exiting 0, or 1 with nothing on stderr (a pid
+is gone), or `tasklist` exiting 0. A `ps` that rejects its own flags (an MSYS/Git
+`ps` on a Windows `PATH`) decides nothing, and when no listing answers every
+snapshot counts. A Herdr session takes typed input in its terminal; a TUI
 session takes prompts and answers through its inbox (`send_prompt`,
 `answer_question` with `via: "session"`, below). A
 snapshot from an older Gentle Shell without `identity.agentDir` is treated as
@@ -64,10 +68,10 @@ gone or that were not updated for a day. The folder is created `0700` and files
 
 | Field | Content |
 |---|---|
-| `identity` | `sessionId`, exact `sessionFile`, `sessionName`, `cwd`, `realCwd`, `pid`, `ppid`, `ancestors` (nearest first, best effort), `mode`, `agentDir` (absolute agent dir the snapshot lives under), `herdr` (`paneId` from `HERDR_PANE_ID`, `env`) or `null` |
+| `identity` | `sessionId`, exact `sessionFile`, `sessionName`, `cwd`, `realCwd`, `pid`, `ppid`, `ancestors` (nearest first, best effort: `ps` per hop, or on Windows one process-table read per walk; empty when it cannot be read), `mode`, `agentDir` (absolute agent dir the snapshot lives under), `herdr` (`paneId` from `HERDR_PANE_ID`, `env`) or `null` |
 | `project` | `cwd`, `branch`, `dirty` (changed files, `null` before the first scan) |
 | `model` | `id`, `provider`, `effort` (thinking level when the model reasons), `profile` `{ name, tier }` |
-| `persona` | always `null` (no reachable owner yet) |
+| `persona` | the active persona mode (`"gentleman"` or `"neutral"`, read like `/gentle:persona` does), or `null` when it could not be resolved |
 | `context` | `percent`, `tokens`, `window` |
 | `cost` | `total` (session spend), `subscription` |
 | `usage` | what the TUI usage panel (alt+u, `/gentle:usage`) shows, from the same owner: the session's provider at the top level (`provider`, `status`, `plan`, `fetchedAt`, `note`, `limits[]` with `name`, `limitReached` and every `windows[]` entry: `label`, `usedPercent`, `windowSeconds`, `resetAt`), and every provider the panel lists in `providers[]` (the session's own first, then its subagent routes; same fields). `note` is the panel's own words for a provider without windows (`usage arrives with the first response`, `no usage yet · r to fetch`, `fetch failed · r to retry`, `no subscription usage for this provider`), else `null`. `plan` is the plan name the provider reports (Codex does; Anthropic's headers carry none, so it stays `null` there, as in the panel). `null` before the owner answered |

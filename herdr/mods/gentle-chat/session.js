@@ -93,17 +93,24 @@ export function utf8(bytes) {
 // when the file shrank or vanished (start over). A half-written last line waits for the next read.
 // Only the new bytes are decoded and parsed. The runtime has no ranged read and no stat, so the
 // bytes are fetched whole and sliced; `viaExec` (a big file, S13) asks `sh` for the size and the
-// new bytes only instead: one process, no multi-megabyte copy per write.
+// new bytes only instead: one process, no multi-megabyte copy per write. Where `sh` cannot start
+// (native Windows, #3352) the file is fetched whole and sliced after all.
 // `max` caps one slice so a huge first read doesn't stall the UI thread (`more` = call again).
 export async function readAfter(file, pos, max = 2 * 1024 * 1024, viaExec = false) {
-  if (viaExec) return readOutside(file, pos, max);
+  if (viaExec) {
+    const r = await readOutside(file, pos, max);
+    if (r) return r;
+  }
   let bytes;
   try {
     bytes = await readFile(file);
   } catch (e) {
     // Herdr grants mods read access to the home folder only; a session resumed from elsewhere
     // (`gentle-shell --session /tmp/x.jsonl`) is read through `exec` instead.
-    if (OUTSIDE.test(String(e?.message ?? e))) return readOutside(file, pos, max);
+    if (OUTSIDE.test(String(e?.message ?? e))) {
+      const r = await readOutside(file, pos, max);
+      if (r) return r;
+    }
     return { text: null, end: 0, more: false, size: 0 };
   }
   const size = bytes.length;
@@ -168,14 +175,15 @@ export function utf8Length(s) {
 }
 
 // readAfter for a file outside the read roots: its size, then the bytes after `pos`, from one
-// `sh` (the path and numbers are positional arguments, never part of the script).
+// `sh` (the path and numbers are positional arguments, never part of the script). Null when
+// `exec` rejected (Herdr: `sh` could not start, or it timed out).
 async function readOutside(file, pos, max) {
   const cap = Math.max(1, Math.min(max * 3, EXEC_MAX));
   let r;
   try {
     r = await exec("sh", ["-c", 'wc -c < "$2" && tail -c +"$1" "$2" | head -c "$3"', "sh", String(pos + 1), file, String(cap)], { timeout: 15000 });
   } catch {
-    return { text: null, end: 0, more: false };
+    return null;
   }
   const cut = r.stdout.indexOf("\n");
   const size = Number.parseInt(r.stdout.slice(0, cut), 10);

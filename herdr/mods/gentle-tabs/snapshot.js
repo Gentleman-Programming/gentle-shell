@@ -3,7 +3,7 @@
 //
 // CANONICAL COPY, carried byte-identical as `./snapshot.js` by every gentle-* mod that shows
 // snapshot data, gentle-chat included (gpui-shell refuses imports outside a mod's folder).
-// `targetTerminal` mirrors GentleChat.target() so every region shows one session.
+// `targetSession` names the one session every region shows.
 //
 // Gentle Shell runs bundled (agent dir ~/.gentle-shell/agent), as the npm / Pi extension
 // (~/.pi/agent) or with its own home (GENTLE_PI_AGENT_HOME / PI_CODING_AGENT_DIR). Snapshots are
@@ -91,24 +91,38 @@ export async function readFeeds(roots) {
 const positive = (n) => Number.isInteger(n) && n > 0;
 
 // Whether each publisher still runs: one `ps` for the pids not checked in the last ALIVE_MS (a
-// crashed session leaves its snapshot behind until the next session start sweeps it). Without
-// `ps` (Windows) every snapshot counts as live.
+// crashed session leaves its snapshot behind until the next session start sweeps it). Where `ps`
+// cannot start (native Windows) or does not answer, one `tasklist` lists the running pids instead.
+// A listing that did not answer decides nothing: when neither answers, every snapshot counts as live.
 const ALIVE_MS = 5000;
 const alive = new Map(); // pid -> { ok, at }
+
+// `tasklist /NH /FO CSV` rows: "Image Name","PID","Session Name","Session#","Mem Usage".
+export const parseTasklistPids = (stdout) =>
+  new Set([...String(stdout).matchAll(/^"[^"]*","(\d+)"/gm)].map((m) => Number(m[1])));
+
 export async function liveFeeds(feeds) {
   const now = Date.now();
   const want = [...new Set(feeds.map((f) => f.identity?.pid).filter(positive))].filter((pid) => !(now - (alive.get(pid)?.at ?? 0) < ALIVE_MS));
   if (want.length) {
+    let running = null;
     try {
-      // `ps -p` lists the pids that run; it exits 1 when one of them does not.
+      // `ps -p` lists the pids that run; it exits 1 when one of them does not. A `ps` that rejects
+      // its own flags (MSYS/Git `ps` on Windows) also exits 1, but writes why on stderr: no answer.
       const r = await exec("ps", ["-o", "pid=", "-p", want.join(",")], { timeout: 3000 });
-      if (r.code === 0 || r.code === 1) {
-        const running = new Set(String(r.stdout).split(/\s+/).map(Number).filter(positive));
-        for (const pid of want) alive.set(pid, { ok: running.has(pid), at: now });
-      }
+      if (r.code === 0 || (r.code === 1 && !r.stderr)) running = new Set(String(r.stdout).split(/\s+/).map(Number).filter(positive));
     } catch {
-      // no ps: the publisher's own sweep is the only cleanup
+      // `ps` cannot start
     }
+    if (!running) {
+      try {
+        const r = await exec("tasklist", ["/NH", "/FO", "CSV"], { timeout: 3000 });
+        if (r.code === 0) running = parseTasklistPids(r.stdout);
+      } catch {
+        // neither: the publisher's own sweep is the only cleanup
+      }
+    }
+    if (running) for (const pid of want) alive.set(pid, { ok: running.has(pid), at: now });
     if (alive.size > 256) for (const [pid, v] of alive) if (now - v.at > 60000) alive.delete(pid);
   }
   return feeds.filter((f) => alive.get(f.identity?.pid)?.ok !== false);
@@ -305,8 +319,10 @@ export function pickedKey() {
 }
 
 // The session the window is about: the picked one (see selectSession), else the focused Gentle
-// Shell terminal's, else one in the shown tab, else the last one shown (`last`, a session key),
-// else a Herdr one, else the newest snapshot. Mirrors targetTerminal for Herdr terminals.
+// Shell terminal's, else one in the shown tab. A shown Herdr tab with no Gentle Shell session shows
+// none: a Herdr tab or space was chosen, so the window follows it instead of keeping another
+// session. Only with no focused tab: the last one shown (`last`, a session key), else a Herdr one,
+// else the newest snapshot.
 export function targetSession(feeds, last) {
   const all = allSessions(feeds);
   const picked = pickedKey();
@@ -315,18 +331,9 @@ export function targetSession(feeds, last) {
   const f = focused();
   const byAddr = (a) => (a ? all.find((s) => s.terminal?.address === a) : undefined);
   const inTab = agents().filter((a) => isGentle(a.app) && a.tab === f?.tab);
-  return byAddr(f?.agent) ?? byAddr(f?.terminal) ?? byAddr(inTab[0]?.address)
-    ?? (last ? all.find((s) => s.key === last) : undefined) ?? all.find((s) => s.terminal) ?? all[0] ?? null;
-}
-
-// The Gentle Shell terminal the window is about: the focused one, else one in the shown tab,
-// else the last one shown (`last`), else the first. Mirrors GentleChat.target().
-export function targetTerminal(last) {
-  const all = gentleTerminals();
-  const f = focused();
-  const byAddr = (a) => (a ? all.find((t) => t.address === a) : undefined);
-  const inTab = agents().filter((a) => isGentle(a.app) && a.tab === f?.tab);
-  return byAddr(f?.agent) ?? byAddr(f?.terminal) ?? byAddr(inTab[0]?.address) ?? byAddr(last) ?? all[0] ?? null;
+  const here = byAddr(f?.agent) ?? byAddr(f?.terminal) ?? byAddr(inTab[0]?.address);
+  if (here || f?.tab) return here ?? null;
+  return (last ? all.find((s) => s.key === last) : undefined) ?? all.find((s) => s.terminal) ?? all[0] ?? null;
 }
 
 // The live snapshots as the leader published them ({ digest, at, feeds }), and their digest alone:

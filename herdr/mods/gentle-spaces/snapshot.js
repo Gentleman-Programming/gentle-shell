@@ -3,7 +3,7 @@
 //
 // CANONICAL COPY, carried byte-identical as `./snapshot.js` by every gentle-* mod that shows
 // snapshot data, gentle-chat included (gpui-shell refuses imports outside a mod's folder).
-// `targetTerminal` mirrors GentleChat.target() so every region shows one session.
+// `targetSession` names the one session every region shows.
 //
 // Gentle Shell runs bundled (agent dir ~/.gentle-shell/agent), as the npm / Pi extension
 // (~/.pi/agent) or with its own home (GENTLE_PI_AGENT_HOME / PI_CODING_AGENT_DIR). Snapshots are
@@ -320,16 +320,6 @@ export function targetSession(feeds, last) {
   const here = byAddr(f?.agent) ?? byAddr(f?.terminal) ?? byAddr(inTab[0]?.address);
   if (here || f?.tab) return here ?? null;
   return (last ? all.find((s) => s.key === last) : undefined) ?? all.find((s) => s.terminal) ?? all[0] ?? null;
-}
-
-// The Gentle Shell terminal the window is about: the focused one, else one in the shown tab,
-// else the last one shown (`last`), else the first. Mirrors GentleChat.target().
-export function targetTerminal(last) {
-  const all = gentleTerminals();
-  const f = focused();
-  const byAddr = (a) => (a ? all.find((t) => t.address === a) : undefined);
-  const inTab = agents().filter((a) => isGentle(a.app) && a.tab === f?.tab);
-  return byAddr(f?.agent) ?? byAddr(f?.terminal) ?? byAddr(inTab[0]?.address) ?? byAddr(last) ?? all[0] ?? null;
 }
 
 // The live snapshots as the leader published them ({ digest, at, feeds }), and their digest alone:

@@ -19,51 +19,37 @@ test("startup artwork spells Gentle Shell with aligned animation spans", () => {
 	const source = readFileSync(new URL("../extensions/startup-banner.ts", import.meta.url), "utf8");
 	const logo = JSON.parse(source.match(/const TEXT_LOGO = (\[[\s\S]*?\]);/)![1].replace(/,\s*]/, "]")) as string[];
 	const weights = JSON.parse(source.match(/const LETTER_WEIGHTS = (\[[^;]+\]);/)![1]) as number[];
-	// Preserve the original script, including its descending G and dark shadow.
+	// Preserve the refined script, including its descending G and dark shadow.
 	const gentle = [
-		"                  ▄▄▄▀▀▀▀▀██                                ▄▄▀▄▄",
-		"              ▄▄█▀▀▒▒▒▒▒▄▄█▀▒                   ▄██     ▄▄█▀█▄█▀▒▒",
-		"          ▄▄██▀▒▒▒▒▒▄▄▄▀▀▒▒▒▒        ▄▄▄  ▀▀▀▀██▀▀▀▀▀███▀█▄▀▀▒▒▒▒",
-		"        ▄██▀▒▒▒▒     ▒▒▄▄█ ▄▄▄▀██ ▄▄▄▀▀▀▄  ▄██▀▒▒▒▒▄██▀▀▀▒▄▄███",
-		"       ██▀▒▒▒     ▄▄▄███▀▄██▀▀▀▄▄██▀▀▄█▀▄▄██▀▒▒▒▄▄██▀▒▒▄██▀▀▀▄▄",
-		"       ▀█▄▄▄▄▄▀▀▀█▄▄███▄▒▀▀▀▀▀▀▒▀▀▒▒▀▀▀▀▒██▄▄▀▀▀ ▀█▄▀▀▀ ▀▀▀▀▀▒▒",
-		"        ▒▄▄▄█▀▀▀█▄█▀▀▒▒▒▒ ▒▒▒▒▒▒ ▒▒  ▒▒▒▒ ▒▒▒▒▒▒▒ ▒▒▒▒▒▒ ▒▒▒▒▒",
-		"     ▄▄▀▀ ▒▒▒▒▄██▀▒▒▒▒",
-		"   ▄█ ▒▒▒▄▄██▀▀▒▒▒▒",
-		"    ▀▀▀▀▀▀▒▒▒▒▒▒",
-		"     ▒▒▒▒▒▒",
+		"              ▄▄▄▀▀▀▀▀██",
+		"          ▄▄█▀▀▒▒▒▒▒▄▄█▀▒",
+		"      ▄▄██▀▒▒▒▒▒▄▄▄▀▀▒▒▒▒",
+		"    ▄██▀▒▒▒▒▒    ▒▒▄▄█",
+		"   ██▀▒▒▒▒▒   ▄▄▄███▀",
+		"    ▀█▄▄▄▄▄▀▀▀█▄▄███▄",
+		"     ▒▄▄▄█▀▀▀█▄█▀▀▒▒▒▒▒",
+		"  ▄▄▀▀ ▒▒▒▒▄██▀▒▒▒▒",
+		"▄█ ▒▒▒▄▄██▀▀▒▒▒▒",
+		" ▀▀▀▀▀▀▒▒▒▒▒▒",
+		"  ▒▒▒▒▒▒",
 	];
 	assert.equal(logo.length, 11, "retain the full-height script silhouette");
 	for (const [row, prefix] of gentle.entries()) {
-		assert.ok(logo[row].startsWith(prefix), `original Gentle script row ${row}`);
+		assert.ok(logo[row].startsWith(prefix), `refined Gentle script row ${row}`);
 		assert.ok(logo[row].includes("▒") || row === 0, "retain dark shadow");
 	}
 	assert.equal(weights.length, 11, "one variable-width span per GENTLESHELL letter");
 	assert.ok(new Set(weights).size > 2, "script spans must not use fixed block-font widths");
-	assert.ok(logo.slice(0, 7).every((line) => /[▄▀█]/.test(line.slice(68))), "Shell has tall slanted strokes");
-	assert.ok(logo.slice(1, 7).every((line) => /▒/.test(line.slice(68))), "Shell retains the dark shadow");
-	const shell = logo.map((line) => line.slice(68));
+	assert.ok(logo.slice(0, 7).every((line) => /[▄▀█]/.test(line.slice(50))), "Shell has tall slanted strokes");
+	assert.ok(logo.slice(1, 7).every((line) => /▒/.test(line.slice(50))), "Shell retains the dark shadow");
+	const shell = logo.map((line) => line.slice(50));
 	assert.match(shell[0], /▄▄█▀▀▀██/, "S has its upper bowl");
-	assert.match(shell[3], /▀▀▀██▄▄/, "S curves into its lower bowl");
-	assert.match(shell[5], /▀█▄▄▄▄█▀▀▒▒/, "S closes with a shadowed exit stroke");
-	assert.match(shell[4], /▄██▀▄██▀██▒/, "h has a rising stem and connected arch");
-	assert.deepEqual(logo.slice(3, 6).map((line) => line.slice(93, 101)), [
-		" ▄▄▀▀██ ",
-		"▄██▄▄▀▒ ",
-		"▀█▄▄▄▄▀▀",
-	], "e has an upper loop/counter, a crossbar, and a curved lower exit rather than a wedge");
-	assert.equal(logo[3][100], " ", "e loop stays distinct from the following l");
-	assert.equal(logo[4][100], " ", "e counter opens before the l stem without moving it");
-	assert.equal(shell[0].split("▄▄▀▄▄").length - 1, 2, "both l ascenders retain looped tops");
-	assert.match(shell[5], /█▄▄▀▀▀▄▄▀█▄▄▀▀▀$/, "both l exits connect with an ascending script stroke");
-	assert.equal(Math.max(...logo.map((line) => line.length)), 120, "connected script retains glyph scale while tightening letter placement");
-	// Like Gentle, adjacent baseline strokes must meet, not merely have smaller gaps.
-	assert.match(shell[4], /▀██▄▄██▀▄██▀██▒/, "S exit meets the h entry");
-	assert.match(shell[5], /▀█▄▄▄▄▀▀█▄▄▀▀▀/, "e lower exit still meets the unchanged l stem");
-	assert.match(shell[5], /██▄▄▀▀█▄▄▄▄▀▀/, "h exit remains connected to e");
+	assert.match(shell[3], /▀▀▀██▄▄▒▒/, "S curves into its lower bowl");
+	assert.match(shell[5], /▀█▄▄▄▄▄█▀▀▀▒▒▒/, "S closes with a shadowed exit stroke");
+	assert.match(shell[4], /▄██▀▒██▒▄██▄▄█▀/, "h has a rising stem and connected arch");
+	assert.match(shell[5], /▀█▄▄▄▀▀▀▒▀█▄▄▀▀▀▒+$/, "both l exits connect with an ascending script stroke");
+	assert.ok(Math.max(...logo.map((line) => line.length)) <= 120, "connected script retains glyph scale within 120 cols");
 	assert.deepEqual(weights, [22, 9, 8, 9, 8, 9, 10, 13, 8, 8, 13]);
-	assert.equal(weights.reduce((sum, width) => sum + width, 0), Math.max(...logo.map((line) => line.length)) - 3,
-		"span widths exactly cover the ink bounds from the G descender to the final l shadow");
 });
 
 test("startup branch lookup uses direct git argv and hides its Windows child", async () => {

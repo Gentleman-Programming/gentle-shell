@@ -84,16 +84,19 @@ sequenceDiagram
     App->>App: UDP broadcast {"t":"gentle-shell/discover","v":1}<br/>to 255.255.255.255 and each subnet, ports 8787-8796
     S-->>App: unicast {"t":"gentle-shell/here","v":1,"id":"srv_…","n":"linux-box","p":8787}
     Note over App: collect replies for about 1.5 s
-    App->>S: GET http://REPLY_SOURCE_IP:8787/.well-known/gentle-shell
-    S-->>App: { serverId: "srv_…", name, protocol, version }
-    Note over App: keep only replies whose serverId matches,<br/>several servers: the person picks one
+    App->>S: GET https://REPLY_SOURCE_IP:8787/.well-known/gentle-shell
+    S-->>App: { serverId: "srv_…", name, protocol, version, tls: true, fp }
+    Note over App: keep only replies whose serverId matches and whose<br/>certificate fingerprint equals fp, several servers: the person picks one
+    App->>S: POST /api/pair/proof { nonce }
+    S-->>App: { proofs: one HMAC per live code, keyed by scrypt of the code and fp }
+    Note over App: send the code only if a proof matches it<br/>and the fingerprint seen in the TLS handshake
     App->>S: POST /api/pair { code, name }
     S-->>App: 201 { id: "dev_…", scopes, token: "gss_…" } (shown once)
-    Note over App: stores the server URL and the token,<br/>every later request carries Authorization: Bearer gss_…
+    Note over App: pins the fingerprint, stores the server URL and the token,<br/>every later request carries Authorization: Bearer gss_…
 ```
 
-- **Identity before secrets.** The pairing code is sent only to an address whose `/.well-known/gentle-shell` names the `serverId` the discovery reply (or the connection code) announced. A device on the network that answers discovery with a forged reply still has to serve the matching identity at that address. The `serverId` is minted once per agent home (`<home>/serve/server-id`) and stays the same across restarts and upgrades, so the app recognises the server it paired with.
-- **When discovery does not reach** (another subnet, a tailnet, a Wi-Fi with client isolation, UDP blocked), the long `gsc1.…` code carries the `serverId`, the port, up to 8 addresses to try and the pairing code. The app probes every address in parallel and pairs at the first whose identity matches.
+- **Identity before secrets.** The pairing code is sent only to an address whose `/.well-known/gentle-shell` names the `serverId` the discovery reply (or the connection code) announced, over TLS to the certificate that answer names. With the short code the app also asks for a **pairing proof** first: for each live code the server answers `HMAC(scrypt(code, fingerprint), fingerprint ‖ nonce)` for the app's random nonce, and the app sends its code only when one proof matches it and the fingerprint it saw in the handshake. A device that answers discovery with a forged reply has neither the code nor the server's key, so it can neither prove the code nor stand in the middle. The `serverId` is minted once per agent home (`<home>/serve/server-id`) and stays the same across restarts and upgrades, so the app recognises the server it paired with.
+- **When discovery does not reach** (another subnet, a tailnet, a Wi-Fi with client isolation, UDP blocked), the long `gsc1.…` code carries the `serverId`, the port, up to 8 addresses to try, the pairing code, the certificate fingerprint (`fp`, pinned directly) and, when the server uses one, its relay (`r`). The app probes every address in parallel and pairs at the first whose identity and certificate match; with a relay it also tries the server through it ([Outside the network](#outside-the-network-the-relay)).
 - **Manual pairing.** `gentle-shell serve pair` mints a code for a server on loopback, reached through an SSH tunnel ([Reach it from the Mac](serve.md#4-reach-it-from-the-mac)).
 
 ## Session lifecycle
@@ -320,7 +323,7 @@ The control session is a session like the others under the hood: the same launch
 
 | Actor | Can | Cannot |
 | --- | --- | --- |
-| Someone on the same network, not paired | See that a server exists (discovery reply and `/.well-known/gentle-shell`: server id, hostname, port, version). Try pairing codes, rate-limited. On plain HTTP, read and alter traffic they can intercept (see [LAN plain HTTP](#lan-plain-http)). | Call any endpoint other than the identity and pairing. Guess a pairing code: 40 random bits, 5 minutes, single use, 10 failures per minute pause pairing for everyone. |
+| Someone on the same network, not paired | See that a server exists (discovery reply and `/.well-known/gentle-shell`: server id, hostname, port, version, certificate fingerprint). Try pairing codes, rate-limited. Only with `--no-tls`: read and alter traffic they can intercept (see [TLS on the network](#tls-on-the-network)). | Call any endpoint other than the identity, the pairing proof and pairing. Guess a pairing code: 40 random bits, 5 minutes, single use, 10 failures per minute pause pairing for everyone. Read or alter the traffic of a paired device (TLS to a pinned certificate). |
 | A web page in a browser on any device | Nothing against the API. | Send requests with an `Origin` other than the server's own (refused before auth); ride a token (tokens are never cookies); use DNS rebinding (the `Host` header must name this server). Use a forward's cookie from another origin (`Origin` checked per forward; `SameSite=Strict`). |
 | A paired device | What its scopes allow ([table below](#scopes)), as the server user. | Act as another device: register tools or context under another id, answer another device's host tool calls, see or drive another device's terminals or forwards (without `admin`). |
 | A revoked device | Nothing: its token, tickets, streams, forwards, terminals and pending host tool calls end at once. | — |
@@ -353,15 +356,19 @@ Every request is authorized on its own, by the device token's scopes; `/rpc` and
 ### Host and Origin rules
 
 - **`Host`** must name this server and its port (`421 bad_host`): loopback names for a loopback bind; the bound address otherwise; for `0.0.0.0`/`::`, any IP literal or the machine's own hostname (also `<hostname>.local`). Any other DNS name only when the operator adds it exactly with `--allow-host <name>` (for example a tailnet MagicDNS name). This blocks DNS rebinding.
-- **`Origin`**, when present, must be `http://<Host>` (`403 forbidden_origin`), checked before authentication, pairing included. Native clients and curl send none.
+- **`Origin`**, when present, must be `http://<Host>` or `https://<Host>` (`403 forbidden_origin`), checked before authentication, pairing included. Native clients and curl send none.
 - **Forwards** apply the same `Host` rule to their own port and accept only their own origin, so one forwarded page cannot drive another forward's page with its cookie.
 - **Headers** on every API answer: `Cache-Control: no-store`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`. No CORS headers.
 
-### LAN plain HTTP
+### TLS on the network
 
-Without `--listen` the server binds `127.0.0.1` only, and remote use goes through `ssh -L`, which encrypts everything. `serve share` (or any non-loopback `--listen`) serves **plain HTTP** on the network: the pairing code, the device token, prompts, file contents and terminal keystrokes cross the network unencrypted. Anyone who can capture that traffic can take the token and act as the device until it is revoked.
+Without `--listen` the server binds `127.0.0.1` only and speaks plain HTTP to this machine. A network server (`serve share`, or any non-loopback `--listen`) speaks **HTTPS** with a self-signed ECDSA P-256 certificate it makes on first run (`<home>/serve/tls/`, key `0600`); clients pin its SHA-256 fingerprint at pairing and refuse any other certificate afterwards. Plain HTTP from another machine gets `400 tls_required`; connections from the server machine itself may still use plain HTTP. Changing the certificate (deleting `tls/`) makes every paired device pair again.
 
-**Recommendation:** use `serve share` only on a network you trust — your home network, or a tailnet (which encrypts at its own layer). On shared, office or public networks, keep the default loopback bind and use the SSH tunnel. Revoke a device you no longer use. TLS on the LAN is the first item in [next steps](#known-limits-and-next-steps).
+`--no-tls` serves plain HTTP on the network, printed as a warning: the pairing code, the device token, prompts, file contents and terminal keystrokes then cross the network unencrypted. Use it only where the network encrypts by itself (a tailnet); otherwise keep TLS or the SSH tunnel.
+
+### Outside the network: the relay
+
+`gentle-shell relay --listen <host>:<port>` is a small self-hostable rendezvous (a VPS, any machine both sides reach). A server started with `--relay gsr://<host>:<port>` keeps one outbound control connection to it, authenticated with a shared secret (`<home>/serve/relay-secret`, `0600`, or `GENTLE_SHELL_RELAY_SECRET`). A client asks the relay for a server by its certificate fingerprint; the relay asks that server to open one more outbound connection and splices the two TCP streams. TLS runs end to end between the client and `serve`, pinned to the fingerprint, so the relay only sees ciphertext and logs byte counts. `--relay` cannot be combined with `--no-tls`. Details: [Relay](serve.md#4-reach-it-from-the-mac).
 
 ### What the server never does
 
@@ -450,7 +457,7 @@ Every error is `{ "error": { "code", "message" } }`. The codes a client meets mo
 
 ## Known limits and next steps
 
-- **TLS / encrypted LAN.** The network server is plain HTTP. Next: TLS with a certificate pinned at pairing (the connection code can carry its fingerprint), so `serve share` is safe on any network. Until then, the SSH tunnel or a tailnet.
-- **Outside the LAN, and mobile.** Discovery and the connection code reach the same network or a tailnet only. Next: an optional relay for devices outside the network, with push notifications for a phone when a turn ends or a dialog waits.
+- **Certificates.** The certificate is self-signed and pinned; there is no rotation command and no CA-signed option. A new certificate means pairing again.
+- **Mobile.** No push notifications yet for a phone when a turn ends or a dialog waits; the relay covers reachability only.
 - **`serve share --always`** (start at login) is Linux and macOS only.
 - **Narrower scopes.** No folder jail and no separate `fs:read`/`fs:write` scopes yet; see [Not done yet](serve.md#not-done-yet) for the rest (WebSocket transport, native Desktop RPC frames, idle unload and crash resume).

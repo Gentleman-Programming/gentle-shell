@@ -317,7 +317,7 @@ export function startServeServer(options                    )                   
 			maxLineBytes: options.sessionLimits?.maxLineBytes ?? SERVE_SESSION_LIMITS.maxLineBytes,
 		});
 		const session = new ServeSession({ snapshot, ring, link, reattached, ...(asControl ? controlHooks(id) : sessionHooks(id)) });
-		if (asControl) adoptControl(session);
+		if (asControl) adoptControl(session, reattached);
 		else sessions.set(id, session);
 		return session;
 	};
@@ -364,9 +364,12 @@ export function startServeServer(options                    )                   
 
 	// The control session: a session in the server user's home folder that answers `/api/desktop` (Desktop RPC
 	// without a session of the client's own) and never takes a model turn. Started on first use, kept while
-	// requests or event streams use it, stopped after `controlIdleMs` without either. Its keeper outlives the
-	// server like any session's; `<keeper dir>/control` names it, so the next server takes it back as the
-	// control session. It is not listed, not counted against `maxSessions`, and not reachable by id.
+	// requests or event streams use it, stopped after `controlIdleMs` without either. It holds no user state and
+	// must run this server's code (a restart after `git pull` or an upgrade must not answer with the old one), so
+	// it ends with its server, unlike the listed sessions: the close stops it, and one a previous server left
+	// running (a crash, or a server from before this rule) is stopped through its keeper at start, never taken
+	// back. `<keeper dir>/control` names it. It is not listed, not counted against `maxSessions`, and not
+	// reachable by id.
 	const controlFile = join(keeperDir, "control");
 	let control                          ;
 	let controlStarting                                   ;
@@ -399,15 +402,27 @@ export function startServeServer(options                    )                   
 		},
 	});
 
-	const adoptControl = (session              ) => {
+	/** A control session a server started (`reattached` false) takes over; one a previous server left is stopped. */
+	const adoptControl = (session              , reattached         ) => {
 		// A keeper whose session ended while no server ran: its end is collected, and it is forgotten.
 		if (session.state !== "running") {
 			forgetControlId(session.id);
 			removeKeeperRecord(keeperDir, session.id);
 			return;
 		}
+		// It runs the code of the server that started it, maybe not this one's: the next use starts a fresh one.
+		if (reattached) return retireControl(session, "left by a previous server");
 		control = session;
 		armControlIdle();
+	};
+
+	/** Stops a control session, out of reach at once so no request lands on it meanwhile; its exit forgets it. The server's close waits for it. */
+	const retireControl = (session              , why        ) => {
+		if (control === session) control = undefined;
+		log(`[${session.id}] control session ${why}: stopping`);
+		const stopping = session.stop().catch(() => undefined);
+		const before = controlStopping;
+		controlStopping = before ? Promise.all([before, stopping]).then(() => undefined) : stopping;
 	};
 
 	/** Stops the control session after `controlIdleMs` with no request in flight and no open stream. */
@@ -419,10 +434,7 @@ export function startServeServer(options                    )                   
 		controlIdle = setTimeout(() => {
 			controlIdle = undefined;
 			if (control !== session || closing || session.subscriberCount > 0 || controlInFlight > 0) return;
-			// Out of reach at once, so no request lands on it while it stops; its exit forgets it.
-			control = undefined;
-			log(`[${session.id}] control session idle: stopping`);
-			controlStopping = session.stop().catch(() => undefined);
+			retireControl(session, "idle");
 		}, limits.controlIdleMs);
 		controlIdle.unref();
 	};
@@ -465,7 +477,7 @@ export function startServeServer(options                    )                   
 			if (record.state === "running" || keeperAlive(record.keeperPid)) {
 				try {
 					const session = await attachSession(record.id, record.token, true, asControl);
-					log(`[${record.id}] reattached${asControl ? " as the control session" : ""} (seq ${session.seq}, ${session.state})`);
+					if (!asControl) log(`[${record.id}] reattached (seq ${session.seq}, ${session.state})`);
 					return;
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
@@ -1087,16 +1099,15 @@ export function startServeServer(options                    )                   
 				terminals?.closeAll();
 				await towerStarting?.catch(() => undefined);
 				await stopTower();
-				// The control session goes the way the others go; one starting now is attached before that.
+				// The control session ends with its server, whatever becomes of the others; one starting now is attached before that.
 				clearTimeout(controlIdle);
 				await controlStarting?.catch(() => undefined);
-				const controlSession = control;
+				if (control) retireControl(control, "ends with the server");
 				// Sessions keep running for the next server unless asked to end, or when no later server could find them.
 				if (keepSessions && closeOptions?.endSessions !== true) {
 					for (const s of sessions.values()) s.detach();
-					controlSession?.detach();
 				} else {
-					await Promise.all([...sessions.values(), ...(controlSession ? [controlSession] : [])].map((s) => s.stop()));
+					await Promise.all([...sessions.values()].map((s) => s.stop()));
 				}
 				await controlStopping;
 				if (!keepSessions) removePrivateKeeperDir(keeperDir);

@@ -33,6 +33,7 @@ import {
 	buildPiInvocation,
 	checkPiVersion,
 	decideTakeOver,
+	declaredPackageSkewMessage,
 	describeSetupCheck,
 	describeSetupCheckError,
 	describeVersion,
@@ -2311,8 +2312,23 @@ async function main() {
 	if (!versionCheck.ok && !managedSelfUpdate) fail(versionCheck.message, 1);
 
 	if (args.version) {
+		let declaredGentlePiVersion;
+		// The JSON surface keeps exactly its existing fields; only the plain
+		// report gains the optional declaration-skew line.
+		if (args.json !== true) {
+			let settingsText;
+			try {
+				settingsText = readJsonIfExists(join(home.dir, "settings.json"));
+			} catch {
+				// This declaration is optional: an unreadable settings file (EACCES,
+				// EISDIR, ...) is absent for the plain report, not a --version failure.
+				settingsText = undefined;
+			}
+			const versionDeclaration = findGentlePiDeclaration(settingsText, { agentDir: home.dir, readPackageName });
+			if (versionDeclaration?.kind === "npm") declaredGentlePiVersion = versionDeclaration.version;
+		}
 		const describe = args.json === true ? describeVersionJson : describeVersion;
-		process.stdout.write(`${describe({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home })}\n`);
+		process.stdout.write(`${describe({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home, declaredGentlePiVersion })}\n`);
 		process.exit(0);
 	}
 
@@ -2498,6 +2514,21 @@ async function main() {
 			realDeclaredDir,
 			packageRootExplicit: home.mode === "link" && packageRootExplicit,
 		});
+		// Without a take-over Pi loads the home's own package. If it is
+		// installed, that version is what loads; the pin alone is only a
+		// fallback. A stale copy left by a failed upgrade is worth naming once.
+		let installedVersion;
+		try {
+			const installedText = readJsonIfExists(join(home.dir, "npm", "node_modules", "gentle-pi", "package.json"));
+			if (installedText !== undefined) {
+				const installedPkg = JSON.parse(installedText);
+				if (typeof installedPkg?.version === "string") installedVersion = installedPkg.version;
+			}
+		} catch {
+			installedVersion = undefined;
+		}
+		const skewMessage = declaredPackageSkewMessage({ declaration, homeDir: home.dir, bundledVersion: ownPackageVersion(), installedVersion, takeOver });
+		if (skewMessage !== undefined) process.stderr.write(skewMessage);
 		if (takeOver) {
 			const skip = declaration ?? { kind: "path", dir: realEffectivePackageRoot };
 			const injections = otherPackageInjections({ settingsText, agentDir: home.dir, skip, isDirectory, realpath: safeRealpath });

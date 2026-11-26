@@ -15,7 +15,9 @@ import {
 	checkPeerVersionPin,
 	checkPiVersion,
 	decideTakeOver,
+	declaredPackageSkewMessage,
 	describeVersion,
+	describeVersionJson,
 	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
 	forceJsonFieldIfAbsentInOriginal,
@@ -978,7 +980,16 @@ test("findGentlePiDeclaration detects a bare npm:gentle-pi string entry", () => 
 
 test("findGentlePiDeclaration detects a versioned npm:gentle-pi string entry", () => {
 	const result = findGentlePiDeclaration('{"packages":["npm:gentle-pi@3.3.0"]}', { agentDir: "/agent", readPackageName: () => undefined });
-	assert.deepEqual(result, { kind: "npm" });
+	assert.deepEqual(result, { kind: "npm", version: "3.3.0" });
+});
+
+test("findGentlePiDeclaration records no version for a range, dist-tag or short spec", () => {
+	for (const spec of ["npm:gentle-pi@^3.3.0", "npm:gentle-pi@~3.3.0", "npm:gentle-pi@latest", "npm:gentle-pi@3.3"]) {
+		const result = findGentlePiDeclaration(JSON.stringify({ packages: [spec] }), { agentDir: "/agent", readPackageName: () => undefined });
+		assert.deepEqual(result, { kind: "npm" }, spec);
+	}
+	const bare = findGentlePiDeclaration('{"packages":["npm:gentle-pi"]}', { agentDir: "/agent", readPackageName: () => undefined });
+	assert.deepEqual(bare, { kind: "npm" });
 });
 
 test("findGentlePiDeclaration detects a bare npm:gentle-pi object source entry", () => {
@@ -2154,6 +2165,56 @@ test("describeVersion formats the three-line report with a found pi version", ()
 test("describeVersion reports pi as not found when no pi version is available", () => {
 	const text = describeVersion({ gentlePiVersion: "3.3.0", piVersion: undefined, home: isolatedHomeResolved });
 	assert.equal(text, "gentle-shell 3.3.0\npi not found\nhome isolated /gentle-shell/agent");
+});
+
+test("describeVersion appends one skew line only when an exact declaration differs from the bundle", () => {
+	const matching = describeVersion({ gentlePiVersion: "5.0.0", piVersion: "1.5.2", home: linkHome, declaredGentlePiVersion: "5.0.0" });
+	assert.equal(matching, "gentle-shell 5.0.0\npi 1.5.2\nhome link /pi/agent");
+	const skewed = describeVersion({ gentlePiVersion: "5.0.0", piVersion: "1.5.2", home: linkHome, declaredGentlePiVersion: "4.6.0" });
+	assert.equal(skewed, "gentle-shell 5.0.0\npi 1.5.2\nhome link /pi/agent\ngentle-pi 4.6.0 (declared) — this launcher ships 5.0.0");
+	assert.equal(skewed.split("\n").length, 4);
+});
+
+test("describeVersionJson keeps its single JSON line and existing fields", () => {
+	const text = describeVersionJson({ gentlePiVersion: "5.0.0", piVersion: "1.5.2", home: linkHome });
+	assert.equal(text.split("\n").length, 1);
+	assert.deepEqual(JSON.parse(text), {
+		schema: "gentle-shell.version/v1",
+		gentleShell: "5.0.0",
+		pi: "1.5.2",
+		home: { mode: "link", dir: "/pi/agent" },
+	});
+	assert.doesNotMatch(text, /declared|ships/);
+});
+
+test("declaredPackageSkewMessage names a differing pin, but stays silent for a match, an unpinned spec, no declaration and a path declaration", () => {
+	const base = { homeDir: "/pi/agent", bundledVersion: "5.0.0" };
+	assert.equal(
+		declaredPackageSkewMessage({ ...base, declaration: { kind: "npm", version: "4.6.0" } }),
+		"gentle-shell: /pi/agent declares gentle-pi 4.6.0, but this launcher ships 5.0.0; the declared package is what pi loads (settings unchanged).\n",
+	);
+	for (const declaration of [
+		{ kind: "npm", version: "5.0.0" },
+		{ kind: "npm" },
+		undefined,
+		{ kind: "path", dir: "/checkout" },
+	] as const) {
+		assert.equal(declaredPackageSkewMessage({ ...base, declaration }), undefined, JSON.stringify(declaration));
+	}
+});
+
+test("declaredPackageSkewMessage prefers the installed version over the pin and stays silent on a take-over", () => {
+	const base = { homeDir: "/pi/agent", bundledVersion: "5.0.0", declaration: { kind: "npm", version: "4.7.0" } as const };
+	assert.equal(
+		declaredPackageSkewMessage({ ...base, installedVersion: "4.6.0" }),
+		"gentle-shell: /pi/agent loads gentle-pi 4.6.0, but this launcher ships 5.0.0; the installed package is what pi loads (settings unchanged).\n",
+	);
+	assert.equal(declaredPackageSkewMessage({ ...base, installedVersion: "5.0.0" }), undefined);
+	assert.equal(declaredPackageSkewMessage({ ...base, installedVersion: "4.6.0", takeOver: true }), undefined);
+	assert.equal(
+		declaredPackageSkewMessage({ ...base, installedVersion: undefined }),
+		"gentle-shell: /pi/agent declares gentle-pi 4.7.0, but this launcher ships 5.0.0; the declared package is what pi loads (settings unchanged).\n",
+	);
 });
 
 test("helpText documents the launcher flags, the home subcommand, the env vars, and passthrough forwarding", () => {

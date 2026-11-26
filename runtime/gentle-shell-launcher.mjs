@@ -755,6 +755,19 @@ function npmSourceDeclaresGentlePi(source        )          {
 	return source === "npm:gentle-pi" || source.startsWith("npm:gentle-pi@");
 }
 
+// Only a bare `X.Y.Z` can be compared safely with the launcher's own version:
+// a range (`^4.6.0`), a short spec (`4.6`) or a dist-tag (`latest`) never
+// makes an exact claim, so reporting skew from one would be a false alarm.
+const EXACT_SEMVER_PATTERN = /^\d+\.\d+\.\d+$/;
+
+function declaredNpmVersion(source        )                     {
+	if (!npmSourceDeclaresGentlePi(source)) return undefined;
+	const versionAt = source.indexOf("@", "npm:gentle-pi".length);
+	if (versionAt === -1) return undefined;
+	const version = source.slice(versionAt + 1);
+	return EXACT_SEMVER_PATTERN.test(version) ? version : undefined;
+}
+
 // npm:<name> or npm:<name>@<version>, tolerating a scoped `@scope/name`: only
 // the first `@` *after* the leading scope marker starts a version suffix.
 function npmPackageName(source        )         {
@@ -886,7 +899,10 @@ export function findGentlePiDeclaration(settingsText                    , opts  
 		const source = entrySource(entry);
 		if (source === undefined) continue;
 		const kind = packageSourceKind(source);
-		if (kind === "npm" && npmSourceDeclaresGentlePi(source)) return { kind: "npm" };
+		if (kind === "npm" && npmSourceDeclaresGentlePi(source)) {
+			const version = declaredNpmVersion(source);
+			return version === undefined ? { kind: "npm" } : { kind: "npm", version };
+		}
 		if (kind === "path") {
 			const dir = resolvePath(opts.agentDir, source);
 			if (opts.readPackageName(dir) === "gentle-pi") return { kind: "path", dir };
@@ -1448,12 +1464,46 @@ export function forceJsonFieldIfAbsentInOriginal(originalText        , currentTe
 
 
 
+
+
+
+
 export function describeVersion(input                      )         {
-	return [
+	const lines = [
 		`gentle-shell ${input.gentlePiVersion}`,
 		`pi ${input.piVersion ?? "not found"}`,
 		`home ${input.home.mode} ${input.home.dir}`,
-	].join("\n");
+	];
+	if (input.declaredGentlePiVersion !== undefined && input.declaredGentlePiVersion !== input.gentlePiVersion) {
+		lines.push(`gentle-pi ${input.declaredGentlePiVersion} (declared) — this launcher ships ${input.gentlePiVersion}`);
+	}
+	return lines.join("\n");
+}
+
+
+
+
+
+
+
+
+
+
+
+// One-line notice for a home whose own settings keep loading a gentle-pi
+// other than this launcher's. Only an npm declaration makes Pi load a package
+// from that home: without it (or with a path declaration) any installation
+// left on disk is not what Pi loads, and naming it would be a false claim.
+export function declaredPackageSkewMessage(input                          )                     {
+	if (input.takeOver === true) return undefined;
+	if (input.declaration?.kind !== "npm") return undefined;
+	if (input.installedVersion !== undefined) {
+		if (input.installedVersion === input.bundledVersion) return undefined;
+		return `gentle-shell: ${input.homeDir} loads gentle-pi ${input.installedVersion}, but this launcher ships ${input.bundledVersion}; the installed package is what pi loads (settings unchanged).\n`;
+	}
+	const declaredVersion = input.declaration.version;
+	if (declaredVersion === undefined || declaredVersion === input.bundledVersion) return undefined;
+	return `gentle-shell: ${input.homeDir} declares gentle-pi ${declaredVersion}, but this launcher ships ${input.bundledVersion}; the declared package is what pi loads (settings unchanged).\n`;
 }
 
 // `--version --json`: one `gentle-shell.version/v1` JSON line with the same

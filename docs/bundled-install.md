@@ -138,7 +138,7 @@ Observed with pnpm 11.1.1:
    - downloads our pinned Node and pnpm into a temporary prefix (with Go on Windows);
    - installs the exact pair with `installVersion` (`--frozen-lockfile`);
    - switches `current` and writes the launcher;
-   - requires `gentle-shell --version` to report exactly `gentle-shell <shell>` and `pi <pi>`.
+   - requires the first two lines of `gentle-shell --version` to be `gentle-shell <shell>` and `pi <pi>`. A plain `--version` can add one more line when the home's npm declaration pins a different gentle-pi; `checkLauncher` does not inspect lines beyond those two.
 
    On Windows a fresh temporary folder stands in for the private-folder claim, which has its own native tests. The launcher runs in `pnpmEnvironment`, the environment our pnpm ran in, without any `PI_*` or `GENTLE_*` variable. So no host `NODE_OPTIONS`, `NODE_PATH`, npm or pnpm setting, or Pi override reaches it.
 3. **`distribution-assets`** runs only after every verify lane passed. It attaches both files to the release with `gh release upload --clobber`.
@@ -379,7 +379,7 @@ Ctrl+C cancels opening (exit 130). No update runs without explicit confirmation.
 2. When that release is the active version, the command says it is already current and changes nothing.
 3. Otherwise `ensureRuntime` runs (with Go on Windows), and `installVersion` installs the release in place beside the active version. If the active Pi is newer than the release's verified Pi, Shell keeps that Pi and warns that it installs without the release's lockfile. The release lockfile is used only for its exact pair.
 4. The new version's own `scripts/bundled-install.mjs` is loaded, only from that freshly installed folder, and only when its real path stays inside it. Its `prefixLayout`, `ensureRuntime` and `ensureLauncher` must all be functions; otherwise the upgrade stops. Its `ensureRuntime` installs that release's pinned Node and pnpm beside ours when the pins moved, and reuses them otherwise.
-5. The new version's launcher must print exactly `gentle-shell <shell>` and `pi <pi>`. It runs with the release's Node, in the pnpm environment, with no `GENTLE_*` or `PI_*` overrides. It runs in bundled mode for that version, with its exact Pi: the only extra variable, `GENTLE_SHELL_VERIFY_VERSION=<id>`, makes `resolveBundledInstall` treat that id as current. The launcher honors it for `--version` only, and never passes it to a child. A `pi` on `PATH` cannot pass this check.
+5. The new version's launcher must print `gentle-shell <shell>` and `pi <pi>` as its first two lines under `--version`; `checkLauncher` ignores any later line (including the declared-version skew line). It runs with the release's Node, in the pnpm environment, with no `GENTLE_*` or `PI_*` overrides. It runs in bundled mode for that version, with its exact Pi: the only extra variable, `GENTLE_SHELL_VERIFY_VERSION=<id>`, makes `resolveBundledInstall` treat that id as current. The launcher honors it for `--version` only, and never passes it to a child. A `pi` on `PATH` cannot pass this check.
 6. Only then does `current` switch (`activateVersion`, one rename), and the release's own `ensureLauncher` writes the launcher for its Node. If the launcher cannot be written, `current` switches back and the command fails.
 7. `pruneVersions(layout, 2)` keeps the new version and the previous one. If pruning fails, the upgrade still succeeds and prints a warning.
 

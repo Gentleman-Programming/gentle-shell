@@ -224,6 +224,24 @@ function run(env: NodeJS.ProcessEnv, args: string[], options: { cwd?: string } =
 	return spawnSync(process.execPath, [binPath, ...args], { encoding: "utf8", env, ...options });
 }
 
+// The shebang .mjs fixture cannot be spawned directly by Windows (EFTYPE).
+// Reuse the platform helper's .cmd shim so these focused tests exercise the
+// same planSpawn path on every host instead of inheriting that host failure.
+function runnableFixture(t: test.TestContext) {
+	const f = fixture(t);
+	return { ...f, env: { ...f.env, GENTLE_SHELL_PI: writePathPiScript(f.root, "1.2.0") } };
+}
+
+function declaredVersion(bundled: string): string {
+	return bundled === "4.6.0" ? "4.5.0" : "4.6.0";
+}
+
+function installGentlePi(agentDir: string, version: string) {
+	const dir = join(agentDir, "npm", "node_modules", "gentle-pi");
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "gentle-pi", version }));
+}
+
 // Herdr tests model terminal/socket metadata only: no socket is opened and the
 // real managed bridge is never imported. The fake pi records launch resources.
 function herdrFixture(t: test.TestContext) {
@@ -1031,6 +1049,152 @@ test("--version prints three lines", (t) => {
 	assert.match(lines[0], /^gentle-shell /);
 	assert.match(lines[1], /^pi 1\.2\.0$/);
 	assert.match(lines[2], /^home isolated /);
+});
+
+test("--version appends one skew line for a differing exact npm pin", (t) => {
+	const f = runnableFixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+	const bundled = ownGentlePiVersion();
+	const pin = declaredVersion(bundled);
+	const settingsPath = join(piAgentDir, "settings.json");
+	const settingsText = JSON.stringify({ packages: [`npm:gentle-pi@${pin}`] });
+	writeFileSync(settingsPath, settingsText);
+
+	const result = run({ ...f.env, PI_CODING_AGENT_DIR: piAgentDir }, ["--link", "--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.stderr, "");
+	assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/), [
+		`gentle-shell ${bundled}`,
+		"pi 1.2.0",
+		`home link ${piAgentDir}`,
+		`gentle-pi ${pin} (declared) — this launcher ships ${bundled}`,
+	]);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+});
+
+// An optional declaration read must never turn a plain --version into a
+// failure: a settings.json that exists but cannot be read raises EISDIR (as
+// here on every host) or EACCES, not ENOENT. A directory stands in for the
+// unreadable file without relying on Windows file permissions.
+test("--version keeps three lines when the optional settings.json read fails", (t) => {
+	const f = runnableFixture(t);
+	const piAgentDir = join(f.root, "pi-agent-unreadable");
+	const settingsPath = join(piAgentDir, "settings.json");
+	mkdirSync(settingsPath, { recursive: true });
+
+	const result = run({ ...f.env, PI_CODING_AGENT_DIR: piAgentDir }, ["--link", "--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.stderr, "");
+	assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/), [
+		`gentle-shell ${ownGentlePiVersion()}`,
+		"pi 1.2.0",
+		`home link ${piAgentDir}`,
+	]);
+});
+
+test("--version stays at three lines with no declaration and with a path declaration", (t) => {
+	const f = runnableFixture(t);
+	const bundled = ownGentlePiVersion();
+	const pathPackage = join(f.root, "path-package");
+	mkdirSync(pathPackage, { recursive: true });
+	writeFileSync(join(pathPackage, "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.6.0" }));
+	for (const [name, packages] of [["none", ["npm:some-other"]], ["path", ["../path-package"]]] as const) {
+		const piAgentDir = join(f.root, `pi-agent-${name}`);
+		mkdirSync(piAgentDir, { recursive: true });
+		const settingsPath = join(piAgentDir, "settings.json");
+		const settingsText = JSON.stringify({ packages });
+		writeFileSync(settingsPath, settingsText);
+		installGentlePi(piAgentDir, "4.6.0");
+
+		const result = run({ ...f.env, PI_CODING_AGENT_DIR: piAgentDir }, ["--link", "--version"]);
+		assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+		assert.equal(result.stderr, "", name);
+		assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/), [
+			`gentle-shell ${bundled}`,
+			"pi 1.2.0",
+			`home link ${piAgentDir}`,
+		], name);
+		assert.equal(readFileSync(settingsPath, "utf8"), settingsText, name);
+	}
+});
+
+test("--version --json stays one JSON line for a differing exact pin", (t) => {
+	const f = runnableFixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+	const bundled = ownGentlePiVersion();
+	const pin = declaredVersion(bundled);
+	const settingsText = JSON.stringify({ packages: [`npm:gentle-pi@${pin}`] });
+	writeFileSync(join(piAgentDir, "settings.json"), settingsText);
+
+	const result = run({ ...f.env, PI_CODING_AGENT_DIR: piAgentDir }, ["--link", "--version", "--json"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.stderr, "");
+	assert.equal(result.stdout.trimEnd().split(/\r?\n/).length, 1);
+	assert.deepEqual(JSON.parse(result.stdout), {
+		schema: "gentle-shell.version/v1",
+		gentleShell: bundled,
+		pi: "1.2.0",
+		home: { mode: "link", dir: piAgentDir },
+	});
+	assert.doesNotMatch(result.stdout, /declared|ships|—/);
+});
+
+test("a declared npm home reports the installed version ahead of its pin and leaves settings unchanged", (t) => {
+	const f = runnableFixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+	const bundled = ownGentlePiVersion();
+	const installed = declaredVersion(bundled);
+	const pin = bundled === "4.6.0" ? "4.5.0" : "4.7.0";
+	const settingsPath = join(piAgentDir, "settings.json");
+	const settingsText = JSON.stringify({ packages: [`npm:gentle-pi@${pin}`] });
+	writeFileSync(settingsPath, settingsText);
+	installGentlePi(piAgentDir, installed);
+
+	const result = run({ ...f.env, PI_CODING_AGENT_DIR: piAgentDir }, ["--link"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.ok(result.stderr.includes(`gentle-shell: ${piAgentDir} loads gentle-pi ${installed}, but this launcher ships ${bundled}; the installed package is what pi loads (settings unchanged).\n`), result.stderr);
+	assert.doesNotMatch(result.stderr, /declares gentle-pi|taking over gentle-pi/);
+	assert.deepEqual(JSON.parse(result.stdout).args, []);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+});
+
+test("a plain launch stays silent about skew with no npm declaration, or with only a path declaration", (t) => {
+	const f = runnableFixture(t);
+	const pathPackage = join(f.root, "path-package");
+	mkdirSync(pathPackage, { recursive: true });
+	writeFileSync(join(pathPackage, "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.6.0" }));
+	for (const [name, packages] of [["none", ["npm:some-other"]], ["path", ["../path-package"]]] as const) {
+		const piAgentDir = join(f.root, `pi-agent-${name}`);
+		mkdirSync(piAgentDir, { recursive: true });
+		writeFileSync(join(piAgentDir, "settings.json"), JSON.stringify({ packages }));
+		installGentlePi(piAgentDir, "4.6.0");
+
+		const result = run({ ...f.env, PI_CODING_AGENT_DIR: piAgentDir }, ["--link"]);
+		assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+		assert.doesNotMatch(result.stderr, /declares gentle-pi|loads gentle-pi/, name);
+	}
+});
+
+test("take-over stays silent with a differing exact pin and a stale install", (t) => {
+	const f = runnableFixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+	const settingsPath = join(piAgentDir, "settings.json");
+	const settingsText = JSON.stringify({ packages: [`npm:gentle-pi@${declaredVersion(ownGentlePiVersion())}`] });
+	writeFileSync(settingsPath, settingsText);
+	installGentlePi(piAgentDir, declaredVersion(ownGentlePiVersion()));
+	const forcedRoot = join(f.root, "forced-root");
+	mkdirSync(forcedRoot, { recursive: true });
+
+	const result = run({ ...f.env, PI_CODING_AGENT_DIR: piAgentDir }, ["--link", "--package-root", forcedRoot], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /taking over gentle-pi from npm:gentle-pi/);
+	assert.doesNotMatch(result.stderr, /declares gentle-pi|loads gentle-pi/);
+	assert.deepEqual(JSON.parse(result.stdout).args, ["--no-extensions", "-e", forcedRoot]);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
 });
 
 // --- setup subcommand ------------------------------------------------------

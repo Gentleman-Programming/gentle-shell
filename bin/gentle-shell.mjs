@@ -2316,7 +2316,15 @@ async function main() {
 		// The JSON surface keeps exactly its existing fields; only the plain
 		// report gains the optional declaration-skew line.
 		if (args.json !== true) {
-			const versionDeclaration = findGentlePiDeclaration(readJsonIfExists(join(home.dir, "settings.json")), { agentDir: home.dir, readPackageName });
+			let settingsText;
+			try {
+				settingsText = readJsonIfExists(join(home.dir, "settings.json"));
+			} catch {
+				// This declaration is optional: an unreadable settings file (EACCES,
+				// EISDIR, ...) is absent for the plain report, not a --version failure.
+				settingsText = undefined;
+			}
+			const versionDeclaration = findGentlePiDeclaration(settingsText, { agentDir: home.dir, readPackageName });
 			if (versionDeclaration?.kind === "npm") declaredGentlePiVersion = versionDeclaration.version;
 		}
 		const describe = args.json === true ? describeVersionJson : describeVersion;

@@ -1073,6 +1073,26 @@ test("--version appends one skew line for a differing exact npm pin", (t) => {
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
 });
 
+// An optional declaration read must never turn a plain --version into a
+// failure: a settings.json that exists but cannot be read raises EISDIR (as
+// here on every host) or EACCES, not ENOENT. A directory stands in for the
+// unreadable file without relying on Windows file permissions.
+test("--version keeps three lines when the optional settings.json read fails", (t) => {
+	const f = runnableFixture(t);
+	const piAgentDir = join(f.root, "pi-agent-unreadable");
+	const settingsPath = join(piAgentDir, "settings.json");
+	mkdirSync(settingsPath, { recursive: true });
+
+	const result = run({ ...f.env, PI_CODING_AGENT_DIR: piAgentDir }, ["--link", "--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.stderr, "");
+	assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/), [
+		`gentle-shell ${ownGentlePiVersion()}`,
+		"pi 1.2.0",
+		`home link ${piAgentDir}`,
+	]);
+});
+
 test("--version stays at three lines with no declaration and with a path declaration", (t) => {
 	const f = runnableFixture(t);
 	const bundled = ownGentlePiVersion();

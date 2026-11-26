@@ -86,6 +86,12 @@ function toolSay(v, call) {
 
 // ---------------------------------------------------------------- 4a header (l.259-270, 369-399)
 
+// The feed carries the mode token ("gentleman"); the header shows it as a name, or null when unknown.
+export function personaLabel(persona) {
+  const raw = typeof persona === "string" ? persona : persona?.name ?? null;
+  return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : null;
+}
+
 export function header(v, p) {
   const s = v.snap;
   const f = v.feed;
@@ -207,7 +213,7 @@ function facts(v, p) {
   const modelFact = (compact) => profileMenu(v, p, fact("f-model", [k("Model"), ...(compact ? [] : [model ? div().child(model) : none()]), icon("down", 13).text_color(p.muted)],
     compact ? `Model · ${model || "—"} (switch profile)` : "Model · effort · profile (switch profile)").cursor_pointer().hover((st) => st.bg(p.selected))
     .when(v.busy === "profile", (el) => el.opacity(0.6)));
-  const persona = typeof s?.persona === "string" ? s.persona : s?.persona?.name ?? null;
+  const persona = personaLabel(s?.persona);
   const personaFact = fact("f-persona", [icon("user", 13).text_color(p.muted), persona ? div().child(persona) : none("No persona")],
     "Persona (opens /gentle:persona in the Terminal)").cursor_pointer().hover((st) => st.bg(p.selected))
     .on_click((_e, cx) => v.command("persona", "/gentle:persona", cx));

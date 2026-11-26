@@ -9,6 +9,8 @@ import { replayTodo } from "../lib/shell-todo.ts";
 
 // One-second watch plus a nine-second deadline leaves room for tick alignment.
 const REFRESH_MS = 9000;
+// A refused or failing store waits before the next attempt instead of retrying every tick.
+const RETRY_MS = 30_000;
 
 interface Options {
 	env?: NodeJS.ProcessEnv;
@@ -28,7 +30,7 @@ export function createAgentStatusExtension(options: Options = {}) {
 		let ctx: ExtensionContext;
 		let store: ReturnType<typeof createAgentStatusStore> | ReturnType<NonNullable<Options["store"]>> | undefined;
 		let working = false; let taskActive = false; let blocked = 0; let enabled = true;
-		let tasks: unknown = []; let last = ""; let refreshed = -Infinity;
+		let tasks: unknown = []; let last = ""; let refreshed = -Infinity; let retryAt = -Infinity;
 		let cancel: (() => void) | undefined; let stop: (() => void) | undefined;
 		let subscriptions: Array<() => void> = [];
 		const owns = (context: ExtensionContext) => owner !== undefined && context.sessionManager.getSessionId() === owner;
@@ -40,8 +42,10 @@ export function createAgentStatusExtension(options: Options = {}) {
 				state: blocked > 0 ? "blocked" as const : working ? "working" as const : "idle" as const,
 				task: title ? { title } : null };
 			const key = JSON.stringify(input); const time = now();
-			if (key === last && time - refreshed < REFRESH_MS) return;
-			try { if (store.write(agentStatus(input, time))) { last = key; refreshed = time; } } catch { /* Retry on refresh. */ }
+			if (time < retryAt || (key === last && time - refreshed < REFRESH_MS)) return;
+			let written = false;
+			try { written = store.write(agentStatus(input, time)); } catch { /* Retry after backoff. */ }
+			if (written) { last = key; refreshed = time; retryAt = -Infinity; } else retryAt = now() + RETRY_MS;
 		};
 		const publish = () => {
 			if (!owner || cancel) return;
@@ -61,7 +65,7 @@ export function createAgentStatusExtension(options: Options = {}) {
 			ctx = context; owner = ctx.sessionManager.getSessionId();
 			if (!owner) return;
 			try { store = (options.store ?? createAgentStatusStore)(home, owner); } catch { owner = undefined; return; }
-			working = ctx.isIdle() === false; taskActive = working; blocked = 0; last = ""; refreshed = -Infinity;
+			working = ctx.isIdle() === false; taskActive = working; blocked = 0; last = ""; refreshed = -Infinity; retryAt = -Infinity;
 			tasks = replayTodo(ctx.sessionManager.getBranch()).tasks;
 			enabled = resolveHerdrTaskSummarySettings({ gentlePiConfigHome: home }).settings.enabled;
 			subscriptions = [pi.events.on(NOTIFICATION_ATTENTION_EVENT, (data: unknown) => {
@@ -72,7 +76,8 @@ export function createAgentStatusExtension(options: Options = {}) {
 				if (typeof event?.configHome !== "string" || resolve(event.configHome) !== home) return;
 				const next = resolveHerdrTaskSummarySettings({ gentlePiConfigHome: home });
 				if (next.malformed || next.readError) return;
-				enabled = next.settings.enabled; publish();
+				// Disabling must redact a published title now, so it skips the retry delay once.
+				enabled = next.settings.enabled; if (!enabled) retryAt = -Infinity; publish();
 			})];
 			stop = (options.watch ?? ((tick) => {
 				const timer = setInterval(tick, 1000); timer.unref(); return () => clearInterval(timer);

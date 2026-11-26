@@ -612,6 +612,15 @@ test("Projects group by machine like Herdr's spaces once a machine is not this c
 	assert.deepEqual(machineGroups([{ id: "x/w9", machine: "x" }], [])?.map((g) => [g.name, g.state]), [[null, "ready"], ["x", "unavailable"]]);
 });
 
+test("the + after the tabs starts the new session in the shown project's folder, else the space's (#3453)", async () => {
+	const { newTabArgs } = await import("../herdr/mods/gentle-tabs/new-tab.js");
+	const space = { id: "w1", folder: "/work/project-b" };
+	// The shown session's project wins over the folder stored on the space.
+	assert.deepEqual(newTabArgs(space, "/work/project-a"), { argv: ["gentle-shell"], space: "w1", folder: "/work/project-a" });
+	// No project known: the space's folder, as before.
+	assert.deepEqual(newTabArgs(space, null), { argv: ["gentle-shell"], space: "w1", folder: "/work/project-b" });
+});
+
 test("a swap conflict rolls back: Herdr home, originals and a created mods/ folder are as before (B1)", async (t) => {
 	const f = fixture(t);
 	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);

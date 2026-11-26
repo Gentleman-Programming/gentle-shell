@@ -179,7 +179,7 @@ from another session, until the next Expand all / Collapse all.
 | `Enter` / **Send** | Sends the message. While a question is open, a plain message is refused: "Answer the open question first." |
 | `Shift+Enter` | New line. |
 | `/` | Opens the command menu (below). |
-| Paperclip | Pastes the clipboard (an image, or files on macOS) into the session's draft, as `Ctrl+V` does in the TUI. It goes with your next message. |
+| Paperclip | Pastes the clipboard (an image, or files on macOS) into the session's draft, as the paste-image key does in the TUI: `Ctrl+V`, or `Alt+V` on Windows (where `Alt+V` in the composer does the same). It goes with your next message. |
 | **Stop** | Replaces Send while the agent works and the draft is empty. Stops the turn, as `Esc Esc` does in the TUI. Typing brings Send back: the message is queued, as in the TUI. |
 
 ### Inspector

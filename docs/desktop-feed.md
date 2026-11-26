@@ -64,10 +64,10 @@ gone or that were not updated for a day. The folder is created `0700` and files
 
 | Field | Content |
 |---|---|
-| `identity` | `sessionId`, exact `sessionFile`, `sessionName`, `cwd`, `realCwd`, `pid`, `ppid`, `ancestors` (nearest first, best effort), `mode`, `agentDir` (absolute agent dir the snapshot lives under), `herdr` (`paneId` from `HERDR_PANE_ID`, `env`) or `null` |
+| `identity` | `sessionId`, exact `sessionFile`, `sessionName`, `cwd`, `realCwd`, `pid`, `ppid`, optional `platform` (`process.platform` of the publisher; the Chat uses it to pick the paste-image key of that runtime), `ancestors` (nearest first, best effort), `mode`, `agentDir` (absolute agent dir the snapshot lives under), `herdr` (`paneId` from `HERDR_PANE_ID`, `env`) or `null` |
 | `project` | `cwd`, `branch`, `dirty` (changed files, `null` before the first scan) |
 | `model` | `id`, `provider`, `effort` (thinking level when the model reasons), `profile` `{ name, tier }` |
-| `persona` | always `null` (no reachable owner yet) |
+| `persona` | the active persona mode (`"gentleman"` or `"neutral"`, read like `/gentle:persona` does), or `null` when it could not be resolved |
 | `context` | `percent`, `tokens`, `window` |
 | `cost` | `total` (session spend), `subscription` |
 | `usage` | what the TUI usage panel (alt+u, `/gentle:usage`) shows, from the same owner: the session's provider at the top level (`provider`, `status`, `plan`, `fetchedAt`, `note`, `limits[]` with `name`, `limitReached` and every `windows[]` entry: `label`, `usedPercent`, `windowSeconds`, `resetAt`), and every provider the panel lists in `providers[]` (the session's own first, then its subagent routes; same fields). `note` is the panel's own words for a provider without windows (`usage arrives with the first response`, `no usage yet · r to fetch`, `fetch failed · r to retry`, `no subscription usage for this provider`), else `null`. `plan` is the plan name the provider reports (Codex does; Anthropic's headers carry none, so it stays `null` there, as in the panel). `null` before the owner answered |

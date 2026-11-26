@@ -202,7 +202,7 @@ Differences found, and what happened to each:
    access to the home folder only: "outside every granted read root"). `readAfter` falls back
    to one `sh` (`wc -c` + `tail -c +N | head -c`, the path as a positional argument) through
    `exec`, still incremental by byte offset. The 2.2 MB copy showed within ~2 s of the mod
-   loading.
+   loading. Without `sh` (native Windows, #3352) such a file stays unread.
 3. Fixed: the crumb named the folder (`herdr-gentle-shell`); it names the project, the Herdr
    space (`gentle-pi`), as the artboard; the folder is the fallback.
 4. Fixed: with no session name the title fell back to "Gentle Shell"; it now uses the

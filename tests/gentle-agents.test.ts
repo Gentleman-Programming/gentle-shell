@@ -55,7 +55,7 @@ interface Registered {
 	parameters: { properties: Record<string, unknown> };
 	renderShell?: string;
 	name: string;
-	execute(id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext): Promise<{ content: Array<{ text: string }>; details: Record<string, unknown> }>;
+	execute(id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext): Promise<{ content: Array<{ text: string }>; details: Record<string, unknown>; isError?: boolean }>;
 	renderCall(args: unknown, theme: unknown, context?: unknown): { render(width: number): string[] };
 	renderResult(result: { content: Array<{ type: string; text: string }>; details: Record<string, unknown> | undefined }, options: { expanded: boolean; isPartial?: boolean }, theme: unknown, context?: unknown): { render(width: number): string[] };
 }
@@ -4317,7 +4317,7 @@ test("subagent_list_agents accepts an optional reason field models often attach 
 	const listTasks = h.tools.get("subagent_list_tasks")!;
 	const reason = "need explorer agent name for codebase mapping";
 	for (const tool of [listAgents, listTasks]) {
-		validateToolArguments(tool, { type: "toolCall", id: "c-reason", name: tool.name, arguments: { reason } });
+		validateToolArguments(tool as never, { type: "toolCall", id: "c-reason", name: tool.name, arguments: { reason } });
 		const result = await tool.execute("c-reason", { reason }, undefined, undefined, ctx);
 		assert.notEqual(result.isError, true);
 	}

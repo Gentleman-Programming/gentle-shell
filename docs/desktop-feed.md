@@ -41,8 +41,8 @@ Every live snapshot is a session the desktop shows, wherever it runs: in a
 terminal of the Herdr app window (kind **Herdr**), or in any other terminal —
 the Herdr TUI, Ghostty, a herdr-core terminal this window does not show (kind
 **TUI**). A snapshot counts as live while its publisher's `identity.pid` runs
-(one `ps -p` per refresh for the pids not checked in the last 5 s; without `ps`
-every snapshot counts). A Herdr session takes typed input in its terminal; a TUI
+(checked about every 5 s, per platform: see [Which sessions are listed as
+running](#which-sessions-are-listed-as-running)). A Herdr session takes typed input in its terminal; a TUI
 session takes prompts and answers through its inbox (`send_prompt`,
 `answer_question` with `via: "session"`, below). A
 snapshot from an older Gentle Shell without `identity.agentDir` is treated as
@@ -60,11 +60,30 @@ leave its file behind; the next session start drops files whose publisher pid is
 gone or that were not updated for a day. The folder is created `0700` and files
 `0600`; symlinked folders or files are refused.
 
+### Which sessions are listed as running
+
+The desktop mods list a session only while its publisher still runs, checked every few seconds
+(`ps` on POSIX; on Windows one PowerShell process enumeration that also reads the creation times, with `tasklist` as the fallback). A pid that is still listed is not proof that it is the
+publisher: Windows reuses pids. When the feed carries `identity.startedAt` and the OS reports the
+creation time of that pid, the two must agree (within one second when `startedAtSource` is `"os"`,
+within ten seconds for an estimate), or the session is dropped.
+
+When the creation time cannot be compared (the feed has no `startedAt`, or the OS lookup fails), the
+mods fall back to the pid alone. That is not a confirmed match: for an unverified feed (one whose
+creation time was never compared), a reused pid keeps the session listed until that pid exits or
+the next session start sweeps the file. A feed rejected after a confirmed OS creation-time mismatch
+is different: it stays hidden while later checks only see the pid (the pid is missing, or no
+creation time can be read), and only a later comparable creation time that matches brings it back. A publisher with a start time that a successful check found absent is gone for good, so it stays hidden even if its pid is listed again later. A verdict whose age is negative (the host clock moved backward) counts as expired. The reader's own OS decides how a feed is checked, as with `ps` before: a feed published on another
+OS (a WSL session read from Windows) is judged against this host's process list. If the process list
+itself cannot be
+read, the previous verdicts stay in place: a session that was never checked stays listed, and one
+cached as not running stays hidden until a later check succeeds.
+
 ## Format: `gentle-shell.desktop-feed/v1`
 
 | Field | Content |
 |---|---|
-| `identity` | `sessionId`, exact `sessionFile`, `sessionName`, `cwd`, `realCwd`, `pid`, `ppid`, optional `platform` (`process.platform` of the publisher; the Chat uses it to pick the paste-image key of that runtime), `ancestors` (nearest first, best effort), `mode`, `agentDir` (absolute agent dir the snapshot lives under), `herdr` (`paneId` from `HERDR_PANE_ID`, `env`) or `null` |
+| `identity` | `sessionId`, exact `sessionFile`, `sessionName`, `cwd`, `realCwd`, `pid`, `ppid`, optional `platform` (`process.platform` of the publisher; the Chat uses it to pick the paste-image key of that runtime), optional `startedAt` (epoch ms the process started; readers use it to tell a reused pid from the publisher) and `startedAtSource` (`"os"` when `startedAt` is the creation time the OS reports, which Windows readers compare within one second; absent for an estimate from the publisher's clock, compared within ten seconds), `ancestors` (nearest first, best effort), `mode`, `agentDir` (absolute agent dir the snapshot lives under), `herdr` (`paneId` from `HERDR_PANE_ID`, `env`) or `null` |
 | `project` | `cwd`, `branch`, `dirty` (changed files, `null` before the first scan) |
 | `model` | `id`, `provider`, `effort` (thinking level when the model reasons), `profile` `{ name, tier }` |
 | `persona` | the active persona mode (`"gentleman"` or `"neutral"`, read like `/gentle:persona` does), or `null` when it could not be resolved |

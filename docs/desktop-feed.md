@@ -79,6 +79,26 @@ itself cannot be
 read, the previous verdicts stay in place: a session that was never checked stays listed, and one
 cached as not running stays hidden until a later check succeeds.
 
+### How a Herdr terminal is matched to its session
+
+A terminal's own pid, or its foreground process, is compared with each session's chain: the publisher's
+`pid`, its `ppid`, and the `ancestors` above `ppid` (nearest first, at most eight; on Windows they come
+from one process-table read). A launcher can therefore sit up to nine hops above the publisher and
+still match.
+
+Each session is ranked on its own: the position of the first pid that matches, or, when only
+`herdr.paneId` equals the terminal's id or address, one step past the end of that session's chain. The
+lowest rank wins and ties go to the first session. A session with a short chain and a matching pane id
+can therefore outrank another session whose pid matches farther along its chain.
+
+Matching is best effort, not proof that the terminal owns the session. The ancestors are recorded as
+bare pids without creation times, so a parent that exited and whose pid another terminal reused can
+still match. A wrapper launch without `HERDR_PANE_ID` is left unmatched only when neither the terminal's
+pid nor its foreground process's pid is in the recorded chain, and no pane id matches: the session is
+then listed as a TUI session in another terminal (no Terminal pane in the window) instead of a
+terminal being guessed for it. When the foreground process is the publisher or one of its recorded
+ancestors, it still matches without `HERDR_PANE_ID`.
+
 ## Format: `gentle-shell.desktop-feed/v1`
 
 | Field | Content |

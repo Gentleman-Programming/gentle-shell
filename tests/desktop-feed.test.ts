@@ -18,7 +18,7 @@ import {
 	type DesktopFeedTimers,
 } from "../lib/desktop-feed.ts";
 import { createDesktopFeedStore, desktopFeedFile } from "../lib/desktop-feed-store.ts";
-import { createUntrackedLineCounter } from "../lib/desktop-feed-sources.ts";
+import { createUntrackedLineCounter, createWindowsParentOf, parseProcessTable, processAncestors } from "../lib/desktop-feed-sources.ts";
 import { SESSION_WORKTREE_ENTRY } from "../lib/session-worktree-registry.ts";
 import { changesModel, type ChangedFile } from "../lib/shell-changes.ts";
 import { DESKTOP_JOBS_SERVICE_CHANNEL, DESKTOP_JOBS_SERVICE_SCHEMA, type DesktopJobEntry } from "../lib/desktop-rpc-jobs.ts";
@@ -301,6 +301,27 @@ test("should not claim an OS start time when only the estimate is known", async 
 	assert.equal("startedAtSource" in (h.read().identity as object), false);
 });
 
+test("should keep one process-table read shared and start its TTL when it completes", async () => {
+	let clock = 0;
+	let reads = 0;
+	let release: (text: string) => void = () => {};
+	const parentOf = createWindowsParentOf(() => { reads += 1; return new Promise<string>((resolve) => { release = resolve; }); }, 1000, () => clock);
+	const first = parentOf(44120);
+	clock = 6000; // far past the TTL while the first read is still running
+	const second = parentOf(44712);
+	assert.equal(reads, 1, "the in-flight read is shared");
+	release(WINDOWS_TABLE);
+	assert.equal(await first, 44712);
+	assert.equal(await second, 30320);
+	clock = 6500; // within the TTL counted from completion
+	await parentOf(44120);
+	assert.equal(reads, 1);
+	clock = 7500; // past it
+	release = () => {};
+	void parentOf(44120);
+	assert.equal(reads, 2);
+});
+
 test("should keep the persona null when resolving it throws", async (t) => {
 	const h = feedHarness(t, { persona: () => { throw new Error("unreadable"); } });
 	await h.start();
@@ -313,6 +334,54 @@ test("S3: the snapshot names its agent dir as an absolute path, bundled, Pi exte
 	}
 	const relative = buildDesktopFeedSnapshot(fixtureInput({ identity: { ...fixtureInput().identity, agentDir: "rel/agent" } })).identity.agentDir;
 	assert.equal(relative, join(process.cwd(), "rel", "agent"));
+});
+
+// ---- Process ancestry on Windows ----
+
+// agent 33128 <- launch.mjs 44120 <- terminal shell 44712 <- 30320 <- 38628 (no parent).
+const WINDOWS_TABLE = "33128,44120\r\n44120,44712\r\n44712,30320\r\n30320,38628\r\n38628,0\r\n";
+
+test("should parse the pid,ppid lines of a Windows process table and ignore other output", () => {
+	const table = parseProcessTable(`${WINDOWS_TABLE}warning: something\r\n\r\nabc,def\r\n`);
+	assert.equal(table.size, 5);
+	assert.equal(table.get(33128), 44120);
+	assert.equal(table.get(38628), 0);
+});
+
+test("should walk the Windows process table up to the terminal shell", async () => {
+	const parentOf = createWindowsParentOf(async () => WINDOWS_TABLE);
+	assert.deepEqual(await processAncestors(44120, 8, parentOf), [44712, 30320, 38628]);
+});
+
+test("should read the Windows process table once for a whole ancestry walk", async () => {
+	let reads = 0;
+	const parentOf = createWindowsParentOf(async () => { reads += 1; return WINDOWS_TABLE; });
+	await processAncestors(44120, 8, parentOf);
+	assert.equal(reads, 1);
+});
+
+test("should read the Windows process table again once it is older than its ttl", async () => {
+	let reads = 0;
+	let clock = 0;
+	const parentOf = createWindowsParentOf(async () => { reads += 1; return WINDOWS_TABLE; }, 1000, () => clock);
+	await parentOf(33128);
+	clock = 999;
+	await parentOf(33128);
+	clock = 1001;
+	await parentOf(33128);
+	assert.equal(reads, 2);
+});
+
+test("should publish no ancestors when the Windows process table cannot be read", async () => {
+	const parentOf = createWindowsParentOf(async () => undefined);
+	assert.deepEqual(await processAncestors(44120, 8, parentOf), []);
+});
+
+test("should stop at a parent that is not a real process", async () => {
+	const parentOf = createWindowsParentOf(async () => "10,1\r\n20,0\r\n");
+	assert.equal(await parentOf(10), undefined);
+	assert.equal(await parentOf(20), undefined);
+	assert.equal(await parentOf(99), undefined);
 });
 
 // ---- Bounds ----

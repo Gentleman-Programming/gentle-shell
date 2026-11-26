@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { FH, fitBuilding, SCENE_W, SHEET_MAX_WIDTH, useBottomSheet } from "../web/tower/src/layout.ts";
+import { FH, fitBuilding, SCENE_W, sheetWinner, SHEET_MAX_WIDTH, useBottomSheet } from "../web/tower/src/layout.ts";
 
 test("useBottomSheet is on at or below 720 CSS px and for coarse pointers", () => {
 	assert.equal(useBottomSheet(390, false), true);
@@ -30,6 +30,13 @@ test("fitBuilding never shrinks a floor below 44 CSS px, whatever the width", ()
 		assert.ok(f.floorHeight >= 44, `${width}px: floor height ${f.floorHeight}`);
 		assert.ok(Number.isFinite(f.scale) && f.scale > 0);
 	}
+});
+
+test("sheetWinner gives the shared bottom area to the panel opened last, Talk when unknown", () => {
+	assert.equal(sheetWinner("tasks"), "tasks");
+	assert.equal(sheetWinner("talk"), "talk");
+	// The explicit fallback for a resize into sheet mode before anything was tracked.
+	assert.equal(sheetWinner(undefined), "talk");
 });
 
 test("fitBuilding keeps the desktop behavior unchanged at 720px and up", () => {

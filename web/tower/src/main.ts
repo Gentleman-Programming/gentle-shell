@@ -2,7 +2,7 @@
 import "pixi.js/unsafe-eval";
 import "./style.css";
 import { floorTop } from "./art";
-import { fitBuilding, sheetReserve, useBottomSheet } from "./layout";
+import { fitBuilding, sheetReserve, sheetWinner, useBottomSheet, type SheetPanel } from "./layout";
 import { FLOOR_COLORS, floorState, groupProjects, money, todoProgress } from "./model";
 import { TowerScene, type Pick } from "./scene";
 import { closeIntercom, closeModals, intercomSession, openArtifact, openArtifacts, openLibrary, openNewFloor, openTab, postAction, renderIntercom } from "./panels";
@@ -16,6 +16,8 @@ let current = "";
 // Panels follow a session, not a floor number: floors reorder and sessions come and go.
 let selected: Pick | undefined;
 let todoSession: string | undefined;
+/** The bottom sheet's shared area belongs to the panel opened last (Talk and Tasks cannot share it). */
+let lastPanel: SheetPanel | undefined;
 let scale = 2;
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -35,7 +37,7 @@ function renderProjects() {
 		const need = p.sessions.filter((s) => floorState(s) === "need").length;
 		return `<button data-cwd="${esc(p.cwd)}" aria-pressed="${p === project()}" title="${esc(p.cwd)} (Alt+${k + 1})"><i style="background:${FLOOR_COLORS[k % FLOOR_COLORS.length]}"></i>${esc(p.id)}<span class="cnt">${p.sessions.length}</span>${need ? '<span class="nd">?</span>' : ""}</button>`;
 	}).join("");
-	el.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { current = b.dataset.cwd!; selected = undefined; todoSession = undefined; render(); }));
+	for (const b of el.querySelectorAll("button")) b.addEventListener("click", () => { current = b.dataset.cwd!; selected = undefined; todoSession = undefined; render(); });
 }
 
 function renderFloors(p: Project) {
@@ -48,7 +50,10 @@ function renderFloors(p: Project) {
 		// are the accessible way to select one (details and stop live in the selection panel).
 		const crewChips = s.subagents.map((a) => `<button class="crew" data-i="${i}" data-id="${esc(a.id)}" aria-label="Select ${esc(a.name)}">${esc(a.name)}</button>`).join("");
 		const segs = s.todos.filter((t) => t.status !== "dropped").map((t) => `<i class="${t.status}" style="background:${TODO_COLOR[t.status]}"></i>`).join("");
-		const now = prog.now ? `${prog.now.status === "blocked" ? '<b class="warn">blocked:</b>' : "now:"} <b>${esc(prog.now.title)}</b>` : prog.total ? "<b>all done</b>" : "no task list yet";
+		let now: string;
+		if (prog.now) now = `${prog.now.status === "blocked" ? '<b class="warn">blocked:</b>' : "now:"} <b>${esc(prog.now.title)}</b>`;
+		else if (prog.total) now = "<b>all done</b>";
+		else now = "no task list yet";
 		return `<div class="floor" style="top:${(floorTop(L, i) + 50) * scale}px;--c:${col}">
 			<button class="fl px" data-i="${i}" aria-pressed="${selected?.floor === i}"><span class="fkey" style="background:${col}">${i + 1}</span><span class="nm">${esc(s.name)}</span><span class="st ${st}">${GLYPH[st]}</span><span class="sub">${s.basic ? "" : `${money(s.cost.total)} · `}<span class="crew-txt">${esc(crew)}</span></span></button>
 			${s.basic || !crewChips ? "" : `<div class="crew-row">${crewChips}</div>`}
@@ -57,15 +62,22 @@ function renderFloors(p: Project) {
 				: `<button class="prog px" data-i="${i}" aria-expanded="${todoSession === s.sessionId}" aria-label="Tasks of floor ${i + 1}: ${prog.done} of ${prog.total} done"><span class="segs">${segs}</span><span class="now">${prog.done}/${prog.total} · ${now}</span></button>`}
 		</div>`;
 	}).join("");
-	el.querySelectorAll<HTMLButtonElement>(".fl").forEach((b) => b.addEventListener("click", () => { const i = +b.dataset.i!; select({ kind: "orchestrator", floor: i, session: p.sessions[i] }); }));
-	el.querySelectorAll<HTMLButtonElement>(".crew").forEach((b) => b.addEventListener("click", () => {
+	for (const b of el.querySelectorAll<HTMLButtonElement>(".fl")) b.addEventListener("click", () => { const i = +b.dataset.i!; select({ kind: "orchestrator", floor: i, session: p.sessions[i] }); });
+	for (const b of el.querySelectorAll<HTMLButtonElement>(".crew")) b.addEventListener("click", () => {
 		const i = Number(b.dataset.i);
 		const session = p.sessions[i];
 		const helper = session?.subagents.find((a) => a.id === b.dataset.id);
 		if (session && helper) select({ kind: "helper", floor: i, session, helper });
-	}));
-	el.querySelectorAll<HTMLButtonElement>("button.prog").forEach((b) => b.addEventListener("click", () => { const id = p.sessions[+b.dataset.i!]?.sessionId; openTasks(todoSession === id ? undefined : id); }));
+	});
+	for (const b of el.querySelectorAll<HTMLButtonElement>("button.prog")) b.addEventListener("click", () => { const id = p.sessions[+b.dataset.i!]?.sessionId; openTasks(todoSession === id ? undefined : id); });
 }
+
+/** The glyph a task status shows in the todo list. */
+const todoGlyph = (status: TowerTodo["status"]): string => {
+	if (status === "done") return "✓";
+	if (status === "blocked") return "!";
+	return "";
+};
 
 function renderTodo(p: Project) {
 	const el = $("todo");
@@ -74,7 +86,7 @@ function renderTodo(p: Project) {
 	const s = p.sessions[floor], prog = todoProgress(s.todos);
 	el.hidden = false;
 	el.innerHTML = `<h3><span style="background:${FLOOR_COLORS[floor % FLOOR_COLORS.length]}"></span>${esc(s.name)}<small>${prog.done} of ${prog.total} done</small></h3>`
-		+ (s.todos.length ? `<ol>${s.todos.map((t, k) => `<li class="${t.status}"><span class="ic" style="background:${TODO_COLOR[t.status]}">${t.status === "done" ? "✓" : t.status === "blocked" ? "!" : ""}</span><span>${k + 1}. ${esc(t.title)}</span><span class="st">${t.status.replace("_", " ")}</span>${t.note ? `<span class="meta">${esc(t.note)}</span>` : ""}</li>`).join("")}</ol>` : `<p class="empty">This session has no task list yet.</p>`);
+		+ (s.todos.length ? `<ol>${s.todos.map((t, k) => `<li class="${t.status}"><span class="ic" style="background:${TODO_COLOR[t.status]}">${todoGlyph(t.status)}</span><span>${k + 1}. ${esc(t.title)}</span><span class="st">${t.status.replace("_", " ")}</span>${t.note ? `<span class="meta">${esc(t.note)}</span>` : ""}</li>`).join("")}</ol>` : `<p class="empty">This session has no task list yet.</p>`);
 }
 
 /** Strictness order. Lowering applies at once; raising is confirmed in that session's terminal. */
@@ -124,6 +136,7 @@ function renderSelection() {
 function openIntercom(sessionId: string | undefined) {
 	const p = project(); const floor = p ? p.sessions.findIndex((x) => x.sessionId === sessionId) : -1;
 	if (!p || floor < 0 || p.sessions[floor].basic) return;
+	lastPanel = "talk";
 	// On a phone the intercom and the task list share the bottom area: Talk wins, Tasks closes.
 	if (todoSession !== undefined && useBottomSheet(innerWidth, matchMedia("(pointer: coarse)").matches)) { todoSession = undefined; render(); }
 	renderIntercom(p.sessions[floor], floor);
@@ -132,6 +145,7 @@ function openIntercom(sessionId: string | undefined) {
 /** Opens (or closes) the task list; on a bottom sheet it wins the shared area over the intercom. */
 function openTasks(sessionId: string | undefined) {
 	todoSession = sessionId;
+	if (todoSession !== undefined) lastPanel = "tasks";
 	if (todoSession !== undefined && useBottomSheet(innerWidth, matchMedia("(pointer: coarse)").matches) && !$("intercom").hidden) closeIntercom();
 	render();
 }
@@ -148,6 +162,12 @@ function renderLobby(p: Project) {
 function select(p: Pick | undefined) { selected = p; renderSelection(); const pr = project(); if (pr) renderFloors(pr); }
 
 function render() {
+	// Entering bottom-sheet mode (a resize or rotation) must leave one panel in the shared
+	// area: the one opened last keeps it, and Talk wins when nothing was tracked.
+	if (todoSession !== undefined && !$("intercom").hidden && useBottomSheet(innerWidth, matchMedia("(pointer: coarse)").matches)) {
+		if (sheetWinner(lastPanel) === "talk") todoSession = undefined;
+		else closeIntercom();
+	}
 	const p = project();
 	$("empty").hidden = !!p;
 	$("stage").hidden = !p;
@@ -224,7 +244,12 @@ addEventListener("keydown", (e) => {
 	if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
 	if (tour.isOpen) return;
 	if (e.key === "?" && !e.metaKey && !e.ctrlKey) { e.preventDefault(); tour.open(); return; }
-	if (e.key === "Escape") { if (closeModals()) return; if (!$("intercom").hidden) { closeIntercom(); return; } if (todoSession !== undefined) { todoSession = undefined; render(); } else select(undefined); }
+	if (e.key === "Escape") {
+		if (closeModals()) return;
+		const intercomOpen = !$("intercom").hidden;
+		if (intercomOpen) { closeIntercom(); return; }
+		if (todoSession !== undefined) { todoSession = undefined; render(); } else select(undefined);
+	}
 	if ((e.key === "t" || e.key === "T") && !e.metaKey && !e.ctrlKey) { e.preventDefault(); openIntercom(selected?.session.sessionId ?? project()?.sessions[0]?.sessionId); }
 	if ((e.key === "n" || e.key === "N") && !e.metaKey && !e.ctrlKey) { const p = project(); if (p) { e.preventDefault(); openNewFloor(p); } }
 	if (e.altKey && /^[1-9]$/.test(e.key) && projects[+e.key - 1]) { current = projects[+e.key - 1].cwd; selected = undefined; render(); }

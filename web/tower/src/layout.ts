@@ -50,3 +50,15 @@ export function useBottomSheet(width: number, coarsePointer: boolean): boolean {
 export function sheetReserve(width: number, coarsePointer: boolean): number {
 	return useBottomSheet(width, coarsePointer) ? SHEET_RESERVE : 0;
 }
+
+/** The two panels that share the bottom sheet's area: the task list and the intercom. */
+export type SheetPanel = "tasks" | "talk";
+
+/**
+ * Which of the two shared panels keeps the bottom sheet: the one the user opened
+ * last, and Talk when nothing was tracked (an explicit choice, so a resize into
+ * sheet mode always leaves exactly one panel in the shared area).
+ */
+export function sheetWinner(last: SheetPanel | undefined): SheetPanel {
+	return last ?? "talk";
+}

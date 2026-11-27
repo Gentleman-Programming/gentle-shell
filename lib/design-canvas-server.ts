@@ -530,7 +530,9 @@ export type DesignGroupChange = { slug: string; group?: string; changed: boolean
 export async function setDesignGroup(designRoot: string, slug: string, value: unknown): Promise<DesignGroupChange> {
 	if (!SLUG.test(slug)) throw new HttpError(404, "not-found");
 	const next = normalizeGroupInput(value);
-	const path = join(designRoot, slug, "design.json");
+	// The contained path, resolved as the listing and the reads resolve it: a folder or design.json that links out of design/ is no design here.
+	const path = resolveDesignFileSync(designRoot, slug, ["design.json"]);
+	if (!path || !statSync(path).isFile()) throw new HttpError(404, "not-found");
 	return serializeDesignWrite(path, async () => {
 		const raw = await readFile(path, "utf8").catch(() => { throw new HttpError(404, "not-found"); });
 		try {

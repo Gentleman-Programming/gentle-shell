@@ -1992,3 +1992,25 @@ test("design-group: POST sets or clears design.json's group, keeps the other fie
 	// An unknown design is 404.
 	assert.equal((await postJson(port, "api/designs/nope/group", { group: "Admin" })).status, 404);
 });
+
+test("design-group: a design whose folder or design.json resolves outside design/ is refused, and the file outside is never written", async (t) => {
+	const { port, base, root } = await start(t);
+	const outside = scratch(t, "gentle-design-group-outside-");
+	const outsideFolder = join(outside, "linked");
+	mkdirSync(outsideFolder);
+	const outsideManifest = join(outsideFolder, "design.json");
+	const manifest = JSON.stringify({ title: "Outside", brief: "b", artboards: [] });
+	writeFileSync(outsideManifest, manifest);
+	// A folder that is a link out of design/, and a design.json that is a link out of design/.
+	symlinkSync(outsideFolder, join(root, "linked"));
+	mkdirSync(join(root, "sneaky"));
+	symlinkSync(outsideManifest, join(root, "sneaky", "design.json"));
+	for (const slug of ["linked", "sneaky"]) {
+		const reply = await postJson(port, `api/designs/${slug}/group`, { group: "Admin" });
+		assert.equal(reply.status, 404, slug);
+	}
+	assert.equal(readFileSync(outsideManifest, "utf8"), manifest, "the file outside design/ is untouched");
+	// The listing never shows them, and a contained design still takes a group.
+	assert.equal(JSON.parse((await rawRequest(port, `${base}api/designs`)).body).designs.some((design: { slug: string }) => design.slug === "linked" || design.slug === "sneaky"), false);
+	assert.equal((await postJson(port, GROUP_PATH, { group: "Admin" })).status, 200);
+});

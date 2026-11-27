@@ -6,7 +6,24 @@ import type { PanelSummary } from "./shell-panel.ts";
 const STATE = Symbol.for("gentle-pi.experimental-sidebar.state");
 /** In-process notification after a visual preference is persisted. */
 export const VISUAL_SETTINGS_CHANGED = "gentle-pi.visual-settings-changed";
+/**
+ * Workspaces of the console (DESIGN.md §C2, design/gentle-tui-cinlo): MAIN is
+ * the live session, GIT the changes, PROF the profiles, MEM the memory data,
+ * TREE the changed files and WT the worktrees. The numbered row is fixed:
+ * `1:MAIN 2:GIT 3:PROF 4:MEM 5:TREE 0:WT`.
+ */
+export type AgenticTab = "main" | "git" | "prof" | "mem" | "tree" | "wt";
+
 export interface SidebarState {
+	/** Optional tab navigation supplied by the Gentle Dots extension. */
+	agenticTabsEnabled?: () => boolean;
+	agenticVisibleTabs?: () => readonly AgenticTab[];
+	agenticTab?: AgenticTab;
+	setAgenticTab?: (tab: AgenticTab) => void;
+	/** Project name the console header names (the session's cwd basename). */
+	projectName?: () => string | undefined;
+	/** true when the user folded the whole console column away. */
+	consoleCollapsed?: () => boolean;
 	active: boolean;
 	visibility?: { todo?: boolean };
 	ownsHost?: () => boolean;

@@ -34,6 +34,34 @@ async function createListeningFakeHost(callback: () => Promise<boolean>) {
 	return { child, host, emit };
 }
 
+test("Windows transport host spawns PowerShell 5.1 without an inherited PSModulePath and keeps the rest of the environment", async () => {
+	const saved = { upper: process.env.PSModulePath, lower: process.env.psmodulepath, marker: process.env.GENTLE_PSMODULEPATH_TEST_MARKER };
+	process.env.PSModulePath = "C:\\Program Files\\PowerShell\\7\\Modules";
+	process.env.psmodulepath = "C:\\Program Files\\PowerShell\\7\\Modules";
+	process.env.GENTLE_PSMODULEPATH_TEST_MARKER = "kept";
+	try {
+		const child = new FakeTransportChild();
+		const calls: Array<{ command: string; options: { env?: NodeJS.ProcessEnv; shell?: boolean; windowsHide?: boolean } }> = [];
+		const host = new WindowsSessionTransportHost({ spawnProcess: ((command: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => { calls.push({ command, options }); return child; }) as never });
+		const starting = host.start();
+		child.stdout.emit("data", Buffer.from('{"requestId":"start-1","ok":true,"result":{"state":"partial"}}\n'));
+		await starting;
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].command, FIXED_WINDOWS_POWERSHELL);
+		assert.equal(calls[0].options.shell, false);
+		assert.equal(calls[0].options.windowsHide, true);
+		const env = calls[0].options.env;
+		assert.ok(env, "spawn receives an explicit environment");
+		assert.deepEqual(Object.keys(env).filter((key) => key.toLowerCase() === "psmodulepath"), []);
+		assert.equal(env.GENTLE_PSMODULEPATH_TEST_MARKER, "kept");
+		assert.equal(process.env.PSModulePath, "C:\\Program Files\\PowerShell\\7\\Modules", "the parent environment is not mutated");
+	} finally {
+		for (const [key, value] of [["PSModulePath", saved.upper], ["psmodulepath", saved.lower], ["GENTLE_PSMODULEPATH_TEST_MARKER", saved.marker]] as const) {
+			if (value === undefined) delete process.env[key]; else process.env[key] = value;
+		}
+	}
+});
+
 test("Windows listener readiness returns only after helper-owned publication without a stale publish RPC", async () => {
 	const child = new FakeTransportChild();
 	const host = new WindowsSessionTransportHost({ spawnProcess: () => child as never });

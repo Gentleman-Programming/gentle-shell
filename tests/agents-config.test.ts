@@ -9,12 +9,15 @@ import {
 	THINKING_LEVEL,
 	agentDirectories,
 	discoverAgents,
+	findUnconfiguredModelProfiles,
 	loadAgentsConfig,
+	loadAgentsConfigLayers,
 	parseAgentDefinition,
 	parseAgentsConfig,
 	parseFrontmatter,
 	parseModelRef,
 	resolveAgentProfile,
+	resolveAgentProfileWithFallback,
 	staleRoutingKeys,
 	removeRoutingKeys,
 	removeRoutingKeysFromProfilesFile,
@@ -432,4 +435,199 @@ test("S5: known frontmatter keys produce no notice", () => {
 	mkdirSync(join(cwd, ".pi/agents"), { recursive: true });
 	writeFileSync(join(cwd, ".pi/agents/ok.md"), "---\nname: ok\ndescription: d\nmodel: a/b\nthinking: high\nmode: read\ntools: [read]\n---\nBody");
 	assert.deepEqual(discoverAgents({ cwd, home }).notices, []);
+});
+
+// gentle-shell#3563: unconfigured provider detection and fallback resolution.
+test("findUnconfiguredModelProfiles names the offending subagents.json file and role", () => {
+	const home = join(root, "unconfigured-home");
+	const cwd = join(root, "unconfigured-project");
+	const agentHome = join(home, ".pi", "agent");
+	mkdirSync(agentHome, { recursive: true });
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	const globalPath = join(agentHome, "subagents.json");
+	const projectPath = join(cwd, ".pi", "subagents.json");
+	writeFileSync(globalPath, JSON.stringify({
+		model_profiles: {
+			"gentle-ai-explore": { model: "openai/gpt-5.4" },
+			"gentle-ai-worker": { model: "nan/glm5.3" },
+			"gentle-ai-verify": { model: "nan/glm5.3-flash" },
+		},
+	}));
+	writeFileSync(projectPath, JSON.stringify({
+		model_profiles: {
+			"gentle-ai-explore": { model: "nan/glm5.3-flash" },
+			"gentle-ai-worker": { effort: "high" },
+			"gentle-ai-verify": { model: "anthropic/claude-sonnet-4" },
+		},
+	}));
+
+	const configured = new Set(["anthropic", "openai"]);
+	const issues = findUnconfiguredModelProfiles({ cwd, home, agentHome }, (provider) => configured.has(provider));
+	assert.deepEqual(issues, [
+		{
+			filePath: projectPath,
+			scope: "project",
+			role: "gentle-ai-explore",
+			model: { provider: "nan", id: "glm5.3-flash" },
+			provider: "nan",
+		},
+		{
+			filePath: globalPath,
+			scope: "global",
+			role: "gentle-ai-worker",
+			model: { provider: "nan", id: "glm5.3" },
+			provider: "nan",
+		},
+	]);
+
+	// When nan IS configured, nothing is reported.
+	assert.deepEqual(findUnconfiguredModelProfiles({ cwd, home, agentHome }, () => true), []);
+});
+
+test("resolveAgentProfileWithFallback walks global profile, definition, default_model, session defaults, and unresolved", () => {
+	const home = join(root, "fallback-home");
+	const cwd = join(root, "fallback-project");
+	const agentHome = join(home, ".pi", "agent");
+	mkdirSync(agentHome, { recursive: true });
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	const projectPath = join(cwd, ".pi", "subagents.json");
+	const globalPath = join(agentHome, "subagents.json");
+
+	const bareAgent = parseAgentDefinition("---\nname: gentle-ai-explore\n---\nMap files.", "/x/gentle-ai-explore.md", "global");
+	const defAgent = parseAgentDefinition("---\nname: gentle-ai-explore\nmodel: anthropic/claude-haiku-4-5\n---\nMap files.", "/x/gentle-ai-explore.md", "global");
+	assert.ok(!("error" in bareAgent) && !("error" in defAgent));
+
+	// 1. Project pin unconfigured -> falls back to configured global subagents.json profile.
+	writeFileSync(globalPath, JSON.stringify({ model_profiles: { "gentle-ai-explore": { model: "openai/gpt-5.4", effort: "low" } } }));
+	writeFileSync(projectPath, JSON.stringify({ model_profiles: { "gentle-ai-explore": { model: "nan/glm5.3-flash", effort: "medium" } } }));
+	let layers = loadAgentsConfigLayers({ cwd, home, agentHome });
+	const configured = new Set(["anthropic", "openai"]);
+	const toGlobal = resolveAgentProfileWithFallback(bareAgent, layers.merged, {
+		isProviderConfigured: (provider) => configured.has(provider),
+		globalConfig: layers.global,
+		projectConfig: layers.project,
+		configPaths: layers.paths,
+		sessionDefaultModels: [{ provider: "anthropic", id: "claude-sonnet-4" }],
+	});
+	assert.deepEqual(toGlobal.profile.model, { provider: "openai", id: "gpt-5.4" });
+	assert.equal(toGlobal.profile.thinking, "medium");
+	assert.equal(toGlobal.profile.source.model, "profile");
+	assert.deepEqual(toGlobal.fallback, {
+		rejectedModel: { provider: "nan", id: "glm5.3-flash" },
+		provider: "nan",
+		sourcePath: projectPath,
+		fallbackModel: { provider: "openai", id: "gpt-5.4" },
+		fallbackSource: "profile",
+	});
+
+	// 2. Global profile absent -> falls back to agent definition model when configured.
+	writeFileSync(globalPath, JSON.stringify({}));
+	layers = loadAgentsConfigLayers({ cwd, home, agentHome });
+	const toDef = resolveAgentProfileWithFallback(defAgent, layers.merged, {
+		isProviderConfigured: (provider) => configured.has(provider),
+		globalConfig: layers.global,
+		projectConfig: layers.project,
+		configPaths: layers.paths,
+		sessionDefaultModels: [{ provider: "openai", id: "gpt-5.4" }],
+	});
+	assert.deepEqual(toDef.profile.model, { provider: "anthropic", id: "claude-haiku-4-5" });
+	assert.equal(toDef.profile.source.model, "definition");
+	assert.equal(toDef.fallback?.sourcePath, projectPath);
+
+	// 3. No global profile, no definition model -> falls back to session default model.
+	const toSession = resolveAgentProfileWithFallback(bareAgent, layers.merged, {
+		isProviderConfigured: (provider) => configured.has(provider),
+		globalConfig: layers.global,
+		projectConfig: layers.project,
+		configPaths: layers.paths,
+		sessionDefaultModels: [{ provider: "nan", id: "also-unconfigured" }, { provider: "anthropic", id: "claude-sonnet-4" }],
+	});
+	assert.deepEqual(toSession.profile.model, { provider: "anthropic", id: "claude-sonnet-4" });
+	assert.equal(toSession.profile.source.model, "default");
+
+	// 4. No configured fallback anywhere -> falls back to undefined (inherit Pi default) and drops tier.
+	const withTier = parseAgentsConfig(undefined, { model_profiles: { "gentle-ai-explore": { model: "nan/glm5.3-flash" } } });
+	withTier.modelProfiles["gentle-ai-explore"]!.tier = "fast";
+	assert.equal(withTier.modelProfiles["gentle-ai-explore"]?.tier, "fast");
+	const toUnresolved = resolveAgentProfileWithFallback(bareAgent, withTier, {
+		isProviderConfigured: (provider) => configured.has(provider),
+		projectConfig: withTier,
+		configPaths: layers.paths,
+	});
+	assert.equal(toUnresolved.profile.model, undefined);
+	assert.equal(toUnresolved.profile.tier, undefined);
+	assert.equal(toUnresolved.profile.source.model, "unresolved");
+	assert.equal(toUnresolved.fallback?.fallbackModel, undefined);
+
+	// 5. Configured provider -> untouched with no fallback.
+	const unchanged = resolveAgentProfileWithFallback(bareAgent, layers.merged, {
+		isProviderConfigured: () => true,
+		globalConfig: layers.global,
+		projectConfig: layers.project,
+		configPaths: layers.paths,
+	});
+	assert.deepEqual(unchanged.profile.model, { provider: "nan", id: "glm5.3-flash" });
+	assert.equal(unchanged.fallback, undefined);
+});
+
+test("resolveAgentProfileWithFallback skips providerless candidates unless they resolve to a configured provider", () => {
+	const configured = new Set(["anthropic", "openai"]);
+	const catalog = [
+		{ provider: "nan", id: "glm5.3-flash" },
+		{ provider: "anthropic", id: "claude-haiku-4-5" },
+		{ provider: "anthropic", id: "claude-sonnet-4" },
+	];
+	const resolveBareModel = (id: string) => {
+		const lower = id.toLowerCase();
+		const matches = catalog.filter((m) => m.id.toLowerCase() === lower && configured.has(m.provider));
+		return new Set(matches.map((m) => m.provider)).size === 1 ? matches[0] : undefined;
+	};
+
+	const bareUnconfiguredDef = parseAgentDefinition("---\nname: gentle-ai-explore\nmodel: glm5.3-flash\n---\nMap files.", "/x/gentle-ai-explore.md", "global");
+	const bareConfiguredDef = parseAgentDefinition("---\nname: gentle-ai-explore\nmodel: claude-haiku-4-5\n---\nMap files.", "/x/gentle-ai-explore.md", "global");
+	const bareAgent = parseAgentDefinition("---\nname: gentle-ai-explore\n---\nMap files.", "/x/gentle-ai-explore.md", "global");
+	assert.ok(!("error" in bareUnconfiguredDef) && !("error" in bareConfiguredDef) && !("error" in bareAgent));
+
+	// Providerless definition model whose id matches only unconfigured `nan` must be skipped in favor of session default.
+	const projectOnly = parseAgentsConfig(undefined, { model_profiles: { "gentle-ai-explore": { model: "nan/glm5.3-flash" } } });
+	const skipBareDef = resolveAgentProfileWithFallback(bareUnconfiguredDef, projectOnly, {
+		isProviderConfigured: (provider) => configured.has(provider),
+		resolveBareModel,
+		projectConfig: projectOnly,
+		sessionDefaultModels: [{ provider: "anthropic", id: "claude-sonnet-4" }],
+	});
+	assert.deepEqual(skipBareDef.profile.model, { provider: "anthropic", id: "claude-sonnet-4" });
+	assert.equal(skipBareDef.profile.source.model, "default");
+
+	// Same guard applies to providerless `default_model` (merged and global).
+	const globalBareDefault = parseAgentsConfig({ default_model: "glm5.3-flash" }, undefined);
+	const mergedBareDefault = parseAgentsConfig({ default_model: "glm5.3-flash" }, { default_model: "glm5.3-flash", model_profiles: { "gentle-ai-explore": { model: "nan/glm5.3-flash" } } });
+	const skipBareDefault = resolveAgentProfileWithFallback(bareAgent, mergedBareDefault, {
+		isProviderConfigured: (provider) => configured.has(provider),
+		resolveBareModel,
+		globalConfig: globalBareDefault,
+		projectConfig: projectOnly,
+		sessionDefaultModels: [{ provider: "anthropic", id: "claude-sonnet-4" }],
+	});
+	assert.deepEqual(skipBareDefault.profile.model, { provider: "anthropic", id: "claude-sonnet-4" });
+	assert.equal(skipBareDefault.profile.source.model, "default");
+
+	// Providerless definition model matching a configured provider is accepted and qualified with that provider.
+	const qualifiedDef = resolveAgentProfileWithFallback(bareConfiguredDef, projectOnly, {
+		isProviderConfigured: (provider) => configured.has(provider),
+		resolveBareModel,
+		projectConfig: projectOnly,
+		sessionDefaultModels: [{ provider: "anthropic", id: "claude-sonnet-4" }],
+	});
+	assert.deepEqual(qualifiedDef.profile.model, { provider: "anthropic", id: "claude-haiku-4-5" });
+	assert.equal(qualifiedDef.profile.source.model, "definition");
+
+	// Without `resolveBareModel`, providerless candidates cannot be verified and are skipped.
+	const unverifiedBare = resolveAgentProfileWithFallback(bareConfiguredDef, projectOnly, {
+		isProviderConfigured: (provider) => configured.has(provider),
+		projectConfig: projectOnly,
+		sessionDefaultModels: [{ provider: "anthropic", id: "claude-sonnet-4" }],
+	});
+	assert.deepEqual(unverifiedBare.profile.model, { provider: "anthropic", id: "claude-sonnet-4" });
+	assert.equal(unverifiedBare.profile.source.model, "default");
 });

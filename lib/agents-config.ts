@@ -400,9 +400,122 @@ export function readSubagentsFileResult(path: string): SubagentsFileReadResult {
 	}
 }
 
-export function loadAgentsConfig(roots: DiscoveryRoots): AgentsConfig {
+export interface AgentsConfigLayers {
+	global: AgentsConfig;
+	project: AgentsConfig;
+	merged: AgentsConfig;
+	paths: { global: string; project: string };
+}
+
+export function loadAgentsConfigLayers(roots: DiscoveryRoots): AgentsConfigLayers {
 	const paths = subagentsConfigPaths(roots);
-	return parseAgentsConfig(readJson(paths.global), readJson(paths.project));
+	const globalRaw = readJson(paths.global);
+	const projectRaw = readJson(paths.project);
+	return {
+		global: parseAgentsConfig(globalRaw, undefined),
+		project: parseAgentsConfig(undefined, projectRaw),
+		merged: parseAgentsConfig(globalRaw, projectRaw),
+		paths,
+	};
+}
+
+export function loadAgentsConfig(roots: DiscoveryRoots): AgentsConfig {
+	return loadAgentsConfigLayers(roots).merged;
+}
+
+export interface UnconfiguredProfileEntry {
+	/** Absolute path to the `subagents.json` file containing the offending entry. */
+	filePath: string;
+	/** Scope of the file ("global" or "project"). */
+	scope: AgentScope;
+	/** Role key under `model_profiles`. */
+	role: string;
+	/** Model reference whose provider has no configured credential. */
+	model: ModelRef;
+	/** Unconfigured provider id. */
+	provider: string;
+}
+
+/**
+ * Effective `model_profiles` entries across global and project `subagents.json`
+ * whose winning model names a provider with no configured credential.
+ * Project overrides global per role (matching `parseAgentsConfig`), so an
+ * overridden global entry is not reported when the project supplies a
+ * configured provider.
+ */
+export function findUnconfiguredModelProfiles(
+	roots: DiscoveryRoots,
+	isProviderConfigured: (provider: string) => boolean,
+): UnconfiguredProfileEntry[] {
+	const paths = subagentsConfigPaths(roots);
+	const winning = new Map<string, { filePath: string; scope: AgentScope; model: ModelRef }>();
+	for (const { filePath, scope } of [
+		{ filePath: paths.global, scope: AGENT_SCOPE.GLOBAL },
+		{ filePath: paths.project, scope: AGENT_SCOPE.PROJECT },
+	]) {
+		const read = readSubagentsFileResult(filePath);
+		if (read.status !== "valid") continue;
+		const profiles = parseProfiles(read.value.model_profiles);
+		for (const [role, profile] of Object.entries(profiles)) {
+			if (profile.model !== undefined) {
+				winning.set(role, { filePath, scope, model: profile.model });
+			}
+		}
+	}
+	const unconfigured: UnconfiguredProfileEntry[] = [];
+	for (const [role, entry] of winning) {
+		const provider = entry.model.provider;
+		if (provider !== undefined && !isProviderConfigured(provider)) {
+			unconfigured.push({
+				filePath: entry.filePath,
+				scope: entry.scope,
+				role,
+				model: entry.model,
+				provider,
+			});
+		}
+	}
+	return unconfigured;
+}
+
+export interface UnconfiguredModelFallback {
+	/** The configured model that could not be used because its provider has no credential. */
+	rejectedModel: ModelRef;
+	/** Provider name of `rejectedModel`. */
+	provider: string;
+	/** Offending config file path or profile source label, when known. */
+	sourcePath: string | undefined;
+	/** The configured fallback model, or `undefined` when inheriting Pi's default model. */
+	fallbackModel: ModelRef | undefined;
+	/** Source layer of the chosen fallback model. */
+	fallbackSource: ProfileSource;
+}
+
+export interface ResolvedProfileWithFallback {
+	profile: ResolvedProfile;
+	fallback: UnconfiguredModelFallback | undefined;
+}
+
+export interface ProfileFallbackContext {
+	/** Returns true when `provider` has configured credentials. */
+	isProviderConfigured: (provider: string) => boolean;
+	/**
+	 * Resolves a providerless model id to a configured `ModelRef` matching child
+	 * resolution, or `undefined` when no configured provider uniquely serves it.
+	 * Providerless fallback candidates are skipped when this cannot confirm a
+	 * configured provider.
+	 */
+	resolveBareModel?: (id: string) => ModelRef | undefined;
+	/** Global-only `subagents.json` config, used when a project override or pin fails. */
+	globalConfig?: AgentsConfig;
+	/** Project-only `subagents.json` config, used to attribute the offending config file. */
+	projectConfig?: AgentsConfig;
+	/** Paths to global and project `subagents.json`, used to name the offending config file. */
+	configPaths?: { global: string; project: string };
+	/** Label describing an explicit/pinned profile replacing `subagents.json`, when active. */
+	pinnedProfileSource?: string;
+	/** Session default models in priority order (e.g. live session model, then `settings.json` default). */
+	sessionDefaultModels?: ReadonlyArray<ModelRef | undefined>;
 }
 
 export function withPinnedModelProfiles(
@@ -524,6 +637,103 @@ export function resolveAgentProfile(agent: AgentDefinition, config: AgentsConfig
 		[config.defaultThinking, PROFILE_SOURCE.DEFAULT],
 	]);
 	return { model, thinking, ...(profile?.tier === undefined ? {} : { tier: profile.tier }), source: { model: modelSource, thinking: thinkingSource } };
+}
+
+/**
+ * Resolve an agent profile, falling back to a configured model when the winning
+ * model's provider has no registered credentials (gentle-shell#3563).
+ *
+ * Fallback order:
+ * 1. Global `subagents.json` `model_profiles[agent.name]` (when a project override or pin failed)
+ * 2. Agent definition frontmatter `model`
+ * 3. `subagents.json` `default_model` (merged, then global)
+ * 4. Session default model candidates (live session model, `settings.json` default)
+ * 5. `undefined` (inherit Pi's default model without `--model`)
+ */
+export function resolveAgentProfileWithFallback(
+	agent: AgentDefinition,
+	config: AgentsConfig,
+	options: ProfileFallbackContext,
+): ResolvedProfileWithFallback {
+	const primary = resolveAgentProfile(agent, config);
+	const rejected = primary.model;
+	if (!rejected?.provider || options.isProviderConfigured(rejected.provider)) {
+		return { profile: primary, fallback: undefined };
+	}
+
+	const resolveCandidate = (candidate: ModelRef | undefined): ModelRef | undefined => {
+		if (candidate === undefined) return undefined;
+		if (candidate.provider !== undefined) {
+			return options.isProviderConfigured(candidate.provider) ? candidate : undefined;
+		}
+		const resolved = options.resolveBareModel?.(candidate.id);
+		if (resolved?.provider === undefined) return undefined;
+		return options.isProviderConfigured(resolved.provider) ? resolved : undefined;
+	};
+
+	let sourcePath: string | undefined;
+	if (primary.source.model === PROFILE_SOURCE.PROFILE) {
+		if (options.pinnedProfileSource !== undefined) sourcePath = options.pinnedProfileSource;
+		else if (options.projectConfig?.modelProfiles[agent.name]?.model !== undefined) sourcePath = options.configPaths?.project;
+		else if (options.globalConfig?.modelProfiles[agent.name]?.model !== undefined) sourcePath = options.configPaths?.global;
+	} else if (primary.source.model === PROFILE_SOURCE.DEFINITION) {
+		sourcePath = agent.filePath;
+	} else if (primary.source.model === PROFILE_SOURCE.DEFAULT) {
+		sourcePath = options.projectConfig?.defaultModel !== undefined ? options.configPaths?.project : options.configPaths?.global;
+	}
+
+	let chosenModel: ModelRef | undefined;
+	let chosenSource: ProfileSource = PROFILE_SOURCE.UNRESOLVED;
+	let chosenTier: ServiceTier | undefined;
+
+	const globalRoleProfile = primary.source.model === PROFILE_SOURCE.PROFILE ? options.globalConfig?.modelProfiles[agent.name] : undefined;
+	const resolvedGlobalRole = resolveCandidate(globalRoleProfile?.model);
+	const resolvedDefinition = resolvedGlobalRole === undefined ? resolveCandidate(agent.model) : undefined;
+	const resolvedDefault = resolvedGlobalRole === undefined && resolvedDefinition === undefined ? resolveCandidate(config.defaultModel) : undefined;
+	const resolvedGlobalDefault = resolvedGlobalRole === undefined && resolvedDefinition === undefined && resolvedDefault === undefined
+		? resolveCandidate(options.globalConfig?.defaultModel)
+		: undefined;
+
+	if (resolvedGlobalRole !== undefined) {
+		chosenModel = resolvedGlobalRole;
+		chosenSource = PROFILE_SOURCE.PROFILE;
+		chosenTier = globalRoleProfile?.tier;
+	} else if (resolvedDefinition !== undefined) {
+		chosenModel = resolvedDefinition;
+		chosenSource = PROFILE_SOURCE.DEFINITION;
+	} else if (resolvedDefault !== undefined) {
+		chosenModel = resolvedDefault;
+		chosenSource = PROFILE_SOURCE.DEFAULT;
+	} else if (resolvedGlobalDefault !== undefined) {
+		chosenModel = resolvedGlobalDefault;
+		chosenSource = PROFILE_SOURCE.DEFAULT;
+	} else {
+		for (const sessionModel of options.sessionDefaultModels ?? []) {
+			const resolvedSession = resolveCandidate(sessionModel);
+			if (resolvedSession !== undefined) {
+				chosenModel = resolvedSession;
+				chosenSource = PROFILE_SOURCE.DEFAULT;
+				break;
+			}
+		}
+	}
+
+	const profile: ResolvedProfile = {
+		model: chosenModel,
+		thinking: primary.thinking,
+		...(chosenTier === undefined ? {} : { tier: chosenTier }),
+		source: { model: chosenSource, thinking: primary.source.thinking },
+	};
+	return {
+		profile,
+		fallback: {
+			rejectedModel: rejected,
+			provider: rejected.provider,
+			sourcePath,
+			fallbackModel: chosenModel,
+			fallbackSource: chosenSource,
+		},
+	};
 }
 
 export function formatModelRef(model: ModelRef | undefined): string {

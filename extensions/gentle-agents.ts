@@ -38,7 +38,8 @@ import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
 import { capReport, withReportCap } from "../lib/agents-report-cap.ts";
-import { parseModelRef, AGENT_MODE, PROFILE_SOURCE, PROVIDER_REVIEW_ROLES, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
+import { parseModelRef, AGENT_MODE, PROFILE_SOURCE, PROVIDER_REVIEW_ROLES, discoverAgents, findUnconfiguredModelProfiles, formatModelRef, loadAgentsConfig, loadAgentsConfigLayers, resolveAgentProfile, resolveAgentProfileWithFallback, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type AgentsConfigLayers, type ModelRef, type ProfileSource, type ResolvedProfileWithFallback, type UnconfiguredModelFallback, type UnconfiguredProfileEntry } from "../lib/agents-config.ts";
+import { readOrchestratorSettings } from "../lib/profiles-orchestrator.ts";
 import { freezeSessionProfileAtStartup, inheritedProfileDriftNotice, resolveSessionProfile, sessionProfileRoutingAt, type InheritedProfileOptions, type SessionProfileResolution } from "../lib/session-profile-freeze.ts";
 import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
 import { requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
@@ -286,6 +287,135 @@ function modelSourceToken(
 	const pin = resolveProfilePin(routingTarget);
 	if (pin !== undefined) return `pin:${pin.source}`;
 	return resolveUnversionedProjectProfile(routingTarget.cwd, routingTarget.configHome) !== undefined ? "declaration" : "profile";
+}
+
+interface ProviderAuthContext {
+	isProviderConfigured: (provider: string) => boolean;
+	resolveBareModel: (id: string) => ModelRef | undefined;
+}
+
+// gentle-shell#3563: inspect the host modelRegistry's local auth snapshot so
+// subagent routing can detect unconfigured providers (such as a project-local
+// .pi/subagents.json pinning `nan/glm5.3-flash` with no `nan` credential)
+// without triggering network calls. Returns undefined when the registry is
+// absent or does not expose auth status, so minimal stubs stay untouched.
+async function createProviderAuthChecker(
+	registry: ExtensionContext["modelRegistry"] | undefined,
+): Promise<ProviderAuthContext | undefined> {
+	if (!registry) return undefined;
+	const candidate = registry as unknown as {
+		getAvailable?: () => unknown;
+		getAll?: () => unknown;
+		getProviderAuthStatus?: (provider: string) => { configured?: boolean } | undefined;
+		hasConfiguredAuth?: (model: { provider: string; id: string }) => boolean;
+	};
+	let availableProviders: Set<string> | undefined;
+	let availableModels: Array<{ provider: string; id: string }> | undefined;
+	if (typeof candidate.getAvailable === "function") {
+		try {
+			const raw = candidate.getAvailable();
+			const models = Array.isArray(raw) ? raw : await raw;
+			if (Array.isArray(models)) {
+				availableProviders = new Set();
+				availableModels = [];
+				for (const model of models) {
+					if (!model || typeof model !== "object") continue;
+					const provider = (model as { provider?: unknown }).provider;
+					const id = (model as { id?: unknown }).id;
+					if (typeof provider === "string" && provider.length > 0) {
+						availableProviders.add(provider);
+						if (typeof id === "string" && id.length > 0) {
+							availableModels.push({ provider, id });
+						}
+					}
+				}
+			}
+		} catch { /* Fall through to other auth signals if available. */ }
+	}
+	const hasStatusFn = typeof candidate.getProviderAuthStatus === "function";
+	const hasAuthFn = typeof candidate.hasConfiguredAuth === "function";
+	if (availableProviders === undefined && !hasStatusFn && !hasAuthFn) return undefined;
+	const isProviderConfigured = (provider: string): boolean => {
+		if (availableProviders?.has(provider)) return true;
+		if (hasStatusFn) {
+			try {
+				const status = candidate.getProviderAuthStatus!(provider);
+				if (typeof status?.configured === "boolean") return status.configured;
+			} catch { /* Fall through. */ }
+		}
+		if (hasAuthFn) {
+			try {
+				return candidate.hasConfiguredAuth!({ provider, id: "" });
+			} catch { /* Fall through. */ }
+		}
+		return availableProviders !== undefined ? availableProviders.has(provider) : true;
+	};
+	const configuredModels = (): Array<{ provider: string; id: string }> => {
+		if (availableModels !== undefined) return availableModels;
+		if (typeof candidate.getAll !== "function") return [];
+		try {
+			const raw = candidate.getAll();
+			if (!Array.isArray(raw)) return [];
+			const models: Array<{ provider: string; id: string }> = [];
+			for (const model of raw) {
+				if (!model || typeof model !== "object") continue;
+				const provider = (model as { provider?: unknown }).provider;
+				const id = (model as { id?: unknown }).id;
+				if (typeof provider === "string" && provider.length > 0 && typeof id === "string" && id.length > 0 && isProviderConfigured(provider)) {
+					models.push({ provider, id });
+				}
+			}
+			return models;
+		} catch {
+			return [];
+		}
+	};
+	const resolveBareModel = (id: string): ModelRef | undefined => {
+		const lowerId = id.trim().toLowerCase();
+		if (lowerId.length === 0) return undefined;
+		const matches = configuredModels().filter((model) => model.id.toLowerCase() === lowerId);
+		const providers = new Set(matches.map((model) => model.provider));
+		if (providers.size !== 1) return undefined;
+		return { provider: matches[0]!.provider, id: matches[0]!.id };
+	};
+	return { isProviderConfigured, resolveBareModel };
+}
+
+function readSettingsDefaultModel(homeDir: string): ModelRef | undefined {
+	try {
+		const read = readOrchestratorSettings(join(homeDir, "settings.json"));
+		return read.status === "valid" ? parseModelRef(read.entry?.model) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function pinnedProfileLabel(resolution: SessionProfileResolution): string {
+	if (resolution.kind === "explicit") return `profile "${resolution.name}"`;
+	if (resolution.kind === "inherited" && resolution.profile !== undefined) return `profile "${resolution.profile.name}"`;
+	return "pinned profile";
+}
+
+function fallbackModelSourceToken(fallbackSource: ProfileSource): string | undefined {
+	if (fallbackSource === PROFILE_SOURCE.PROFILE) return "profile";
+	if (fallbackSource === PROFILE_SOURCE.DEFINITION) return "definition";
+	if (fallbackSource === PROFILE_SOURCE.DEFAULT) return "default";
+	return undefined;
+}
+
+function formatUnconfiguredModelFallbackWarning(agentName: string, fallback: UnconfiguredModelFallback): string {
+	const safeAgent = sanitizeTerminalText(agentName);
+	const safeRejected = sanitizeTerminalText(formatModelRef(fallback.rejectedModel));
+	const safeProvider = sanitizeTerminalText(fallback.provider);
+	const origin = fallback.sourcePath ? ` (from ${sanitizeTerminalText(fallback.sourcePath)})` : "";
+	const target = fallback.fallbackModel ? sanitizeTerminalText(formatModelRef(fallback.fallbackModel)) : "session default model";
+	return `Subagent ${safeAgent}: model ${safeRejected}${origin} uses unconfigured provider "${safeProvider}"; falling back to ${target}.`;
+}
+
+function formatUnconfiguredProfilesWarning(entries: ReadonlyArray<UnconfiguredProfileEntry>): string {
+	return entries
+		.map((entry) => `Unconfigured subagent model provider in ${sanitizeTerminalText(entry.filePath)}: role "${sanitizeTerminalText(entry.role)}" pins "${sanitizeTerminalText(formatModelRef(entry.model))}" (no credentials for provider "${sanitizeTerminalText(entry.provider)}").`)
+		.join(" ") + " Subagent launches will fall back to a configured/default model.";
 }
 
 export function agentRuntimePaths(home: string, agentHome = join(home, ".pi", "agent")): { sessions: string; transcripts: string } {
@@ -2673,14 +2803,35 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			resolveWorktree: deps.resolveWorktree,
 			env: deps.env,
 		});
+		const resolveLaunchProfile = (
+			layers: AgentsConfigLayers,
+			pinnedRouting: ReturnType<typeof sessionProfileRoutingAt>,
+			providerAuth: ProviderAuthContext | undefined,
+			sessionDefaultModels: ReadonlyArray<ModelRef | undefined>,
+		): ResolvedProfileWithFallback => {
+			const config = withPinnedModelProfiles(layers.merged, pinnedRouting);
+			if (!providerAuth) return { profile: resolveAgentProfile(agent, config), fallback: undefined };
+			return resolveAgentProfileWithFallback(agent, config, {
+				isProviderConfigured: providerAuth.isProviderConfigured,
+				resolveBareModel: providerAuth.resolveBareModel,
+				globalConfig: layers.global,
+				projectConfig: layers.project,
+				configPaths: layers.paths,
+				pinnedProfileSource: pinnedRouting !== undefined ? pinnedProfileLabel(sessionProfile) : undefined,
+				sessionDefaultModels,
+			});
+		};
+		const providerAuth = await createProviderAuthChecker(ctx.modelRegistry);
+		const sessionDefaultModels: ReadonlyArray<ModelRef | undefined> = [
+			ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined,
+			readSettingsDefaultModel(agentHome),
+		];
 		if (!resume && isGenericBoundedWriter(agent.name) && surfaces?.some(isDevelopmentSurface) && !deps.resolveWorktree(originalCwd, originalCwd) && repositoryRoot === undefined) {
 			const root = safeBootstrapDirectory(originalCwd);
 			if (!root || (workspaceRoot !== undefined && (!isAbsolute(workspaceRoot) || safeBootstrapDirectory(workspaceRoot) !== root))) throw new Error("Writer bootstrap requires the original safe project root.");
-			const config = withPinnedModelProfiles(
-				loadAgentsConfig(roots(ctx)),
-				sessionProfileRoutingAt(sessionProfile, { cwd: root, configHome: profileConfigHome, resolveWorktree: deps.resolveWorktree }),
-			);
-			const model = resolveAgentProfile(agent, config).model ?? ctx.model;
+			const bootstrapLayers = loadAgentsConfigLayers(roots(ctx));
+			const bootstrapPinned = sessionProfileRoutingAt(sessionProfile, { cwd: root, configHome: profileConfigHome, resolveWorktree: deps.resolveWorktree });
+			const model = resolveLaunchProfile(bootstrapLayers, bootstrapPinned, providerAuth, sessionDefaultModels).profile.model ?? ctx.model;
 			const catalogModel = model?.provider ? ctx.modelRegistry?.find(model.provider, model.id) : ctx.modelRegistry?.getAll().find(candidate => candidate.id === model?.id);
 			if (!catalogModel) throw new Error("Writer bootstrap requires a valid effective model in this session's catalog.");
 			admittedModel = `${catalogModel.provider}/${catalogModel.id}`;
@@ -2742,10 +2893,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			resolveWorktree: pinIdentity,
 			foreignRepository: foreign,
 		};
-		const config = withPinnedModelProfiles(
-			loadAgentsConfig(roots(ctx)),
-			sessionProfileRoutingAt(sessionProfile, routingTarget),
-		);
+		const layers = loadAgentsConfigLayers(roots(ctx));
+		const pinnedRouting = sessionProfileRoutingAt(sessionProfile, routingTarget);
+		const config = withPinnedModelProfiles(layers.merged, pinnedRouting);
 		// Drift is measured against the defaults of the session's own directory,
 		// where the profile was frozen, never against a delegated target.
 		if (ctx.hasUI) {
@@ -2758,7 +2908,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			});
 			if (drift !== undefined) ctx.ui.notify(drift, "info");
 		}
-		const profile = resolveAgentProfile(agent, config);
+		const { profile, fallback: unconfiguredFallback } = resolveLaunchProfile(layers, pinnedRouting, providerAuth, sessionDefaultModels);
+		if (unconfiguredFallback !== undefined && ctx.hasUI) {
+			ctx.ui.notify(formatUnconfiguredModelFallbackWarning(agent.name, unconfiguredFallback), "warning");
+		}
 		// Issue #2196 (PR #2233 maintainer decision): a model_profiles key that
 		// names no discovered agent was silently ignored while the child inherited
 		// the orchestrator model. When a configured key suggests this agent, name
@@ -2785,7 +2938,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}
 		// #2180: the winning layer is named from the resolution and routing this
 		// request already performed, never by re-resolving them.
-		const modelSource = modelSourceToken(profile.source.model, sessionProfile, routingTarget);
+		const modelSource = unconfiguredFallback !== undefined
+			? fallbackModelSourceToken(unconfiguredFallback.fallbackSource)
+			: modelSourceToken(profile.source.model, sessionProfile, routingTarget);
 		if (admittedModel !== undefined) {
 			const model = profile.model ?? ctx.model;
 			const catalogModel = model?.provider ? ctx.modelRegistry?.find(model.provider, model.id) : ctx.modelRegistry?.getAll().find(candidate => candidate.id === model?.id);
@@ -3636,6 +3791,49 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		presence?.dispose();
 		registryFor(ctx);
 		showWidget(ctx);
+		// gentle-shell#3563: validate subagents.json model_profiles at session
+		// start and surface any unconfigured provider with the offending file
+		// path and role before any subagent is launched.
+		if (ctx.hasUI) {
+			try {
+				const providerAuth = await createProviderAuthChecker(ctx.modelRegistry);
+				if (providerAuth) {
+					const { isProviderConfigured } = providerAuth;
+					const sessionCwd = ctx.sessionManager.getCwd();
+					const configHome = gentlePiConfigHome(deps.env);
+					const sessionProfile = resolveSessionProfile({
+						sessionId: ctx.sessionManager.getSessionId(),
+						cwd: sessionCwd,
+						configHome,
+						resolveWorktree: deps.resolveWorktree,
+						env: deps.env,
+					});
+					const pinnedRouting = sessionProfileRoutingAt(sessionProfile, {
+						cwd: sessionCwd,
+						configHome,
+						resolveWorktree: deps.resolveWorktree,
+					});
+					if (pinnedRouting === undefined) {
+						const unconfigured = findUnconfiguredModelProfiles(roots(ctx), isProviderConfigured);
+						if (unconfigured.length > 0) {
+							ctx.ui.notify(formatUnconfiguredProfilesWarning(unconfigured), "warning");
+						}
+					} else {
+						const label = pinnedProfileLabel(sessionProfile);
+						const pinnedIssues: UnconfiguredProfileEntry[] = [];
+						for (const [role, entry] of Object.entries(pinnedRouting)) {
+							const model = parseModelRef(entry?.model);
+							if (model?.provider && !isProviderConfigured(model.provider)) {
+								pinnedIssues.push({ filePath: label, scope: "project", role, model, provider: model.provider });
+							}
+						}
+						if (pinnedIssues.length > 0) {
+							ctx.ui.notify(formatUnconfiguredProfilesWarning(pinnedIssues), "warning");
+						}
+					}
+				}
+			} catch { /* Profile validation must never block session startup. */ }
+		}
 		emitHerdrTasks(activeSessionId());
 		if (activeSessionId()) emitHerdrJobs(activeSessionId()!);
 		// An explicit in-session /resume always brings this session's own

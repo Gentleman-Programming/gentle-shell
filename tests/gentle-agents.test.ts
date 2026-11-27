@@ -9622,3 +9622,269 @@ test("cross-session coordination tools are hidden behind codemode and named by a
 		await fire("session_shutdown", ctx);
 	}
 });
+
+// Issue #3563: a project-local .pi/subagents.json pinning a role to an
+// unconfigured provider (e.g. nan/glm5.3-flash with no nan credential) must
+// warn at session_start naming the offending file + role, and fall back at
+// launch to the global profile or session default model instead of killing
+// delegation with 0 turns.
+test("issue #3563: unconfigured provider in project .pi/subagents.json warns at session_start and falls back to session default", async (t) => {
+	const projectDir = mkdtempSync(join(root, "issue-3563-project-"));
+	const agentHomeDir = mkdtempSync(join(root, "issue-3563-agent-"));
+	const configHomeDir = mkdtempSync(join(root, "issue-3563-config-"));
+	t.after(() => {
+		rmSync(projectDir, TEST_DIR_REMOVAL);
+		rmSync(agentHomeDir, TEST_DIR_REMOVAL);
+		rmSync(configHomeDir, TEST_DIR_REMOVAL);
+	});
+	mkdirSync(join(agentHomeDir, "agents"), { recursive: true });
+	mkdirSync(join(projectDir, ".pi"), { recursive: true });
+	writeFileSync(join(agentHomeDir, "agents", "gentle-ai-explore.md"), "---\ndescription: Explore codebase\ntools: [read]\n---\nMap files.");
+	writeFileSync(join(agentHomeDir, "settings.json"), `${JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-sonnet-4" })}\n`);
+	const projectSubagents = join(projectDir, ".pi", "subagents.json");
+	writeFileSync(projectSubagents, `${JSON.stringify({ model_profiles: { "gentle-ai-explore": { model: "nan/glm5.3-flash", effort: "medium" } } })}\n`);
+
+	const h = fakePi();
+	const harness = deps();
+	const { home: _home, env: _env, ...overrides } = harness.deps;
+	const captures = captureLaunches(t);
+	gentleAgents(h.pi, { GENTLE_PI_AGENT_HOME: agentHomeDir, GENTLE_PI_CONFIG_HOME: configHomeDir }, overrides);
+	const { ctx, dialogs } = fakeContext();
+	ctx.cwd = projectDir;
+	ctx.sessionManager.getCwd = () => projectDir;
+	Object.assign(ctx, {
+		model: { provider: "anthropic", id: "claude-sonnet-4" },
+		modelRegistry: {
+			getAvailable: () => [{ provider: "anthropic", id: "claude-sonnet-4" }, { provider: "openai", id: "gpt-5.4" }],
+			getProviderAuthStatus: (provider: string) => ({ configured: provider === "anthropic" || provider === "openai" }),
+			hasConfiguredAuth: (model: { provider: string }) => model.provider === "anthropic" || model.provider === "openai",
+		},
+	});
+
+	await h.fire("session_start", ctx);
+	try {
+		assert.ok(
+			dialogs.some((line) => line.includes(projectSubagents) && line.includes("gentle-ai-explore") && line.includes("nan")),
+			`expected session_start warning naming ${projectSubagents}, role, and provider; got: ${dialogs.join("\n")}`,
+		);
+
+		dialogs.length = 0;
+		await h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+
+		assert.equal(captures.length, 1);
+		assert.deepEqual(captures[0]!.request.model, { provider: "anthropic", id: "claude-sonnet-4" }, "launch must fall back to the configured session default instead of nan/glm5.3-flash");
+		assert.equal(captures[0]!.request.thinking, "medium");
+		assert.ok(
+			dialogs.some((line) => line.includes("gentle-ai-explore") && line.includes("nan/glm5.3-flash") && line.includes(projectSubagents) && line.includes("anthropic/claude-sonnet-4")),
+			`expected launch fallback warning naming role, model, config file, and fallback; got: ${dialogs.join("\n")}`,
+		);
+	} finally {
+		await h.fire("session_shutdown", ctx);
+	}
+});
+
+test("issue #3563: unconfigured project pin falls back to configured global subagents.json profile before session default", async (t) => {
+	const projectDir = mkdtempSync(join(root, "issue-3563-global-project-"));
+	const agentHomeDir = mkdtempSync(join(root, "issue-3563-global-agent-"));
+	const configHomeDir = mkdtempSync(join(root, "issue-3563-global-config-"));
+	t.after(() => {
+		rmSync(projectDir, TEST_DIR_REMOVAL);
+		rmSync(agentHomeDir, TEST_DIR_REMOVAL);
+		rmSync(configHomeDir, TEST_DIR_REMOVAL);
+	});
+	mkdirSync(join(agentHomeDir, "agents"), { recursive: true });
+	mkdirSync(join(projectDir, ".pi"), { recursive: true });
+	writeFileSync(join(agentHomeDir, "agents", "gentle-ai-explore.md"), "---\ndescription: Explore codebase\ntools: [read]\n---\nMap files.");
+	writeFileSync(join(agentHomeDir, "subagents.json"), `${JSON.stringify({ model_profiles: { "gentle-ai-explore": { model: "openai/gpt-5.4", effort: "low" } } })}\n`);
+	writeFileSync(join(projectDir, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { "gentle-ai-explore": { model: "nan/glm5.3-flash" } } })}\n`);
+
+	const h = fakePi();
+	const harness = deps();
+	const { home: _home, env: _env, ...overrides } = harness.deps;
+	const captures = captureLaunches(t);
+	gentleAgents(h.pi, { GENTLE_PI_AGENT_HOME: agentHomeDir, GENTLE_PI_CONFIG_HOME: configHomeDir }, overrides);
+	const { ctx, dialogs } = fakeContext();
+	ctx.cwd = projectDir;
+	ctx.sessionManager.getCwd = () => projectDir;
+	Object.assign(ctx, {
+		model: { provider: "anthropic", id: "claude-sonnet-4" },
+		modelRegistry: {
+			getAvailable: () => [{ provider: "anthropic", id: "claude-sonnet-4" }, { provider: "openai", id: "gpt-5.4" }],
+			getProviderAuthStatus: (provider: string) => ({ configured: provider === "anthropic" || provider === "openai" }),
+		},
+	});
+
+	await h.fire("session_start", ctx);
+	try {
+		await h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(captures.length, 1);
+		assert.deepEqual(captures[0]!.request.model, { provider: "openai", id: "gpt-5.4" }, "global subagents.json profile must be preferred over session default when configured");
+		assert.ok(dialogs.some((line) => line.includes("openai/gpt-5.4")));
+	} finally {
+		await h.fire("session_shutdown", ctx);
+	}
+});
+
+test("issue #3563: configured provider in project .pi/subagents.json stays untouched with no warnings", async (t) => {
+	const projectDir = mkdtempSync(join(root, "issue-3563-valid-project-"));
+	const agentHomeDir = mkdtempSync(join(root, "issue-3563-valid-agent-"));
+	const configHomeDir = mkdtempSync(join(root, "issue-3563-valid-config-"));
+	t.after(() => {
+		rmSync(projectDir, TEST_DIR_REMOVAL);
+		rmSync(agentHomeDir, TEST_DIR_REMOVAL);
+		rmSync(configHomeDir, TEST_DIR_REMOVAL);
+	});
+	mkdirSync(join(agentHomeDir, "agents"), { recursive: true });
+	mkdirSync(join(projectDir, ".pi"), { recursive: true });
+	writeFileSync(join(agentHomeDir, "agents", "gentle-ai-explore.md"), "---\ndescription: Explore codebase\ntools: [read]\n---\nMap files.");
+	writeFileSync(join(projectDir, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { "gentle-ai-explore": { model: "nan/glm5.3-flash", effort: "medium" } } })}\n`);
+
+	const h = fakePi();
+	const harness = deps();
+	const { home: _home, env: _env, ...overrides } = harness.deps;
+	const captures = captureLaunches(t);
+	gentleAgents(h.pi, { GENTLE_PI_AGENT_HOME: agentHomeDir, GENTLE_PI_CONFIG_HOME: configHomeDir }, overrides);
+	const { ctx, dialogs } = fakeContext();
+	ctx.cwd = projectDir;
+	ctx.sessionManager.getCwd = () => projectDir;
+	Object.assign(ctx, {
+		model: { provider: "anthropic", id: "claude-sonnet-4" },
+		modelRegistry: {
+			getAvailable: () => [{ provider: "anthropic", id: "claude-sonnet-4" }, { provider: "nan", id: "glm5.3-flash" }],
+			getProviderAuthStatus: (provider: string) => ({ configured: provider === "anthropic" || provider === "nan" }),
+		},
+	});
+
+	await h.fire("session_start", ctx);
+	try {
+		assert.equal(dialogs.length, 0, "configured provider must not warn at session_start");
+		await h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(captures.length, 1);
+		assert.deepEqual(captures[0]!.request.model, { provider: "nan", id: "glm5.3-flash" });
+		assert.equal(captures[0]!.request.modelSource, "profile");
+		assert.equal(dialogs.length, 0, "configured provider must not warn at launch");
+	} finally {
+		await h.fire("session_shutdown", ctx);
+	}
+});
+
+test("issue #3563: falls back to settings.json defaultProvider/defaultModel when ctx.model is unset, or inherits default when neither is configured", async (t) => {
+	const projectDir = mkdtempSync(join(root, "issue-3563-settings-project-"));
+	const agentHomeDir = mkdtempSync(join(root, "issue-3563-settings-agent-"));
+	const configHomeDir = mkdtempSync(join(root, "issue-3563-settings-config-"));
+	t.after(() => {
+		rmSync(projectDir, TEST_DIR_REMOVAL);
+		rmSync(agentHomeDir, TEST_DIR_REMOVAL);
+		rmSync(configHomeDir, TEST_DIR_REMOVAL);
+	});
+	mkdirSync(join(agentHomeDir, "agents"), { recursive: true });
+	mkdirSync(join(projectDir, ".pi"), { recursive: true });
+	writeFileSync(join(agentHomeDir, "agents", "gentle-ai-explore.md"), "---\ndescription: Explore codebase\ntools: [read]\n---\nMap files.");
+	writeFileSync(join(agentHomeDir, "settings.json"), `${JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-sonnet-4" })}\n`);
+	writeFileSync(join(projectDir, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { "gentle-ai-explore": { model: "nan/glm5.3-flash" } } })}\n`);
+
+	const h = fakePi();
+	const harness = deps();
+	const { home: _home, env: _env, ...overrides } = harness.deps;
+	const captures = captureLaunches(t);
+	gentleAgents(h.pi, { GENTLE_PI_AGENT_HOME: agentHomeDir, GENTLE_PI_CONFIG_HOME: configHomeDir }, overrides);
+	const { ctx, dialogs } = fakeContext();
+	ctx.cwd = projectDir;
+	ctx.sessionManager.getCwd = () => projectDir;
+	Object.assign(ctx, {
+		modelRegistry: {
+			getAvailable: () => [{ provider: "anthropic", id: "claude-sonnet-4" }],
+			getProviderAuthStatus: (provider: string) => ({ configured: provider === "anthropic" }),
+		},
+	});
+
+	await h.fire("session_start", ctx);
+	try {
+		await h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(captures.length, 1);
+		assert.deepEqual(captures[0]!.request.model, { provider: "anthropic", id: "claude-sonnet-4" });
+
+		// Remove settings.json: falls back to undefined (child inherits Pi default without --model).
+		rmSync(join(agentHomeDir, "settings.json"), { force: true });
+		dialogs.length = 0;
+		await h.tools.get("subagent_run")!.execute("run2", { agent: "gentle-ai-explore", task: "Map 2", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(captures.length, 2);
+		assert.equal(captures[1]!.request.model, undefined);
+		assert.ok(dialogs.some((line) => line.includes("falling back to session default model")));
+	} finally {
+		await h.fire("session_shutdown", ctx);
+	}
+});
+
+test("issue #3563: providerless definition model matching only an unconfigured provider is skipped in favor of session default", async (t) => {
+	const projectDir = mkdtempSync(join(root, "issue-3563-bare-def-project-"));
+	const agentHomeDir = mkdtempSync(join(root, "issue-3563-bare-def-agent-"));
+	const configHomeDir = mkdtempSync(join(root, "issue-3563-bare-def-config-"));
+	t.after(() => {
+		rmSync(projectDir, TEST_DIR_REMOVAL);
+		rmSync(agentHomeDir, TEST_DIR_REMOVAL);
+		rmSync(configHomeDir, TEST_DIR_REMOVAL);
+	});
+	mkdirSync(join(agentHomeDir, "agents"), { recursive: true });
+	mkdirSync(join(projectDir, ".pi"), { recursive: true });
+	writeFileSync(join(agentHomeDir, "agents", "gentle-ai-explore.md"), "---\ndescription: Explore codebase\nmodel: glm5.3-flash\ntools: [read]\n---\nMap files.");
+	writeFileSync(join(agentHomeDir, "agents", "gentle-ai-verify.md"), "---\ndescription: Verify codebase\nmodel: claude-haiku-4-5\ntools: [read]\n---\nVerify files.");
+	writeFileSync(join(projectDir, ".pi", "subagents.json"), `${JSON.stringify({
+		model_profiles: {
+			"gentle-ai-explore": { model: "nan/glm5.3-flash" },
+			"gentle-ai-verify": { model: "nan/glm5.3-flash" },
+		},
+	})}\n`);
+
+	const h = fakePi();
+	const harness = deps();
+	const { home: _home, env: _env, ...overrides } = harness.deps;
+	const captures = captureLaunches(t);
+	gentleAgents(h.pi, { GENTLE_PI_AGENT_HOME: agentHomeDir, GENTLE_PI_CONFIG_HOME: configHomeDir }, overrides);
+	const { ctx } = fakeContext();
+	ctx.cwd = projectDir;
+	ctx.sessionManager.getCwd = () => projectDir;
+	Object.assign(ctx, {
+		model: { provider: "anthropic", id: "claude-sonnet-4" },
+		modelRegistry: {
+			getAll: () => [
+				{ provider: "nan", id: "glm5.3-flash" },
+				{ provider: "anthropic", id: "claude-haiku-4-5" },
+				{ provider: "anthropic", id: "claude-sonnet-4" },
+			],
+			getAvailable: () => [
+				{ provider: "anthropic", id: "claude-haiku-4-5" },
+				{ provider: "anthropic", id: "claude-sonnet-4" },
+			],
+			getProviderAuthStatus: (provider: string) => ({ configured: provider === "anthropic" }),
+		},
+	});
+
+	await h.fire("session_start", ctx);
+	try {
+		await h.tools.get("subagent_run")!.execute("run-bare-unconfigured", { agent: "gentle-ai-explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(captures.length, 1);
+		assert.deepEqual(
+			captures[0]!.request.model,
+			{ provider: "anthropic", id: "claude-sonnet-4" },
+			"bare definition model served only by unconfigured nan must be skipped so the configured session model wins",
+		);
+
+		await h.tools.get("subagent_run")!.execute("run-bare-configured", { agent: "gentle-ai-verify", task: "Verify", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(captures.length, 2);
+		assert.deepEqual(
+			captures[1]!.request.model,
+			{ provider: "anthropic", id: "claude-haiku-4-5" },
+			"bare definition model served uniquely by a configured provider must be qualified with that provider",
+		);
+	} finally {
+		await h.fire("session_shutdown", ctx);
+	}
+});

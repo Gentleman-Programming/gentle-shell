@@ -2014,3 +2014,19 @@ test("design-group: a design whose folder or design.json resolves outside design
 	assert.equal(JSON.parse((await rawRequest(port, `${base}api/designs`)).body).designs.some((design: { slug: string }) => design.slug === "linked" || design.slug === "sneaky"), false);
 	assert.equal((await postJson(port, GROUP_PATH, { group: "Admin" })).status, 200);
 });
+
+test("design-group: a change that would push design.json past the manifest limit is refused before anything is written", async (t) => {
+	const { port, root } = await start(t);
+	const manifestPath = join(root, "alpha", "design.json");
+	// Pad the brief so the file is exactly 5 bytes under the limit: the group member would push it over.
+	const base = (brief: string) => `${JSON.stringify({ title: "Alpha", brief, artboards: [{ file: "01-hero.html", title: "Hero", tradeoff: "t", width: 800, height: 600 }] }, null, 2)}\n`;
+	const limit = 256 * 1024;
+	const pad = limit - 5 - Buffer.byteLength(base(""), "utf8");
+	const content = base("x".repeat(pad));
+	assert.equal(Buffer.byteLength(content, "utf8"), limit - 5);
+	writeFileSync(manifestPath, content);
+	const reply = await postJson(port, GROUP_PATH, { group: "Admin" });
+	assert.equal(reply.status, 422);
+	assert.equal(JSON.parse(reply.body).error, "manifest-too-large");
+	assert.equal(readFileSync(manifestPath, "utf8"), content);
+});

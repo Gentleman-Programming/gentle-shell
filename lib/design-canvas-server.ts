@@ -547,7 +547,10 @@ export async function setDesignGroup(designRoot: string, slug: string, value: un
 		if (current === next) return result(false);
 		if (next === undefined) delete manifest.group;
 		else manifest.group = next;
-		await replaceDesignFile(dirname(path), path, "design.json", `${JSON.stringify(manifest, null, 2)}\n`);
+		const text = `${JSON.stringify(manifest, null, 2)}\n`;
+		// A file the server could not read back (over the manifest limit) is never written.
+		if (Buffer.byteLength(text, "utf8") > LIMITS.manifestBytes) throw new HttpError(422, "manifest-too-large", { error: "manifest-too-large", reason: "design.json would exceed the manifest size limit" });
+		await replaceDesignFile(dirname(path), path, "design.json", text);
 		return result(true);
 	});
 }

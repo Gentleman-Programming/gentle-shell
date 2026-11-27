@@ -4,7 +4,7 @@ import { flush, loadCanvas } from "./support/design-canvas-dom.ts";
 
 // Design groups (design.json "group"). A pill floats over the canvas, top-left: it names the open design's group
 // ("No group" when it has none), and its popover files the design under one of the groups in use, under "No group",
-// or under a new name. The strip under the bar holds one filter chip per group; the design selector follows the chip.
+// or under a new name. The design selector lists every design, grouped by name.
 
 const manifest = (slug: string, title: string) => ({ slug, title, brief: "", artboards: [{ file: "01-a.html", title: "A", tradeoff: "", width: 400, height: 300 }] });
 const GROUPED = [
@@ -153,9 +153,14 @@ test("Escape closes the popover without posting", async () => {
 	assert.equal(canvas.posts.length, 0);
 });
 
-test("focus mode disables the pill and the design selector", async () => {
+test("the pill and the design selector stay enabled in navigation, and both are disabled once an artboard is focused", async () => {
 	const canvas = await loadCanvas(300, replies(GROUPED), { slug: "admin-settings" });
 	await flush();
-	const design = $(canvas, "gd-design").disabled;
-	assert.equal($(canvas, "gd-group").disabled, design);
+	assert.equal($(canvas, "gd-design").disabled, false);
+	assert.equal($(canvas, "gd-group").disabled, false);
+	// Enter on an artboard's shield is how a person enters focus mode.
+	canvas.boards[0].shield.dispatch("keydown", { key: "Enter" });
+	await flush();
+	assert.equal($(canvas, "gd-design").disabled, true);
+	assert.equal($(canvas, "gd-group").disabled, true);
 });

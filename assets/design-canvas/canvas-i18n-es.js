@@ -65,6 +65,7 @@ export const ES = Object.freeze({
 		noGroup: "Sin grupo",
 		groupSuggest: (name) => `¿Querías decir «${name}»?`,
 		groupFailed: (reason) => `No se ha guardado: ${reason}`,
+		groupRefreshFailed: (reason) => `Guardado, pero la lista no se ha actualizado: ${reason}`,
 		frameTitle: (title) => `Propuesta ${title}`,
 		viewSystem: (title) => `Ver ${title} (solo lectura)`,
 		use: (title) => `Usar ${title}`,

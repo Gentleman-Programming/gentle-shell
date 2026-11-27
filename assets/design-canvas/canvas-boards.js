@@ -30,6 +30,7 @@ const TEXT = Object.freeze({
 	feature: (feature) => `Feature: ${feature}`,
 	groupSuggest: (name) => `Did you mean "${name}"?`,
 	groupFailed: (reason) => `Not saved: ${reason}`,
+	groupRefreshFailed: (reason) => `Saved, but the list did not refresh: ${reason}`,
 	noDesigns: "No designs yet. Run /gentle:design with a brief to create one.",
 	cannotShow: (slug, reason) => `Design "${slug}" cannot be shown: ${reason}`,
 	invalidManifest: (slug) => `design.json for ${slug} is invalid`,
@@ -473,14 +474,26 @@ export function init(ctx) {
 	/** Files the open design under a group, or takes it out of one (null, or an empty name). */
 	async function saveGroup(group) {
 		const value = group === null || group === "" ? null : group;
-		const reply = await api.postJson(`api/designs/${encodeURIComponent(state.slug)}/group`, { group: value });
+		let reply;
+		try {
+			reply = await api.postJson(`api/designs/${encodeURIComponent(state.slug)}/group`, { group: value });
+		} catch (error) {
+			els.groupError.textContent = T.groupFailed(error.message);
+			els.groupError.hidden = false;
+			return;
+		}
 		if (!reply.ok) {
 			els.groupError.textContent = T.groupFailed(reply.body.reason || reply.body.error || `HTTP ${reply.status}`);
 			els.groupError.hidden = false;
 			return;
 		}
 		setGroupMenu(false);
-		await refreshDesigns(false);
+		// The file is saved at this point: a failed refresh only means the list is stale.
+		try {
+			await refreshDesigns(false);
+		} catch (error) {
+			setStatus(T.groupRefreshFailed(error.message), true);
+		}
 	}
 
 	function createGroup() {
@@ -523,6 +536,7 @@ export function init(ctx) {
 	function openPicked(slug) {
 		actions.exitCompare(false);
 		store.setDesign({ slug });
+		labelGroupButton(listed);
 		actions.hideInspector();
 		// The old design's checks and ring go at once too.
 		actions.refreshChecks();
@@ -544,6 +558,7 @@ export function init(ctx) {
 			actions.exitCompare(false);
 			actions.exitFocus();
 			store.setDesign({ slug });
+			labelGroupButton(listed);
 			actions.hideInspector();
 			actions.refreshChecks();
 			store.setComments({ comments: [], activeId: null });

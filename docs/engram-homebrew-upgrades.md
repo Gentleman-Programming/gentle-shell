@@ -20,7 +20,7 @@ curl --noproxy '*' --fail --silent --show-error --max-time 3 http://127.0.0.1:74
 curl --noproxy '*' --fail --silent --show-error --max-time 3 http://127.0.0.1:7437/compatibility
 ```
 
-The first two show the Homebrew version and the path of its executable. The `version` in the `/health` answer is the version of the server actually running. Shell reuses that server only when its `/compatibility` answer meets the [complete reuse contract](bundled-install.md#compatible-reuse-and-authorization), which includes `"status":"ready"` and `"active_reuse_authorized":true` among other fields; any other answer from a listening server means Shell disables memory for that launch. If the request fails because nothing listens on the port, Shell starts its bundled core on the next launch only when its [startup safety checks](bundled-install.md#decision) pass; a missing or unverified core, or a store migrated by a newer Engram, keeps memory disabled.
+The first two show the Homebrew version and the path of its executable. The `version` in the `/health` answer is the version of the server actually running. Shell reuses that server only when its `/compatibility` answer meets the [complete reuse contract](bundled-install.md#compatible-reuse-and-authorization), which includes `"status":"ready"` and `"active_reuse_authorized":true` among other fields; any other answer from a listening server means Shell disables memory for that launch. If the request fails because nothing listens on the port, Shell starts its bundled core on the next launch only when its [startup safety checks](bundled-install.md#decision) pass; a missing or unverified core keeps memory disabled, and so usually does a store migrated by a newer Engram (see the header tripwire limits in step 2).
 
 To see which executable that server runs from, find the process listening on the port:
 
@@ -44,7 +44,7 @@ Use `readlink` without `-f`: if the upgrade removed the old executable, `-f` fai
 | `~/.gentle-shell/runtime/engram-<version>/engram` | Shell started its bundled core. The Homebrew upgrade does not affect it. |
 | Nothing listening | Shell starts its bundled core on the next launch. |
 
-Also run `env | grep '^ENGRAM_'`. If you set `ENGRAM_BIN`, `ENGRAM_URL`, `ENGRAM_PORT`, `ENGRAM_SOCKET`, `ENGRAM_DATA_DIR`, `ENGRAM_DATABASE_URL` or `ENGRAM_SERVER_MODE`, or an invalid `ENGRAM_STARTUP_POLICY`, Shell does not probe or reuse the default server, and memory stays disabled ([decision table](bundled-install.md#decision)). Other `ENGRAM_*` settings do not change this decision.
+Also run `env | grep '^ENGRAM_'`. If you set `ENGRAM_BIN`, `ENGRAM_URL`, `ENGRAM_PORT`, `ENGRAM_SOCKET`, `ENGRAM_DATA_DIR`, `ENGRAM_DATABASE_URL` or `ENGRAM_SERVER_MODE` to a non-blank value, or an invalid `ENGRAM_STARTUP_POLICY`, Shell does not probe or reuse the default server, and memory stays disabled ([decision table](bundled-install.md#decision)). Other `ENGRAM_*` settings do not change this decision.
 
 ## 2. Upgrade and restart with care
 
@@ -63,9 +63,9 @@ Then restart the server the same way it was started. Call the Homebrew executabl
 brew_engram="$(brew --prefix gentleman-programming/tap/engram)/bin/engram"
 ```
 
-Use `"$brew_engram" restart` for a daemon (`"$brew_engram" ps` lists it), your service manager for a service, or a new `"$brew_engram" serve` for a server you run by hand. Do not start a second server next to the old one. Run step 1 again: the `/health` version should match the Homebrew version and the executable path should be the new one.
+Use `"$brew_engram" restart` for a daemon (`"$brew_engram" ps` lists it), your service manager for a service, or a new `"$brew_engram" serve` for a server you run by hand. Do not start a second server next to the old one. Run step 1 again: for a Homebrew server, the `/health` version should match the Homebrew version and the executable path should be the new one. If you keep Shell's bundled core instead (below), skip that match; step 1 only confirms which server is in use.
 
-If the server was Shell's bundled core and you want the Homebrew Engram to serve instead, stop that server and start Homebrew's yourself with `"$brew_engram" serve`; Shell reuses it on the next launch. A newer Engram may migrate the store. Do not go back to an older Engram on a migrated store. Shell's [header tripwire](bundled-install.md#decision) usually stops it from starting its older bundled core on such a store, but it only reads the database header, which can miss a migration (for example before a WAL checkpoint), so do not rely on it.
+If the server was Shell's bundled core and you want the Homebrew Engram to serve instead, stop that server and start Homebrew's yourself with `"$brew_engram" serve`. Shell reuses it on the next launch only when its `/compatibility` answer is ready and none of the settings listed in step 1 is set; otherwise memory stays disabled for that launch. A newer Engram may migrate the store. Do not go back to an older Engram on a migrated store. Shell's [header tripwire](bundled-install.md#decision) usually stops it from starting its older bundled core on such a store, but it only reads the database header, which can miss a migration (for example before a WAL checkpoint), so do not rely on it.
 
 ## 3. Verify memory in a new Shell session
 

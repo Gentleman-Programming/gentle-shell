@@ -1088,6 +1088,10 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// both abandon authorization flags. The compact-v2 Shell adapter stays
 	// on the same support row. The refreshed 1.6.0 provider bundle is separate.
 	"5.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// The published darwin/arm64 v5.1.0 binary still advertises capabilities/v2.6
+	// at protocol 2.6 with compact-v2 only. Its additive optional features do
+	// not change the negotiated columns Shell consumes.
+	"5.1.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 export interface NativeReviewProcessDiagnostics {

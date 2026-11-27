@@ -422,11 +422,17 @@ test("5.0.0 retains the compact-v2 CLI contract for the runtime pin", () => {
 	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["4.6.0"] as Record<string, boolean>);
 });
 
+test("5.1.0 retains the 5.0.0 compact-v2 CLI contract for the runtime pin", () => {
+	const contract = NATIVE_CLI_CONTRACTS["5.1.0"] as Record<string, boolean>;
+	assert.ok(contract, "the published v5.1.0 runtime must have an explicit capability row");
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["5.0.0"] as Record<string, boolean>);
+});
+
 test("no shipped version key was added beyond the pin bump", () => {
 	// Rows are promises to consumers, so a new key only ever appears in a
 	// dedicated commit alongside a pin bump, never as a side effect. v2.2.4 and
 	// v2.3.0 shipped upstream while Pi stayed on 2.2.3 and were never pinned,
 	// so they get no row: a row asserts ground truth measured against a binary
 	// Pi actually ran, and the table only has to be ascending, not gapless.
-	assert.deepEqual(Object.keys(NATIVE_CLI_CONTRACTS), [...DARK_VERSIONS, "2.2.0", "2.2.1", "2.2.2", "2.2.3", "2.4.0", "2.5.0-rc.3", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.8.1", "2.8.2", "2.9.0", "2.9.1", "3.0.0", "3.0.1", "3.1.0", "3.2.1", "3.4.0", "3.5.0", "3.6.0", "3.6.1", "3.7.0", "4.0.0", "4.1.1", "4.2.0", "4.3.1", "4.4.0", "4.5.0", "4.6.0", "5.0.0"]);
+	assert.deepEqual(Object.keys(NATIVE_CLI_CONTRACTS), [...DARK_VERSIONS, "2.2.0", "2.2.1", "2.2.2", "2.2.3", "2.4.0", "2.5.0-rc.3", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.8.1", "2.8.2", "2.9.0", "2.9.1", "3.0.0", "3.0.1", "3.1.0", "3.2.1", "3.4.0", "3.5.0", "3.6.0", "3.6.1", "3.7.0", "4.0.0", "4.1.1", "4.2.0", "4.3.1", "4.4.0", "4.5.0", "4.6.0", "5.0.0", "5.1.0"]);
 });

@@ -46,6 +46,12 @@ import { DesktopBackgroundSubagentsBridge } from "../lib/desktop-background-suba
 import { DESKTOP_PROFILE_BINDING_EVENTS, DESKTOP_PROFILE_BINDING_METHODS, DesktopProfileBindingBridge } from "../lib/desktop-rpc-profile-binding.ts";
 import { DESKTOP_AUTH_EVENTS, DESKTOP_AUTH_METHODS } from "../lib/desktop-rpc-auth.ts";
 import { DesktopAuthBridge } from "../lib/desktop-auth-service.ts";
+import { DESKTOP_HOST_TOOLS_EVENTS, DESKTOP_HOST_TOOLS_METHODS, DESKTOP_HOST_TOOLS_REQUEST_BYTES } from "../lib/desktop-rpc-host-tools.ts";
+import { DesktopHostToolsBridge, type DesktopHostToolsOptions } from "../lib/desktop-host-tools-service.ts";
+import { DESKTOP_LOGIN_EVENTS, DESKTOP_LOGIN_METHODS } from "../lib/desktop-rpc-login.ts";
+import { DesktopLoginBridge, type DesktopLoginOptions } from "../lib/desktop-login-service.ts";
+import { DESKTOP_PACKAGES_EVENTS, DESKTOP_PACKAGES_METHODS } from "../lib/desktop-rpc-packages.ts";
+import { DesktopPackagesBridge, type DesktopPackagesOptions } from "../lib/desktop-packages-service.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import type { DesktopChangeTimers, DesktopDirectoryWatch } from "../lib/desktop-rpc-config-watch.ts";
 
@@ -58,6 +64,12 @@ export interface DesktopRpcExtensionOptions {
 	updateTimeoutMs?: number;
 	/** Test seam for `list_agent_definitions`; production uses the session's discovery roots. */
 	agentDefinitionsLocation?: AgentDefinitionsLocationFactory;
+	/** Test seams for host tool calls: timers, the 10-minute cap and call ids. */
+	hostTools?: DesktopHostToolsOptions;
+	/** Test seams for provider sign-in: the 15-minute cap and login ids. */
+	login?: DesktopLoginOptions;
+	/** Test seams for package jobs: the CLI runner, the listing, the cap and job ids. */
+	packages?: DesktopPackagesOptions;
 }
 
 function publisher(ctx: ExtensionContext): DesktopRpcPublish {
@@ -119,14 +131,28 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		...(options.updateTimeoutMs === undefined ? {} : { timeoutMs: options.updateTimeoutMs }),
 	});
 	const packageStatus = new DesktopStatusBridge(pi);
-	const auth = new DesktopAuthBridge();
+	const auth = new DesktopAuthBridge(() => pi.getThinkingLevel());
 	const profileBinding = new DesktopProfileBindingBridge(pi);
 	const backgroundSubagents = new DesktopBackgroundSubagentsBridge(pi);
 	const agentDefinitions = new DesktopAgentDefinitionsBridge(options.agentDefinitionsLocation === undefined ? {} : { location: options.agentDefinitionsLocation });
+	// Host tools are tools the connected client runs on its own device: this
+	// process registers them with Pi and relays calls and results, nothing more.
+	const hostTools = new DesktopHostToolsBridge(pi, options.hostTools);
+	// Sign-in and API keys go through Pi's own model runtime and credential
+	// store; package installs run the same CLI a user would.
+	const login = new DesktopLoginBridge(options.login);
+	const packages = new DesktopPackagesBridge(options.packages);
 	const domain: DesktopRpcDomain = (method, params) => {
 		// Captured before any await: a background-subagents write dispatched before a
 		// session reset must not run under the replacement session.
 		const backgroundGeneration = backgroundSubagents.dispatchGeneration();
+		const hostToolsOutcome = hostTools.handle(method, params);
+		if (hostToolsOutcome !== undefined) return hostToolsOutcome;
+		// Synchronous answers (`{ loginId }`, `{ jobId }`) are published before the flow's first event.
+		const loginOutcome = login.handle(method, params);
+		if (loginOutcome !== undefined) return loginOutcome;
+		const packagesOutcome = packages.handle(method, params);
+		if (packagesOutcome !== undefined) return packagesOutcome;
 		const sessionsOutcome = sessionList.handle(method, params, dispatchingRequestId);
 		if (sessionsOutcome !== undefined) return sessionsOutcome;
 		// Config is the only synchronous bridge; permission, usage, design, jobs,
@@ -168,9 +194,9 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 			return updates.handle(method, params);
 		})();
 	};
-	const events = [...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS, ...DESKTOP_SESSIONS_EVENTS, ...DESKTOP_CHANGES_EVENTS, ...DESKTOP_REVIEW_EVENTS, ...DESKTOP_STATS_EVENTS, ...DESKTOP_UPDATES_EVENTS, ...DESKTOP_AGENT_DEFINITIONS_EVENTS, ...DESKTOP_STATUS_EVENTS, ...DESKTOP_BACKGROUND_SUBAGENTS_EVENTS, ...DESKTOP_PROFILE_BINDING_EVENTS, ...DESKTOP_AUTH_EVENTS];
+	const events = [...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS, ...DESKTOP_SESSIONS_EVENTS, ...DESKTOP_CHANGES_EVENTS, ...DESKTOP_REVIEW_EVENTS, ...DESKTOP_STATS_EVENTS, ...DESKTOP_UPDATES_EVENTS, ...DESKTOP_AGENT_DEFINITIONS_EVENTS, ...DESKTOP_STATUS_EVENTS, ...DESKTOP_BACKGROUND_SUBAGENTS_EVENTS, ...DESKTOP_PROFILE_BINDING_EVENTS, ...DESKTOP_AUTH_EVENTS, ...DESKTOP_HOST_TOOLS_EVENTS, ...DESKTOP_LOGIN_EVENTS, ...DESKTOP_PACKAGES_EVENTS];
 	const router = new DesktopRpcRouter(
-		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_PROFILES_METHODS, ...DESKTOP_AGENTS_METHODS, ...DESKTOP_SESSIONS_METHODS, ...DESKTOP_CHANGES_METHODS, ...DESKTOP_REVIEW_METHODS, ...DESKTOP_STATS_METHODS, ...DESKTOP_UPDATES_METHODS, ...DESKTOP_AGENT_DEFINITIONS_METHODS, ...DESKTOP_STATUS_METHODS, ...DESKTOP_BACKGROUND_SUBAGENTS_METHODS, ...DESKTOP_PROFILE_BINDING_METHODS, ...DESKTOP_AUTH_METHODS],
+		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_PROFILES_METHODS, ...DESKTOP_AGENTS_METHODS, ...DESKTOP_SESSIONS_METHODS, ...DESKTOP_CHANGES_METHODS, ...DESKTOP_REVIEW_METHODS, ...DESKTOP_STATS_METHODS, ...DESKTOP_UPDATES_METHODS, ...DESKTOP_AGENT_DEFINITIONS_METHODS, ...DESKTOP_STATUS_METHODS, ...DESKTOP_BACKGROUND_SUBAGENTS_METHODS, ...DESKTOP_PROFILE_BINDING_METHODS, ...DESKTOP_AUTH_METHODS, ...DESKTOP_HOST_TOOLS_METHODS, ...DESKTOP_LOGIN_METHODS, ...DESKTOP_PACKAGES_METHODS],
 		// `session_snapshot` is advertised only while the feed owner seam is wired.
 		() => (sessions.wired ? [...events, ...DESKTOP_SESSION_EVENTS] : events),
 		() => config.snapshotState(),
@@ -182,6 +208,8 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 	// prompts concurrently, and an answer that settled after the teardown would
 	// otherwise be dropped with the old session.
 	router.setGate(() => (sessionList.switchInFlight() ? SESSION_SWITCHING : undefined));
+	// A host tool result may carry screenshots; registering a full set of tools is larger than a usual request too.
+	router.setRequestLimits(DESKTOP_HOST_TOOLS_REQUEST_BYTES);
 
 	pi.on("session_start", (_event, ctx) => {
 		permissions.reset();
@@ -202,6 +230,9 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		backgroundSubagents.reset();
 		profileBinding.reset();
 		auth.reset();
+		hostTools.reset();
+		login.reset();
+		packages.reset();
 		router.stop();
 		activePublish = undefined;
 		retiredPublish = undefined;
@@ -212,6 +243,12 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		sessions.attach(ctx);
 		activePublish = publisher(ctx);
 		router.start(activePublish);
+		// The agent's calls to host tools become `host_tool_call` / `host_tool_cancel`
+		// events; the client answers with `host_tool_result`.
+		hostTools.wire((event, data) => router.emit(event, data));
+		// Sign-in prompts and package job output become `login_*` / `package_*` events.
+		login.wire((event, data) => router.emit(event, data));
+		packages.wire((event, data) => router.emit(event, data));
 		// Header-driven usage snapshots (Claude's 5h/7d windows, Codex SSE
 		// headers) become ordered `rate_limit` events through the router.
 		usage.wire((event, data) => router.emit(event, data));
@@ -278,6 +315,9 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		backgroundSubagents.reset();
 		profileBinding.reset();
 		auth.reset();
+		hostTools.reset();
+		login.reset();
+		packages.reset();
 		router.stop();
 	});
 
@@ -312,6 +352,9 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 			backgroundSubagents.attach(ctx);
 			profileBinding.attach(ctx);
 			auth.attach(ctx);
+			hostTools.attach(ctx);
+			login.attach(ctx);
+			packages.attach(ctx);
 			dispatchingRequestId = desktopRequestId(args);
 			let pending: void | Promise<void>;
 			try {

@@ -6,10 +6,12 @@ import { test } from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DESKTOP_CONFIG_STORES, DesktopConfigBridge, configWatchTargets } from "../lib/desktop-rpc-config.ts";
 
-// The read-only `mcp`, `pi_settings`, and `claude_bridge` config stores
-// (gentle-shell-gpui parity, round 2): display projections of files Pi or a
-// third-party package own. Every test runs in an isolated temporary root and
-// plants secret-shaped values that must never reach the wire.
+// The `mcp`, `pi_settings`, and `claude_bridge` config stores (gentle-shell-gpui
+// parity, round 2): projections of files Pi or a third-party package own.
+// `claude_bridge` is read-only; the writes of `mcp` and `pi_settings` are tested
+// in desktop-rpc-config-pi-files and desktop-rpc-config-settings. Every test
+// runs in an isolated temporary root and plants secret-shaped values that must
+// never reach the wire.
 
 const SECRET_TOKEN = "sk-live-SECRET-TOKEN-0123456789";
 const SECRET_HEADER = "Bearer HEADER-SECRET-abcdef";
@@ -52,7 +54,7 @@ function assertNoLeak(answer: unknown, root: string, extra: string[] = []): void
 
 // ---- store list ----
 
-test("the store list keeps every existing store in order and appends the read-only display stores", () => {
+test("the store list keeps every existing store in order and appends Pi's stores", () => {
 	assert.deepEqual([...DESKTOP_CONFIG_STORES], [
 		"profiles",
 		"models",
@@ -66,20 +68,19 @@ test("the store list keeps every existing store in order and appends the read-on
 		"mcp",
 		"pi_settings",
 		"claude_bridge",
+		"custom_models",
 	]);
 });
 
-test("set_config refuses every new store as read_only and writes nothing", async (t) => {
+test("set_config refuses claude_bridge as read_only and writes nothing", async (t) => {
 	const e = env(t);
-	for (const store of ["mcp", "pi_settings", "claude_bridge"]) {
-		const outcome = await e.bridge.handle("set_config", { store, data: {}, expectedRevision: "sha256:x" });
-		assert.equal(outcome?.ok, false, JSON.stringify(outcome));
-		assert.equal((outcome as { error: { code: string } }).error.code, "read_only");
-		const read = await e.read(store);
-		assert.equal(read.readOnly, true);
-		assert.equal(read.writeTargets, undefined, "a read-only store reports no write target");
-		assert.equal(read.status, "missing", "a refused write creates nothing");
-	}
+	const outcome = await e.bridge.handle("set_config", { store: "claude_bridge", data: {}, expectedRevision: "sha256:x" });
+	assert.equal(outcome?.ok, false, JSON.stringify(outcome));
+	assert.equal((outcome as { error: { code: string } }).error.code, "read_only");
+	const read = await e.read("claude_bridge");
+	assert.equal(read.readOnly, true);
+	assert.equal(read.writeTargets, undefined, "a read-only store reports no write target");
+	assert.equal(read.status, "missing", "a refused write creates nothing");
 });
 
 test("the owner files of the new stores are watched for external changes", async (t) => {
@@ -95,31 +96,40 @@ test("the owner files of the new stores are watched for external changes", async
 
 // ---- mcp ----
 
-test("mcp lists name, transport, and enabled only, never env, headers, args, command, url, or cwd", async (t) => {
+test("mcp lists name, transport, and enabled, and its documents never carry env, header, OAuth or URL credentials", async (t) => {
 	const e = env(t);
 	writeJson(join(e.agentHome, "mcp.json"), {
 		mcpServers: {
 			filesystem: { command: "npx", args: ["-y", ABSOLUTE_PATH], env: { API_TOKEN: SECRET_TOKEN }, cwd: ABSOLUTE_PATH },
 			docs: { url: "https://user:pass@docs.example.com/mcp", headers: { Authorization: SECRET_HEADER }, enabled: false },
 			sentry: { type: "http", url: "https://mcp.sentry.example/mcp", oauth: { clientSecret: SECRET_TOKEN } },
+			keyed: { url: "https://keyed.example/mcp?api_key=query-secret" },
 		},
 	});
 	const data = await e.read("mcp");
 	assert.equal(data.store, "mcp");
 	assert.equal(data.scope, "global+project");
-	assert.equal(data.readOnly, true);
+	assert.equal(data.readOnly, false);
 	assert.equal(data.status, "ok");
 	assert.deepEqual(data.layers, [{ source: "global", status: "ok" }, { source: "project", status: "missing" }]);
-	assert.deepEqual(data.value, {
+	const { documents, ...summary } = data.value;
+	assert.deepEqual(summary, {
 		servers: [
 			{ name: "filesystem", transport: "stdio", enabled: true },
 			{ name: "docs", transport: "http", enabled: false },
 			{ name: "sentry", transport: "http", enabled: true },
+			{ name: "keyed", transport: "http", enabled: true },
 		],
 		truncated: false,
 		omitted: 0,
 	});
-	assertNoLeak(data, e.root, ["npx", "docs.example.com", "user:pass", "mcp.sentry.example", "API_TOKEN", "Authorization"]);
+	assertNoLeak(summary, e.root, ["npx", "docs.example.com", "user:pass", "mcp.sentry.example", "API_TOKEN", "Authorization"]);
+	// The documents are what a client edits: command, args, and cwd are the user's own; credentials never cross.
+	assert.deepEqual(documents.global.mcpServers.filesystem, { command: "npx", args: ["-y", ABSOLUTE_PATH], env: { API_TOKEN: "•••" }, cwd: ABSOLUTE_PATH });
+	assert.deepEqual(documents.global.mcpServers.docs, { url: "•••", headers: { Authorization: "•••" }, enabled: false });
+	assert.deepEqual(documents.global.mcpServers.keyed, { url: "•••" });
+	const wire = JSON.stringify(data);
+	for (const secret of [SECRET_TOKEN, SECRET_HEADER, "user:pass", "query-secret", e.root]) assert.equal(wire.includes(secret), false, `the answer leaks ${secret}`);
 });
 
 test("mcp merges a trusted project file like Pi: replacements, enabled-only overrides, and new servers", async (t) => {
@@ -146,7 +156,9 @@ test("mcp merges a trusted project file like Pi: replacements, enabled-only over
 		{ name: "shared", transport: "http", enabled: true },
 		{ name: "local", transport: "stdio", enabled: true },
 	], "an override without a global server and a project `auth` server are skipped, exactly as Pi skips them");
-	assertNoLeak(data, e.root, ["internal.example", "project-cmd", "TOKEN"]);
+	assertNoLeak(data.value.servers, e.root, ["internal.example", "project-cmd", "TOKEN"]);
+	assert.equal(JSON.stringify(data.value.documents).includes(SECRET_TOKEN), false);
+	assert.equal(JSON.stringify(data.value.documents).includes(SECRET_HEADER), false);
 });
 
 test("mcp ignores the project file of an untrusted project, as Pi does", async (t) => {
@@ -186,8 +198,9 @@ test("mcp counts over-long server names as omitted, never as a cut at the bound"
 	const long = "n".repeat(129);
 	writeJson(join(e.agentHome, "mcp.json"), { mcpServers: { [long]: { command: "x" }, short: { command: "y" } } });
 	const data = await e.read("mcp");
-	assert.deepEqual(data.value, { servers: [{ name: "short", transport: "stdio", enabled: true }], truncated: false, omitted: 1 });
-	assertNoLeak(data, e.root, [long]);
+	assert.deepEqual(data.value.servers, [{ name: "short", transport: "stdio", enabled: true }]);
+	assert.deepEqual([data.value.truncated, data.value.omitted], [false, 1]);
+	assertNoLeak(data.value.servers, e.root, [long]);
 });
 
 test("mcp reports the transport Pi connects with for an entry with both command and url", async (t) => {
@@ -220,7 +233,7 @@ test("pi_settings projects only the default model and thinking, enabled models, 
 	const data = await e.read("pi_settings");
 	assert.equal(data.store, "pi_settings");
 	assert.equal(data.scope, "global+project");
-	assert.equal(data.readOnly, true);
+	assert.equal(data.readOnly, false);
 	assert.equal(data.status, "ok");
 	assert.deepEqual(data.layers, [{ source: "global", status: "ok" }, { source: "project", status: "missing" }]);
 	assert.deepEqual(data.value, {

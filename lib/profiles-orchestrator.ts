@@ -20,6 +20,7 @@ import {
 	isThinkingLevel,
 	normalizeModelId,
 	type AgentRoutingEntry,
+	type ThinkingLevel,
 } from "./model-routing-authority.ts";
 
 /** The three Pi settings keys a profile's orchestrator entry owns. */
@@ -126,6 +127,78 @@ export function applyOrchestratorSettings(
 	next.defaultModel = reference.model;
 	if (entry.thinking === undefined) delete next.defaultThinkingLevel;
 	else next.defaultThinkingLevel = entry.thinking;
+	const text = `${JSON.stringify(next, null, 2)}\n`;
+	if (previous === text) return { status: "unchanged" };
+	writeFileAtomically(settingsPath, text);
+	return { status: "written", previous };
+}
+
+/**
+ * The model defaults Configuration › Models edits: the orchestrator's three keys
+ * plus Pi's `enabledModels` (the scoped models Ctrl+P cycles). Absent means unset.
+ */
+export interface PiModelDefaults {
+	defaultProvider?: string;
+	defaultModel?: string;
+	defaultThinkingLevel?: ThinkingLevel;
+	enabledModels?: string[];
+}
+
+export const PI_MODEL_DEFAULTS_KEYS = [...ORCHESTRATOR_SETTINGS_KEYS, "enabledModels"] as const;
+
+const MODEL_DEFAULT_TEXT_MAX = 256;
+const ENABLED_MODELS_MAX = 512;
+
+function isModelDefaultText(value: unknown): value is string {
+	// eslint-disable-next-line no-control-regex
+	return typeof value === "string" && value.trim().length > 0 && value.length <= MODEL_DEFAULT_TEXT_MAX && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+/**
+ * The model defaults a settings object holds, each key only when it has the
+ * shape Pi reads; a mistyped key reads as unset, exactly as Pi treats it.
+ */
+export function projectPiModelDefaults(settings: Record<string, unknown>): PiModelDefaults {
+	const defaults: PiModelDefaults = {};
+	if (isModelDefaultText(settings.defaultProvider)) defaults.defaultProvider = settings.defaultProvider;
+	if (isModelDefaultText(settings.defaultModel)) defaults.defaultModel = settings.defaultModel;
+	if (isThinkingLevel(settings.defaultThinkingLevel)) defaults.defaultThinkingLevel = settings.defaultThinkingLevel;
+	if (Array.isArray(settings.enabledModels) && settings.enabledModels.every(isModelDefaultText)) defaults.enabledModels = [...settings.enabledModels];
+	return defaults;
+}
+
+/**
+ * A complete model-defaults write: only the four keys, each well-formed, no
+ * duplicate scoped model. `undefined` for anything else.
+ */
+export function parsePiModelDefaults(value: unknown): PiModelDefaults | undefined {
+	if (!isRecord(value)) return undefined;
+	if (!Object.keys(value).every((key) => (PI_MODEL_DEFAULTS_KEYS as readonly string[]).includes(key))) return undefined;
+	const { defaultProvider, defaultModel, defaultThinkingLevel, enabledModels } = value;
+	if (defaultProvider !== undefined && !isModelDefaultText(defaultProvider)) return undefined;
+	if (defaultModel !== undefined && !isModelDefaultText(defaultModel)) return undefined;
+	if (defaultThinkingLevel !== undefined && !isThinkingLevel(defaultThinkingLevel)) return undefined;
+	if (enabledModels !== undefined) {
+		if (!Array.isArray(enabledModels) || enabledModels.length > ENABLED_MODELS_MAX || !enabledModels.every(isModelDefaultText)) return undefined;
+		if (new Set(enabledModels).size !== enabledModels.length) return undefined;
+	}
+	return projectPiModelDefaults(value);
+}
+
+/**
+ * Replace the model defaults in a Pi settings file: the four keys become exactly
+ * `defaults` (an absent key is removed), every other key is kept, and a file
+ * that is not a JSON object is refused, never replaced.
+ */
+export function writePiModelDefaults(settingsPath: string, defaults: PiModelDefaults): OrchestratorSettingsWriteResult {
+	const read = readOrchestratorSettings(settingsPath);
+	if (read.status === "invalid") return { status: "invalid", reason: read.reason };
+	const previous = readPrevious(settingsPath);
+	const next: Record<string, unknown> = { ...(read.status === "valid" ? read.value : {}) };
+	for (const key of PI_MODEL_DEFAULTS_KEYS) {
+		if (defaults[key] === undefined) delete next[key];
+		else next[key] = defaults[key];
+	}
 	const text = `${JSON.stringify(next, null, 2)}\n`;
 	if (previous === text) return { status: "unchanged" };
 	writeFileAtomically(settingsPath, text);

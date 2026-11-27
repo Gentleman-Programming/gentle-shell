@@ -201,6 +201,7 @@ function writePiScript(path: string, version: string, removeExitCode = 0) {
 			"  GENTLE_SHELL_USER_PI_HOME: process.env.GENTLE_SHELL_USER_PI_HOME,",
 			"  GENTLE_SHELL_CHILD_PACKAGE_INJECTION: process.env.GENTLE_SHELL_CHILD_PACKAGE_INJECTION,",
 			"  GENTLE_SHELL_HERDR_REPORTER: process.env.GENTLE_SHELL_HERDR_REPORTER,",
+			"  GENTLE_SHELL_LAUNCH: process.env.GENTLE_SHELL_LAUNCH,",
 			"}));",
 			"process.exit(0);",
 			"",
@@ -262,6 +263,15 @@ function herdrFixture(t: test.TestContext) {
 	const launch = (args: string[] = [], overrides: NodeJS.ProcessEnv = {}) => launchWithEnv(args, overrides).args;
 	return { ...f, bridge, env, launch, launchWithEnv };
 }
+
+test("the launcher tells Pi how to run this same CLI on this same home, for a client's package installs", (t) => {
+	const f = fixture(t);
+	for (const [args, flags] of [[[], []], [["--home", f.gentleShellHome], ["--home", f.gentleShellHome]]]) {
+		const result = run(f.env, args, { cwd: f.root });
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(JSON.parse(JSON.parse(result.stdout).GENTLE_SHELL_LAUNCH), { command: process.execPath, args: [binPath, ...flags] }, JSON.stringify(args));
+	}
+});
 
 function extensionPaths(args: string[]): string[] {
 	return args.flatMap((arg, i) => arg === "-e" || arg === "--extension" ? [args[i + 1]] : []);

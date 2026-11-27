@@ -275,15 +275,17 @@ test("S2: get_snapshot without sections is byte-identical with and without the f
 	const legacyWith = await withFeed.invoke("get_snapshot");
 	assert.equal(legacyWith.length, 1);
 	// `sequence` counts delivered events: with the feed, its start-up flushes may
-	// already have published session_snapshot events. Everything else is identical.
+	// already have published session_snapshot events; each channel names its own
+	// `epoch`. Everything else is identical.
 	const events = withFeed.lines().filter((line) => JSON.parse(line).kind === "event").length;
 	assert.equal(legacyWith[0].data.sequence, events);
-	assert.deepEqual(legacyWith, [{ ...legacyWithout[0], data: { ...legacyWithout[0].data, sequence: events } }]);
+	const epoch = legacyWith[0].data.epoch;
+	assert.deepEqual(legacyWith, [{ ...legacyWithout[0], data: { ...legacyWithout[0].data, sequence: events, epoch } }]);
 	assert.equal("session" in legacyWith[0].data.state, false);
 	// Unrelated params keep today's behavior too.
 	const otherWith = await withFeed.invoke("get_snapshot", { other: true });
 	const otherWithout = await without.invoke("get_snapshot", { other: true });
-	assert.deepEqual(otherWith, [{ ...otherWithout[0], data: { ...otherWithout[0].data, sequence: events } }]);
+	assert.deepEqual(otherWith, [{ ...otherWithout[0], data: { ...otherWithout[0].data, sequence: events, epoch } }]);
 });
 
 test("S1/S2/S4/S5: get_snapshot with sections reads the live feed projection; reads emit no event", async (t) => {
@@ -327,14 +329,14 @@ test("S5/S6: without the feed, sections answer session_unavailable and capabilit
 	assert.deepEqual(out[0].error, SESSION_UNAVAILABLE);
 	const capabilities = (await app.invoke("capabilities"))[0].data;
 	assert.equal(capabilities.events.includes(DESKTOP_SESSION_EVENT), false);
-	assert.deepEqual(capabilities.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
+	assert.deepEqual(capabilities.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel", "login_prompt", "login_finished", "package_progress", "package_finished"]);
 	assert.deepEqual((await app.invoke("get_snapshot"))[0].data.state, (await app.invoke("get_snapshot", { other: 1 }))[0].data.state);
 });
 
 test("S6: with the feed wired, capabilities advertise session_snapshot", async (t) => {
 	const app = await rpcHarness(t, true);
 	const capabilities = (await app.invoke("capabilities"))[0].data;
-	assert.deepEqual(capabilities.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", DESKTOP_SESSION_EVENT]);
+	assert.deepEqual(capabilities.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel", "login_prompt", "login_finished", "package_progress", "package_finished", DESKTOP_SESSION_EVENT]);
 	assert.equal(capabilities.methods.includes("get_snapshot"), true);
 });
 
@@ -418,7 +420,9 @@ test("S2: the router keeps get_snapshot byte-identical when no session reader is
 	const router = new DesktopRpcRouter(undefined, undefined, () => ({ config: { stores: [] } }));
 	router.start((line) => lines.push(line));
 	router.handle(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "a", method: "get_snapshot", params: { sections: ["todo"] } }));
-	assert.deepEqual(JSON.parse(lines[0]!).data, { schema: DESKTOP_RPC_SCHEMA, sequence: 0, state: { config: { stores: [] } } });
+	const data = JSON.parse(lines[0]!).data;
+	assert.deepEqual(data, { schema: DESKTOP_RPC_SCHEMA, sequence: 0, epoch: data.epoch, state: { config: { stores: [] } } });
+	assert.equal(typeof data.epoch, "string");
 });
 
 // ---- Path edge cases (verifier correction batch) ----

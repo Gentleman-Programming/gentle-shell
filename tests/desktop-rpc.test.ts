@@ -66,18 +66,20 @@ test("capabilities and snapshots use correlated structured responses", async (t)
 			schema: DESKTOP_RPC_SCHEMA,
 			command: "gentle:desktop",
 			widget: DESKTOP_RPC_WIDGET,
-			methods: ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials"],
-			events: ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"],
+			methods: ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials", "list_available_models", "set_host_tools", "host_tool_result", "host_tool_progress", "host_message", "set_host_context", "set_host_activity", "login_start", "login_complete", "login_cancel", "set_api_key", "remove_credentials", "list_packages", "install_package", "remove_package"],
+			events: ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel", "login_prompt", "login_finished", "package_progress", "package_finished"],
 		},
 	});
 
 	await app.invoke(request("get_snapshot"));
-	assert.deepEqual(widgetPayload(app.widgets[1]!), {
+	const snapshot = widgetPayload(app.widgets[1]!);
+	assert.equal(typeof snapshot.data.epoch, "string");
+	assert.deepEqual(snapshot, {
 		schema: DESKTOP_RPC_SCHEMA,
 		kind: "response",
 		requestId: "request-get_snapshot",
 		ok: true,
-		data: { schema: DESKTOP_RPC_SCHEMA, sequence: 0, state: {} },
+		data: { schema: DESKTOP_RPC_SCHEMA, sequence: 0, epoch: snapshot.data.epoch, state: {} },
 	});
 });
 
@@ -120,15 +122,51 @@ test("events advance after delivery, move to a replacement publisher, and reset 
 	assert.equal(JSON.parse(first[0]!).seq, 1);
 	assert.equal(JSON.parse(first[1]!).seq, 2);
 	assert.equal(router.snapshot().sequence, 2);
+	// One numbering, one epoch: every event and the snapshot name it.
+	const epoch = router.snapshot().epoch;
+	assert.match(epoch, /^[0-9a-f-]{36}$/);
+	assert.deepEqual(first.map((line) => JSON.parse(line).epoch), [epoch, epoch]);
 
 	router.start((line) => second.push(line));
 	router.emit("jobs_update", { jobs: [] });
 	assert.equal(first.length, 2);
 	assert.equal(JSON.parse(second[0]!).seq, 1);
+	// The numbering restarted, so its epoch changed.
+	const restarted = router.snapshot().epoch;
+	assert.notEqual(restarted, epoch);
+	assert.equal(JSON.parse(second[0]!).epoch, restarted);
 	router.stop();
 	assert.equal(router.snapshot().sequence, 0);
 	router.emit("jobs_update", { jobs: [] });
 	assert.equal(second.length, 1);
+});
+
+test("the epoch stays for a session and changes on a reload or a switch", async (t) => {
+	const app = harness(t);
+	const epoch = async (ctx: typeof app.ctx = app.ctx, widgets: WidgetCall[] = app.widgets) => {
+		await app.invoke(request("get_snapshot"), ctx);
+		return widgetPayload(widgets.at(-1)!).data.epoch as string;
+	};
+	app.start();
+	const first = await epoch();
+	assert.equal(await epoch(), first, "reads of one session keep its epoch");
+
+	// A reload shuts the session down and starts it again: seq restarts, so does the epoch.
+	app.events.get("session_shutdown")?.({ reason: "reload" }, app.ctx);
+	app.events.get("session_start")?.({ reason: "reload" }, app.ctx);
+	const reloaded = await epoch();
+	assert.notEqual(reloaded, first);
+	assert.equal(await epoch(), reloaded);
+
+	// A switch replaces the session the same way.
+	const switchedWidgets: WidgetCall[] = [];
+	const switched = { mode: "rpc", ui: { setWidget(key: string, lines: string[]) { switchedWidgets.push({ key, lines }); } } };
+	app.events.get("session_shutdown")?.({ reason: "resume" }, app.ctx);
+	app.events.get("session_start")?.({ reason: "resume" }, switched);
+	const afterSwitch = await epoch(switched, switchedWidgets);
+	assert.notEqual(afterSwitch, reloaded);
+	assert.notEqual(afterSwitch, first);
+	assert.equal(await epoch(switched, switchedWidgets), afterSwitch);
 });
 
 test("state failures are internal errors and publisher failures are never retried", () => {

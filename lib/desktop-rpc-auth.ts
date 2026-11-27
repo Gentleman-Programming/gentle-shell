@@ -5,26 +5,33 @@
 // value. The only registry calls it makes are the ones that cannot return a
 // secret: `getAll` (models, for provider ids), `getProviderAuthStatus`
 // (`{ configured, source }`, from Pi's in-memory snapshot), `isUsingOAuth`,
-// `getProviderDisplayName`, and `refresh`. It never calls `getApiKey*` or
+// `getProviderDisplayName`, `getProvider` (which sign-in methods a provider
+// has, never a credential), and `refresh`. It never calls `getApiKey*` or
 // `getProviderAuth`, never reads `auth.json`, and never forwards a status
 // `label` (an environment variable name or source text) or an error message.
 
-export const DESKTOP_AUTH_METHODS = ["get_auth_status", "reload_credentials"] as const;
+export const DESKTOP_AUTH_METHODS = ["get_auth_status", "reload_credentials", "list_available_models"] as const;
 /** Every answer carries the provider list; this slice advertises no event. */
 export const DESKTOP_AUTH_EVENTS = [] as const;
 
 export const INVALID_GET_AUTH_STATUS = { code: "invalid_request", message: "Invalid get_auth_status parameters" } as const;
 export const INVALID_RELOAD_CREDENTIALS = { code: "invalid_request", message: "Invalid reload_credentials parameters" } as const;
+export const INVALID_LIST_AVAILABLE_MODELS = { code: "invalid_request", message: "Invalid list_available_models parameters" } as const;
 export const AUTH_UNAVAILABLE = { code: "auth_unavailable", message: "Credential status unavailable" } as const;
 export const RELOAD_FAILED = { code: "reload_failed", message: "Credentials could not be reloaded" } as const;
 
-export const DESKTOP_AUTH_LIMITS = { providers: 200, displayName: 128 } as const;
+export const DESKTOP_AUTH_LIMITS = { providers: 200, displayName: 128, models: 1000, modelId: 256 } as const;
+
+/** Pi's thinking levels, low to high: what a session without a model accepts. */
+export const DESKTOP_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 /** Provider ids that may cross the wire; anything else is skipped. */
-const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export type CredentialType = "oauth" | "api_key";
 export type CredentialSource = "stored" | "runtime" | "environment" | "models_json" | "extension";
+/** How a client can sign in to a provider: a browser sign-in, a device code, or a pasted API key. */
+export type LoginKind = "oauth" | "device" | "api_key";
 
 export interface DesktopProviderAuth {
 	provider: string;
@@ -33,6 +40,8 @@ export interface DesktopProviderAuth {
 	/** `oauth` or `api_key` when configured, otherwise `null`. */
 	type: CredentialType | null;
 	source: CredentialSource | null;
+	/** What `login_start` / `set_api_key` can do for this provider; empty when nothing (ambient credentials only). */
+	loginKinds: LoginKind[];
 }
 
 export interface DesktopAuthStatus {
@@ -45,8 +54,12 @@ export interface DesktopAuthRegistry {
 	getAll(): ReadonlyArray<{ provider: string }>;
 	getProviderAuthStatus(provider: string): { configured: boolean; source?: string };
 	getProviderDisplayName?(provider: string): string;
+	/** Pi's provider definition: only its `auth` methods are read, to tell which sign-ins it supports. */
+	getProvider?(provider: string): { auth?: { oauth?: unknown; apiKey?: { login?: unknown } } } | undefined;
 	isUsingOAuth(model: { provider: string }): boolean;
 	refresh(options?: { allowNetwork?: boolean }): Promise<{ aborted: boolean; errors: ReadonlyMap<string, unknown> }>;
+	/** Pi's available-model snapshot (`get_available_models`): models with credentials, read from memory. */
+	getAvailable?(): ReadonlyArray<unknown>;
 }
 
 export function isDesktopAuthRegistry(value: unknown): value is DesktopAuthRegistry {
@@ -79,6 +92,43 @@ function displayName(registry: DesktopAuthRegistry, provider: string): string {
 	return provider;
 }
 
+/**
+ * Pi's OAuth sign-ins that run as a device code only (the user types a code on
+ * the provider's page), and those that offer a device code beside the browser
+ * sign-in. Pi's provider definitions do not say which flow they run, so this is
+ * read from Pi's own flows (`@earendil-works/pi-ai/dist/auth/oauth`); any other
+ * OAuth provider is a browser sign-in.
+ */
+const OAUTH_FLOWS: Readonly<Record<string, "device" | "both">> = {
+	"github-copilot": "device",
+	"kimi-coding": "device",
+	meta: "device",
+	xai: "device",
+	"openai-codex": "both",
+	radius: "both",
+};
+
+/** The sign-ins a provider supports, from its definition: never a credential. */
+export function loginKinds(provider: string, definition: { auth?: { oauth?: unknown; apiKey?: { login?: unknown } } } | undefined): LoginKind[] {
+	const kinds: LoginKind[] = [];
+	const auth = definition?.auth;
+	if (auth?.oauth) {
+		const flow = Object.hasOwn(OAUTH_FLOWS, provider) ? OAUTH_FLOWS[provider] : undefined;
+		if (flow !== "device") kinds.push("oauth");
+		if (flow !== undefined) kinds.push("device");
+	}
+	if (typeof auth?.apiKey?.login === "function") kinds.push("api_key");
+	return kinds;
+}
+
+function providerLoginKinds(registry: DesktopAuthRegistry, provider: string): LoginKind[] {
+	try {
+		return loginKinds(provider, registry.getProvider?.(provider));
+	} catch {
+		return [];
+	}
+}
+
 /** One row per provider that has models, sorted by id, from the registry's safe reads only. */
 export function projectAuthStatus(registry: DesktopAuthRegistry): DesktopAuthStatus {
 	const firstModel = new Map<string, { provider: string }>();
@@ -92,7 +142,7 @@ export function projectAuthStatus(registry: DesktopAuthRegistry): DesktopAuthSta
 		const source = configured && typeof status.source === "string" && Object.hasOwn(SOURCES, status.source) ? SOURCES[status.source]! : null;
 		let type: CredentialType | null = null;
 		if (configured) type = registry.isUsingOAuth(firstModel.get(provider)!) ? "oauth" : "api_key";
-		return { provider, displayName: displayName(registry, provider), configured, type, source };
+		return { provider, displayName: displayName(registry, provider), configured, type, source, loginKinds: providerLoginKinds(registry, provider) };
 	});
 	return { providers, truncated: ids.length > DESKTOP_AUTH_LIMITS.providers };
 }
@@ -100,4 +150,77 @@ export function projectAuthStatus(registry: DesktopAuthRegistry): DesktopAuthSta
 /** Provider ids of a refresh's errors map; the errors themselves never cross. */
 export function failedProviderIds(errors: ReadonlyMap<string, unknown>): string[] {
 	return [...errors.keys()].filter((id) => PROVIDER_ID.test(id)).sort().slice(0, DESKTOP_AUTH_LIMITS.providers);
+}
+
+/** One model Pi can use now (it has credentials), as `list_available_models` lists it. */
+export interface DesktopAvailableModel {
+	provider: string;
+	id: string;
+	name?: string;
+	contextWindow?: number;
+	reasoning?: boolean;
+	/** What the model takes: `text`, `image`. */
+	input?: Array<"text" | "image">;
+}
+
+export interface DesktopAvailableModels {
+	models: DesktopAvailableModel[];
+	/** What the session's current model accepts, low to high (Pi's `get_available_thinking_levels`). */
+	thinkingLevels: string[];
+	current?: { provider: string; id: string; thinkingLevel: string };
+	truncated: boolean;
+}
+
+/** A model id as it may cross: 1–256 characters, no control characters (ids may hold `/`, `:` or `.`). */
+function modelId(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && value.length <= DESKTOP_AUTH_LIMITS.modelId && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+/** A model as it may cross: provider and id always, the rest only when it has the shape Pi gives it. */
+function availableModel(model: unknown): DesktopAvailableModel | undefined {
+	if (!model || typeof model !== "object") return undefined;
+	const m = model as Record<string, unknown>;
+	if (typeof m.provider !== "string" || !PROVIDER_ID.test(m.provider) || !modelId(m.id)) return undefined;
+	const out: DesktopAvailableModel = { provider: m.provider, id: m.id };
+	if (typeof m.name === "string" && m.name.trim().length > 0) out.name = m.name.trim().slice(0, DESKTOP_AUTH_LIMITS.displayName);
+	if (typeof m.contextWindow === "number" && Number.isSafeInteger(m.contextWindow) && m.contextWindow > 0) out.contextWindow = m.contextWindow;
+	if (typeof m.reasoning === "boolean") out.reasoning = m.reasoning;
+	if (Array.isArray(m.input)) out.input = (["text", "image"] as const).filter((kind) => (m.input as unknown[]).includes(kind));
+	return out;
+}
+
+/**
+ * `list_available_models`: the models Pi's `get_available_models` lists (the
+ * registry's available snapshot: models with credentials, no network), and
+ * the thinking levels Pi's `get_available_thinking_levels` gives for the
+ * session's current model (`levelsOf`, Pi's own rule), plus that model and
+ * its level. Nothing else of a model (its base URL, headers, cost, compat
+ * overrides) crosses.
+ */
+export function projectAvailableModels<M extends object>(
+	available: readonly unknown[],
+	current: M | undefined,
+	thinkingLevel: string | undefined,
+	levelsOf: (model: M) => readonly string[],
+): DesktopAvailableModels {
+	const models: DesktopAvailableModel[] = [];
+	let valid = 0;
+	for (const model of available) {
+		const projected = availableModel(model);
+		if (!projected) continue;
+		valid += 1;
+		if (models.length < DESKTOP_AUTH_LIMITS.models) models.push(projected);
+	}
+	const levels = current ? levelsOf(current) : DESKTOP_THINKING_LEVELS;
+	const thinkingLevels = levels.filter((level) => (DESKTOP_THINKING_LEVELS as readonly string[]).includes(level));
+	// Pi's placeholder before any model is chosen (`unknown/unknown`) is no current model.
+	const projected = current === undefined ? undefined : availableModel(current);
+	const model = projected?.provider === "unknown" && projected.id === "unknown" ? undefined : projected;
+	const level = thinkingLevel !== undefined && (DESKTOP_THINKING_LEVELS as readonly string[]).includes(thinkingLevel) ? thinkingLevel : undefined;
+	return {
+		models,
+		thinkingLevels,
+		...(model && level ? { current: { provider: model.provider, id: model.id, thinkingLevel: level } } : {}),
+		truncated: valid > DESKTOP_AUTH_LIMITS.models,
+	};
 }

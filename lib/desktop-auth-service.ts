@@ -1,6 +1,7 @@
-// Gentle Desktop credential-status bridge: answers `get_auth_status` and
-// `reload_credentials` from the session's own model registry
-// (`ctx.modelRegistry`) and projects it with `lib/desktop-rpc-auth.ts`.
+// Gentle Desktop credential-status bridge: answers `get_auth_status`,
+// `reload_credentials` and `list_available_models` from the session's own
+// model registry (`ctx.modelRegistry`) and projects it with
+// `lib/desktop-rpc-auth.ts`.
 //
 // `reload_credentials` calls `modelRegistry.refresh({ allowNetwork: false })`:
 // Pi rebuilds which providers are configured and which models are available
@@ -9,29 +10,39 @@
 // themselves are already re-read by Pi on each request. Concurrent reloads
 // share one refresh.
 
+import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DesktopRpcOutcome } from "./desktop-rpc.ts";
 import {
 	AUTH_UNAVAILABLE,
 	failedProviderIds,
 	INVALID_GET_AUTH_STATUS,
+	INVALID_LIST_AVAILABLE_MODELS,
 	INVALID_RELOAD_CREDENTIALS,
 	isDesktopAuthRegistry,
 	parseEmptyParams,
 	projectAuthStatus,
+	projectAvailableModels,
 	RELOAD_FAILED,
 	type DesktopAuthRegistry,
 } from "./desktop-rpc-auth.ts";
 
 /**
  * The Desktop domain slice for credential status. No event and no write: the
- * credential store is Pi's, and sign-in and sign-out stay out of scope. A reset
- * drops the bound context and the answer of any call that started before it.
+ * credential store is Pi's, and sign-in, API keys and sign-out are the login
+ * slice's (`lib/desktop-login-service.ts`). A reset drops the bound context and
+ * the answer of any call that started before it.
  */
 export class DesktopAuthBridge {
 	private host: ExtensionContext | undefined;
 	private generation = 0;
 	private inFlight: { registry: DesktopAuthRegistry; run: Promise<{ aborted: boolean; errors: ReadonlyMap<string, unknown> }> } | undefined;
+	/** The session's thinking level (`pi.getThinkingLevel()`), for `list_available_models`' `current`. */
+	private readonly thinkingLevel: () => string | undefined;
+
+	constructor(thinkingLevel: () => string | undefined = () => undefined) {
+		this.thinkingLevel = thinkingLevel;
+	}
 
 	attach(context: ExtensionContext): void {
 		this.host = context;
@@ -48,6 +59,20 @@ export class DesktopAuthBridge {
 	}
 
 	async handle(method: string, params: Record<string, unknown>): Promise<DesktopRpcOutcome | undefined> {
+		if (method === "list_available_models") {
+			if (!parseEmptyParams(params)) return { ok: false, error: INVALID_LIST_AVAILABLE_MODELS };
+			const registry = this.registry();
+			if (!registry || typeof registry.getAvailable !== "function") return { ok: false, error: AUTH_UNAVAILABLE };
+			try {
+				let level: string | undefined;
+				try { level = this.thinkingLevel(); } catch { level = undefined; }
+				const current = (this.host as { model?: Model<Api> } | undefined)?.model;
+				// Pi's `get_available_thinking_levels`: the current model's levels, every level without one.
+				return { ok: true, data: { ...projectAvailableModels(registry.getAvailable(), current, level, getSupportedThinkingLevels) } };
+			} catch {
+				return { ok: false, error: AUTH_UNAVAILABLE };
+			}
+		}
 		if (method === "get_auth_status") {
 			if (!parseEmptyParams(params)) return { ok: false, error: INVALID_GET_AUTH_STATUS };
 			const registry = this.registry();

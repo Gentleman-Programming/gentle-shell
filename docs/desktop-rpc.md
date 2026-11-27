@@ -10,7 +10,7 @@ Start Pi in RPC mode with the interactive-host marker:
 GENTLE_SHELL_INTERACTIVE_HOST=1 pi --mode rpc
 ```
 
-The channel is inactive in the TUI and in headless RPC children. It does not register an agent-callable tool.
+The channel is inactive in the TUI and in headless RPC children. It registers no agent-callable tool of its own; the only tools it adds are the ones a connected client provides with [`set_host_tools`](#set_host_tools), and those run on the client.
 
 A Desktop that shows the design canvas itself also sets `GENTLE_DESIGN_OPEN_BROWSER=0`, so `gentle_design {action: "open"}` never launches the system browser. The canvas still starts, the `open` transition still reaches the `design_canvas` event, and the tool answers `opened: false, browserDisabled: true` with the URL.
 
@@ -53,7 +53,7 @@ Registered extension commands are consumed by Pi. The real-runtime maintainer pr
 }
 ```
 
-Requests are limited to 64 KiB. `requestId` is required and limited to 128 characters. Method names use lowercase snake case and are limited to 64 characters.
+Requests are limited to 64 KiB, except `set_host_tools` (1 MiB), `host_message` and `set_host_context` (2 MiB each) and `host_tool_result` (10 MiB). Over its limit a request is answered `invalid_request` with `requestId: null`. `requestId` is required and limited to 128 characters. Method names use lowercase snake case and are limited to 64 characters.
 
 ### `capabilities`
 
@@ -64,21 +64,22 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials"],
-  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "session_snapshot"]
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials", "list_available_models", "set_host_tools", "host_tool_result", "host_tool_progress", "host_message", "set_host_context", "set_host_activity", "login_start", "login_complete", "login_cancel", "set_api_key", "remove_credentials", "list_packages", "install_package", "remove_package"],
+  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel", "login_prompt", "login_finished", "package_progress", "package_finished", "session_snapshot"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The agent-definitions slice advertises exactly its one read method and no event; editing definitions stays a file edit. The package-status slice advertises exactly its one read method and no event; `/gentle:doctor` stays terminal-only. The background-subagents slice advertises exactly its read and change methods and no event; every answer carries the state. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), [Agent definitions limits](#agent-definitions-limits), [Status limits](#status-limits), and [Background subagents limits](#background-subagents-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise (when listed it comes last); the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The agent-definitions slice advertises exactly its one read method and no event; editing definitions stays a file edit. The package-status slice advertises exactly its one read method and no event; `/gentle:doctor` stays terminal-only. The background-subagents slice advertises exactly its read and change methods and no event; every answer carries the state. The host tools slice advertises its six methods (`set_host_activity` is sent only by `gentle-shell serve`) and its two call events. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), [Agent definitions limits](#agent-definitions-limits), [Status limits](#status-limits), [Background subagents limits](#background-subagents-limits), and [Host tools limits](#host-tools-limits).
 
 ### `get_snapshot`
 
-Returns the current event sequence and a bounded state projection:
+Returns the current event sequence, its epoch, and a bounded state projection:
 
 ```json
 {
   "schema": "gentle-shell.desktop-rpc/v1",
   "sequence": 0,
+  "epoch": "3b0e9a52-8c1d-4f7e-9a6b-2d5c7e1f4a90",
   "state": {
     "config": {
       "stores": [
@@ -91,18 +92,19 @@ Returns the current event sequence and a bounded state projection:
         { "store": "persona", "scope": "global+project", "readOnly": false, "status": "ok", "revision": "sha256:41aa…" },
         { "store": "banner", "scope": "global", "readOnly": false, "status": "missing", "revision": "sha256:9c02…" },
         { "store": "notifications", "scope": "global", "readOnly": false, "status": "ok", "revision": "sha256:d317…" },
-        { "store": "mcp", "scope": "global+project", "readOnly": true, "status": "ok", "revision": "sha256:5e21…" },
-        { "store": "pi_settings", "scope": "global+project", "readOnly": true, "status": "ok", "revision": "sha256:a8c4…" },
-        { "store": "claude_bridge", "scope": "global", "readOnly": true, "status": "missing", "revision": "sha256:07fd…" }
+        { "store": "mcp", "scope": "global+project", "readOnly": false, "status": "ok", "revision": "sha256:5e21…" },
+        { "store": "pi_settings", "scope": "global+project", "readOnly": false, "status": "ok", "revision": "sha256:a8c4…" },
+        { "store": "claude_bridge", "scope": "global", "readOnly": true, "status": "missing", "revision": "sha256:07fd…" },
+        { "store": "custom_models", "scope": "global", "readOnly": false, "status": "missing", "revision": "sha256:c4d9…" }
       ]
     }
   }
 }
 ```
 
-The projection carries only store identity, scope, mutability, status, and revision — never store content, never a path. It is the cheap way for a client to notice that one of the twelve revisions moved and then call `get_config` for that store. `state` is `{}` when no Desktop command has bound a session context yet, or when that context has no working directory: without one, the project and pin layers cannot be read truthfully, so nothing is projected instead of a guess.
+The projection carries only store identity, scope, mutability, status, and revision — never store content, never a path. It is the cheap way for a client to notice that one of the thirteen revisions moved and then call `get_config` for that store. `state` is `{}` when no Desktop command has bound a session context yet, or when that context has no working directory: without one, the project and pin layers cannot be read truthfully, so nothing is projected instead of a guess.
 
-This snapshot does not project permission state: use `get_permission_mode` for that. `sequence` is the number of delivered events, so a client that saw `seq: 4` expects `sequence: 4` from a fresh snapshot unless it missed an event.
+This snapshot does not project permission state: use `get_permission_mode` for that. `sequence` is the number of delivered events, so a client that saw `seq: 4` expects `sequence: 4` from a fresh snapshot unless it missed an event. `epoch` names the numbering `sequence` counts in, as every event's `epoch` does (see [Events](#events)): a snapshot of another epoch than the events a client followed comes from a channel that numbers its events anew, so its `sequence` replaces the client's baseline even when it is smaller.
 
 #### Session sections
 
@@ -123,6 +125,7 @@ Without a `sections` key the request is the legacy read above, byte-for-byte (ot
 {
   "schema": "gentle-shell.desktop-rpc/v1",
   "sequence": 4,
+  "epoch": "3b0e9a52-8c1d-4f7e-9a6b-2d5c7e1f4a90",
   "state": {
     "config": { "stores": ["…as above…"] },
     "session": {
@@ -158,7 +161,7 @@ Reads one existing configuration store through the owner that already reads it. 
 
 | Param | Required | Type | Meaning |
 | --- | --- | --- | --- |
-| `store` | yes | one of the twelve store identifiers below | The store to read. |
+| `store` | yes | one of the thirteen store identifiers below | The store to read. |
 
 Any other key — including `scope`, `path`, `file`, or `physical_path` — is rejected as `invalid_request`. A string that is not a known store identifier is rejected as `unknown_store`. Neither case reads anything.
 
@@ -173,9 +176,10 @@ Any other key — including `scope`, `path`, `file`, or `physical_path` — is r
 | `persona` | `readPersonaLayer` + `resolvePersonaMode` over `<configHome>/persona.json` + `<cwd>/.pi/gentle-ai/persona.json` | `global+project` | `false` | `{ mode }`: the persona in effect, the project layer winning. |
 | `banner` | `readBannerConfigSync` over `<configHome>/banner.json` | `global` | `false` | `{ showRose, showTextLogo, color }`. |
 | `notifications` | `parseNotificationSettingsFile` over `<configHome>/notifications.json` | `global` | `false` | The validated settings without `schema`, every `file:` sound replaced by `"file"`. |
-| `mcp` | `readMcpConfig` (mirrors Pi's `loadMcpConfig`) over `<agentHome>/mcp.json` + `<cwd>/.pi/mcp.json` (project file only for a trusted project) | `global+project` | `true` | `{ servers: [{ name, transport, enabled }], truncated, omitted }`, `transport` being `stdio` or `http`: at most 64 servers, in Pi's load order; `truncated` reports the cut at 64 and `omitted` counts servers left out because their name is longer than 128 characters. No `command`, `args`, `env`, `cwd`, `url`, `headers`, `oauth`, or `auth` value. |
-| `pi_settings` | `readPiSettings` through Pi's `SettingsManager` over `<agentHome>/settings.json` + `<cwd>/.pi/settings.json` (project file only for a trusted project) | `global+project` | `true` | Display settings only: `{ defaultProvider, defaultModel, defaultThinkingLevel, enabledModels, extensions, truncated }`, `extensions` being names. Packages (see `get_update_status`), the theme, and `sessionDir` are not part of it. |
+| `mcp` | `readMcpConfig` (mirrors Pi's `loadMcpConfig`) plus `readMcpLayer` over `<agentHome>/mcp.json` + `<cwd>/.pi/mcp.json` (project file only for a trusted project) | `global+project` | `false` | `{ servers: [{ name, transport, enabled }], truncated, omitted, documents: { global?, project? } }`, `transport` being `stdio` or `http`: at most 64 servers, in Pi's load order; `truncated` reports the cut at 64 and `omitted` counts servers left out because their name is longer than 128 characters. `documents` holds each layer Pi reads as its whole document, every secret replaced by `"•••"`. Writable per layer — see [`set_config`](#data-for-mcp). |
+| `pi_settings` | `readPiSettings` through Pi's `SettingsManager` over `<agentHome>/settings.json` + `<cwd>/.pi/settings.json` (project file only for a trusted project) | `global+project` | `false` | Display settings only: `{ defaultProvider, defaultModel, defaultThinkingLevel, enabledModels, extensions, truncated }`, `extensions` being names. Packages (see `get_update_status`), the theme, and `sessionDir` are not part of it. The four model keys are writable in the global file — see [`set_config`](#data-for-pi_settings). |
 | `claude_bridge` | `readClaudeBridgeConfig` over `<agentHome>/claude-bridge.json` | `global` | `true` | `{ plan }` from `provider.plan` in the config file of `pi-claude-bridge`, a third-party Pi package some users already have. `missing` when the file is absent. |
+| `custom_models` | `readCustomModels` over `<agentHome>/models.json` (Pi's custom providers and models) | `global` | `false` | The whole document as Pi reads it (`providers`, and any other key), every secret replaced by `"•••"`. Writable — see [`set_config`](#data-for-custom_models). |
 
 Success:
 
@@ -207,25 +211,26 @@ Success:
 | --- | --- |
 | `store` | The store identifier that was read. |
 | `scope` | Which owner layers this store is assembled from: `global`, `global+project`, or `local+repo`. |
-| `readOnly` | `false` for the six writable stores (`profiles`, `profile_fallbacks`, `pins`, `persona`, `banner`, `notifications`); `true` for the three derived or installer-owned stores (`models`, `subagents`, `managed_assets`) and the three display stores (`mcp`, `pi_settings`, `claude_bridge`). |
+| `readOnly` | `false` for the nine writable stores (`profiles`, `profile_fallbacks`, `pins`, `persona`, `banner`, `notifications`, `mcp`, `pi_settings`, `custom_models`); `true` for the three derived or installer-owned stores (`models`, `subagents`, `managed_assets`) and the `claude_bridge` display store. |
 | `status` | `ok` (normalized content follows), `missing` (no layer produced content because no layer file exists), or `invalid` (layers exist but none of them produced content). See [Layer semantics](#layer-semantics). |
 | `revision` | Opaque read-time digest of the canonical normalized content. See [Revision limits](#revision-limits). |
 | `value` | Normalized owner content, present when the store produced one. Absent when a layer is missing or invalid. |
 | `layers` | Per-layer status, `global` then `project`, or `local` then `repo`. Each entry is `ok`, `missing`, or `invalid` for the file that layer owns. |
-| `writeTargets` | Present only for the three writable stores. One entry per file the owner rewrites, with that file's own `writeRevision` — the token `set_config` requires. See [Write targets](#write-targets). |
+| `writeTargets` | Present only for the writable stores. One entry per file the owner rewrites, with that file's own `writeRevision` — the token `set_config` requires. See [Write targets](#write-targets). |
 
 #### Layer semantics
 
 `status` answers for the store; `layers` answers for each file it is assembled from. For a merged store the two are different questions:
 
-- `profiles`, `profile_fallbacks`, `managed_assets`, `banner`, `notifications`, and `claude_bridge` have one layer, so `status` is that layer's status.
+- `profiles`, `profile_fallbacks`, `managed_assets`, `banner`, `notifications`, `claude_bridge`, and `custom_models` have one layer, so `status` is that layer's status.
 - `mcp` and `pi_settings` follow Pi's project trust: Pi reads the project `mcp.json` and `settings.json` only when the session trusts the project, so these stores list a `project` layer only then. For an untrusted project (or a host that cannot say) `layers` holds the `global` layer alone and `value` ignores the project file. A file that is not JSON (or, for `mcp`, not an object with an `mcpServers` object) is an `invalid` layer and the other layer still merges. Pi does not announce a trust change to extensions, so a change made during the session is noticed when the next Desktop command binds the session: `mcp` and `pi_settings` are re-read then, and each whose revision moved is announced as an external `config_changed`. Until a command arrives nothing is pushed, so a client should re-read these stores (or send any command) after the user trusts or distrusts the project.
-- `mcp` lists the servers Pi's MCP loader would produce from those files: a project entry replaces the global entry of the same name, a project entry without `command`, `url`, or `type` only overrides `enabled` (and exposure) of an existing global server, and an entry Pi would reject is left out while the rest of the file still loads. `transport` is the one Pi connects with: `http` whenever the entry has a `url` key (even with `type: "stdio"` and a `command`), otherwise `stdio`; `enabled` is `false` only when the file says so. Pi's loader is not part of its package exports, so `lib/mcp-config.ts` mirrors that resolution and its per-entry checks (OAuth and `auth` included), and a test compares it with Pi's own loader. Servers an extension registers at runtime are not listed.
-- `pi_settings` is Pi's own merged view (global, then the trusted project file on top, with Pi's migrations), read without taking Pi's settings lock and never written back. `defaultProvider` is shown only as one plain token. `defaultModel` and each `enabledModels` entry are shown only in Pi's `--models` shape: a bare model id or `provider/modelId` (the id may hold more `/`, as in `openrouter/anthropic/claude-3.5-sonnet`), with wildcards and an optional `:thinking` suffix; every `/`-separated segment starts with a letter or digit. Any other value is `null` (or left out of `enabledModels`): a value with both `@` and `:` (`user:secret@host`), a backslash, an absolute path (`/home/...`) or a `./` / `../` path, a URL, control text, or more than 128 characters. `defaultThinkingLevel` is one of Pi's levels or `null`; `enabledModels` is `null` when no layer restricts models. An extension is named by its last path segment, and only when that segment is a plain file or package name (letters, digits, `.`, `_`, `+`, `-`; at most 128 characters); an entry that is a URL, or whose name is longer, credential-shaped, or holds control text, is left out. Each list keeps at most 64 entries and `truncated` reports a cut. When Pi's own getters cannot read a merged value, `value` is absent, every layer whose file exists reads `invalid`, and an absent file still reads `missing`.
+- `mcp` lists the servers Pi's MCP loader would produce from those files: a project entry replaces the global entry of the same name, a project entry without `command`, `url`, or `type` only overrides `enabled` (and exposure) of an existing global server, and an entry Pi would reject is left out while the rest of the file still loads. `transport` is the one Pi connects with: `http` whenever the entry has a `url` key (even with `type: "stdio"` and a `command`), otherwise `stdio`; `enabled` is `false` only when the file says so. Pi's loader is not part of its package exports, so `lib/mcp-config.ts` mirrors that resolution and its per-entry checks (OAuth and `auth` included), and a test compares it with Pi's own loader. Servers an extension registers at runtime are not listed. `documents.global` and `documents.project` are the files an editor changes: each layer Pi reads, as its whole document (`mcpServers`, `autoEnableCodemode`, any other key), present when that file is a JSON object whose `mcpServers`, if any, is an object, and redacted (see [Secrets](#secrets-in-custom_models-and-mcp)). A server Pi would refuse stays in its document as written; Pi skips only that server, and so does `servers`.
+- `pi_settings` is Pi's own merged view (global, then the trusted project file on top, with Pi's migrations), read without taking Pi's settings lock and never written back by a read. `defaultProvider` is shown only as one plain token. `defaultModel` and each `enabledModels` entry are shown only in Pi's `--models` shape: a bare model id or `provider/modelId` (the id may hold more `/`, as in `openrouter/anthropic/claude-3.5-sonnet`), with wildcards and an optional `:thinking` suffix; every `/`-separated segment starts with a letter or digit. Any other value is `null` (or left out of `enabledModels`): a value with both `@` and `:` (`user:secret@host`), a backslash, an absolute path (`/home/...`) or a `./` / `../` path, a URL, control text, or more than 128 characters. `defaultThinkingLevel` is one of Pi's levels or `null`; `enabledModels` is `null` when no layer restricts models. An extension is named by its last path segment, and only when that segment is a plain file or package name (letters, digits, `.`, `_`, `+`, `-`; at most 128 characters); an entry that is a URL, or whose name is longer, credential-shaped, or holds control text, is left out. Each list keeps at most 64 entries and `truncated` reports a cut. When Pi's own getters cannot read a merged value, `value` is absent, every layer whose file exists reads `invalid`, and an absent file still reads `missing`. A write changes only the four model keys of the global file (see [`data` for `pi_settings`](#data-for-pi_settings)); its one write target is that file.
 - `claude_bridge` reads `claude-bridge.json` in the Pi agent dir, the config file of the third-party `pi-claude-bridge` package. Gentle Shell does not install or write it; the store only lets a client show the plan a user already chose. `value` is `{ "plan": <string> | null }`: the plan when `provider.plan` is a short plain token (letters, digits, `.`, `_`, `-`; at most 32 characters), otherwise `null`. No other key crosses. The installed package version is not reported: Pi's package listing can run `npm root -g` synchronously, which a revision recompute must not do.
 - `persona` has a `global` layer (`persona.json` in the Gentle config home) and a `project` layer (`<cwd>/.pi/gentle-ai/persona.json`); `value` is `{ "mode": "gentleman" | "neutral" }`, the mode in effect (the project layer wins), exactly as the prompt build resolves it.
 - `banner` is `{ showRose, showTextLogo, color }` from `banner.json`. A file without those three valid settings is `invalid` and is never repaired by a read; extra keys are ignored, as the `/gentle:banner` editor ignores them, and a Desktop write keeps only the three settings.
 - `notifications` is the owner's validated `notifications.json` without its `schema` key. Every `file:` sound is replaced by the marker `"file"`, so no sound path crosses the wire.
+- `custom_models` is Pi's own `models.json` in the agent home — the custom providers and models (`providers.<id>`: `baseUrl`, `api`, `apiKey`, `headers`, `models`, `modelOverrides`, …). It is read exactly as Pi loads it: `//` comments and trailing commas are allowed, and the document must pass the schema Pi publishes with its package (`schemas/models.schema.json`); a file that does not is `invalid`, because Pi ignores it whole. `value` is the whole document, unknown keys included, with the secrets redacted (see [Secrets](#secrets-in-custom_models-and-mcp)). Pi has no project `models.json`.
 - `subagents` mirrors the runtime reader: a layer that cannot be parsed is skipped and the remaining layer still merges. `status` is `ok` as soon as one layer is usable, and `layers` still names the broken one.
 - `models` keeps the owner's merge rule, which rejects the saved routing when a layer it reads is malformed; there `status` is `invalid` even if the other layer is fine.
 - `missing` means every layer file is absent. `invalid` means layer files exist but none produced content; in that case the owner would fall back to its own defaults, which are not the content of this store, so no `value` is returned.
@@ -315,6 +320,9 @@ A write target is one file, not one store, with one exception: `persona`'s `glob
 | `persona` | `global` | `<configHome>/persona.json`, plus `<cwd>/.pi/gentle-ai/persona.json` when it already exists |
 | `banner` | `global` | `<configHome>/banner.json` |
 | `notifications` | `global` | `<configHome>/notifications.json` |
+| `mcp` | `global`, plus `project` for a trusted project | `<agentHome>/mcp.json`, `<cwd>/.pi/mcp.json` |
+| `pi_settings` | `global` | `<agentHome>/settings.json` (its four model keys) |
+| `custom_models` | `global` | `<agentHome>/models.json` |
 
 `persona`'s `global` target covers both persona files, because the owner rewrites the project file too when it exists: its `writeRevision` digests both layers (so a project edit makes a token stale even while the global file is missing), and its `value` is `{ global, project }` layer states rather than one file. Each file is replaced atomically, but the two-file write is not a transaction: a failure after the global file is written can leave the project file unchanged, and the answer reports the layers as they are.
 
@@ -360,11 +368,11 @@ Writes one existing, owner-maintained store. Desktop names a store and, for `pin
 
 | Param | Required | Type | Meaning |
 | --- | --- | --- | --- |
-| `store` | yes | `profiles` \| `profile_fallbacks` \| `pins` | The one store to write. |
-| `data` | yes | store-specific object (below) | The **complete** new content of that store, not a patch. |
+| `store` | yes | a writable store: `profiles` \| `profile_fallbacks` \| `pins` \| `persona` \| `banner` \| `notifications` \| `mcp` \| `pi_settings` \| `custom_models` | The one store to write. |
+| `data` | yes | store-specific object (below) | The **complete** new content of that store (or of one `pins`/`mcp` layer), not a patch; `pi_settings` alone takes a patch of its model keys. |
 | `expectedRevision` | yes | string | `writeTargets[].writeRevision` of the target as the client last read it. |
 
-Exactly these three keys are accepted. Any other key — including `scope`, `path`, `file`, or `physical_path` — is rejected as `invalid_request` before anything is read or written. An unknown store string is `unknown_store`. A write to `models`, `subagents`, `managed_assets`, `mcp`, `pi_settings`, or `claude_bridge` is `read_only`, rejected before its `data` is inspected, because the reason the write cannot happen is the store, not the payload.
+Exactly these three keys are accepted. Any other key — including `scope`, `path`, `file`, or `physical_path` — is rejected as `invalid_request` before anything is read or written. An unknown store string is `unknown_store`. A write to `models`, `subagents`, `managed_assets`, or `claude_bridge` is `read_only`, rejected before its `data` is inspected, because the reason the write cannot happen is the store, not the payload.
 
 #### `data` for `profiles`
 
@@ -435,13 +443,85 @@ One selected layer and what it should hold — a profile to pin, or `null` to cl
 
 A layer whose file currently reads `invalid` is likewise a valid target for a set: replacing a broken pin with a valid one is an explicit operation.
 
+#### `data` for `custom_models`
+
+The complete new `models.json`, as `get_config` returned it with the client's changes:
+
+```json
+{
+  "providers": {
+    "local": {
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "api": "openai-completions",
+      "apiKey": "•••",
+      "models": [{ "id": "llama-3.1-70b", "contextWindow": 128000 }]
+    }
+  }
+}
+```
+
+It replaces the whole file. It must pass Pi's own models schema (`providers` is required; unknown keys are kept, as Pi keeps them); otherwise the answer is `invalid_data` and its `message` names the first problem as Pi's loader would, for example `Invalid custom_models data: providers.local.models.0.id: must not have fewer than 1 characters`. The file is written as plain JSON (`0600`, atomically), so comments in it do not survive a write. A file that currently reads `invalid` may be replaced: nothing of it is kept.
+
+After a write that changed the file, the session's model registry re-reads it before the answer is sent (`modelRegistry.refresh`, no network), so the new models are usable in this session at once. Other sessions on the same machine refresh theirs when their watcher sees the change (see [`config_changed`](#config_changed)).
+
+#### `data` for `pi_settings`
+
+A patch of Pi's four model keys in the global `settings.json`:
+
+```json
+{ "defaultProvider": "openai", "defaultModel": "gpt-5", "defaultThinkingLevel": null, "enabledModels": ["openai/gpt-5", "anthropic/*"] }
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `defaultProvider` | no | A provider id, or `null` to remove the key. |
+| `defaultModel` | no | A model id, or `null` to remove the key. |
+| `defaultThinkingLevel` | no | A Pi thinking level, or `null` to remove the key. |
+| `enabledModels` | no | The scoped models (patterns such as `anthropic/*` or `openai/gpt-5`), or `null` to remove the key (every model is available). |
+
+A key the patch leaves out keeps its value. The store's `value` is Pi's merged display view (a trusted project's `settings.json` on top), so a patch never makes a client send back values it saw only through the merge or the display filter; a key a trusted project file sets still wins over what the global file holds, and the answer shows the result. The `expectedRevision` is the `global` target's `writeRevision`, a digest of the global file's model keys. See [Configuration limits](#configuration-limits) for the value rules.
+
+#### `data` for `mcp`
+
+One selected layer and its complete new document, as `value.documents` returned it with the client's changes:
+
+```json
+{
+  "source": "global",
+  "document": {
+    "mcpServers": {
+      "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."], "env": { "TOKEN": "•••" } },
+      "docs": { "url": "https://docs.example/mcp", "headers": { "Authorization": "•••" } }
+    }
+  }
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `source` | yes | `global` (`<agentHome>/mcp.json`) or `project` (`<cwd>/.pi/mcp.json`, only while the session trusts the project; otherwise `project_untrusted`). |
+| `document` | yes | The whole new file for that layer. |
+
+Exactly `{source, document}` is accepted. Every server is checked as Pi loads it: Pi's own `validateMcpServerConfig` (stdio `command`/`args`/`env`/`cwd`, HTTP `url`/`headers`/`oauth`/`auth`, `enabled`, `exposure`, `toolExposure`, `description`, `timeout`), names that clash once `-` and `_` are equal are refused, `autoEnableCodemode` must be a boolean, and for the `project` layer an override must name a global server and set only `enabled`, `exposure`, or `toolExposure`, and `auth` is refused. The first problem answers `invalid_data` with a message such as `Invalid mcp data: server "docs": auth is only allowed in the global mcp.json`. The `expectedRevision` is that layer's own `writeRevision`. Pi's validator is not part of its package exports, so it is loaded from Pi's installed package by path (`dist/core/mcp-servers.js`); when a Pi update moves it, every write answers `invalid_data` naming the missing validator instead of writing unchecked.
+
+Pi's MCP extension reads `mcp.json` only when a session starts. After a write that changed a layer, the session reloads itself (as `/reload` does) once it is idle and after the answer has been sent, so its servers connect without a restart; the client sees the session's usual reload (a new event epoch). Other sessions get a `config_changed` (`source: "external"`) and load the servers on their next reload or start.
+
+#### Secrets in `custom_models` and `mcp`
+
+No secret crosses the wire. Every string in a secret position is read as the marker `"•••"`:
+
+- `custom_models`: each provider's `apiKey`, and every value of `headers` on a provider, on a `models[]` entry, and on a `modelOverrides` entry;
+- `mcp` documents: every value of a server's `env` and `headers`, its `oauth.clientSecret`, and its `url` when the URL carries userinfo (`user:pass@`) or a query string (where keys often travel). The `servers` summary carries no such field at all.
+
+That covers literal keys as well as `$NAME`/`${NAME}` references and `!command` values, which can carry a key too. Sending `"•••"` back in the same position keeps the value the file holds there — the same provider's `apiKey` or header, the same model (matched by `id`, so models may be reordered), the same MCP server's `env` entry, header, client secret, or URL. `"•••"` where the current file holds no string at that position is `invalid_data`; any other string replaces the secret. The revisions digest the real content, so a secret changed elsewhere still moves them. Values outside these positions (`command`, `args`, `cwd`, a plain `url`, `baseUrl`, …) are returned as written: they are the user's own configuration an editor has to show.
+
 #### Validation and revision guard
 
 The checks below run in this order, and the first one that fails answers the request. Nothing is read or written after a rejection.
 
 1. **Envelope** (`invalid_request`): exactly the keys `store`, `data`, and `expectedRevision`; `store` must be a string; `data` must be present. A request missing `data` is malformed whatever store or revision it names, so this check comes before the store rules — a `models` write without `data` is `invalid_request`, not `read_only`. Store contents are not looked at here.
-2. **Store identity** (`unknown_store`): the string must be one of the twelve store identifiers.
-3. **Mutability** (`read_only`): `models`, `subagents`, `managed_assets`, `mcp`, `pi_settings`, and `claude_bridge` are rejected before their `data` is inspected or their revision is compared, so any payload gets the same answer.
+2. **Store identity** (`unknown_store`): the string must be one of the thirteen store identifiers.
+3. **Mutability** (`read_only`): `models`, `subagents`, `managed_assets`, and `claude_bridge` are rejected before their `data` is inspected or their revision is compared, so any payload gets the same answer.
 4. **Usable revision** (`revision_conflict`): `expectedRevision` must be a non-empty string. Absent, empty, and non-string tokens are all "the client did not prove it saw the current state", and this is decided before the payload is validated.
 5. **Session roots** (`config_unavailable`): the bound session must have a working directory.
 6. **Payload** (`invalid_data`): `data` is validated by the owner's own normalizer (`normalizeProfilesFile`, `normalizeFallbacksFile`, the pin name and store rules). A value the owner would reject is `invalid_data`. So is any value the owner's normalizer would **rewrite or silently drop** — an illegal profile or agent name, a stale `active` marker, an unknown workflow mode, an empty fallback chain, the `effort` alias, an organic workflow entry, an unknown routing member. A write is applied complete or not at all, so a client can never delete or silently reshape content by sending it: send exactly the canonical form `get_config` returned. For `pins`, `profile` must be a defined profile name or the literal `null`; a missing, empty, non-string, or unknown `profile`, an extra `data` key, and a `source` other than `local`/`repo` are all `invalid_data`, and a pin request outside a resolvable Git worktree is `config_unavailable`.
@@ -484,7 +564,7 @@ The payload is the same `get_config` projection of the store **after** the write
 
 | Field | Meaning |
 | --- | --- |
-| `writeTarget` | The target this request named: `global`, `local`, or `repo`. |
+| `writeTarget` | The target this request named: `global`, `project`, `local`, or `repo`. |
 | `writeRevision` | That target's resulting revision, to use as `expectedRevision` on the next write. |
 | `changed` | `true` only if this request actually changed the target's content. A no-op answers `false` with the unchanged state and no event. |
 
@@ -1183,7 +1263,7 @@ Any other key (including a Pi-style `sessionPath`), a missing or empty `id`, or 
 - **Switching to the current session** is a no-op: `{ "id": …, "changed": false }`, no switch, no event.
 - **A cancelled switch** (an extension's `session_before_switch` handler cancelled it) answers `{ "id": …, "changed": false, "cancelled": true }`; the session is unchanged.
 - **A refused switch** (for example the session's working directory no longer exists) answers `sessions_unavailable` with a fixed message; Pi's error, which names paths, never crosses.
-- **The sequence resets.** A switch starts a new session, exactly like Pi's own `switch_session`: the old session receives `session_shutdown`, the new one starts with a fresh channel, and event `seq` starts again at 1. The response is published by the new session, after it started, still correlated by `requestId`; an event of the new session may precede it. Fetch `get_snapshot` after a switch.
+- **The sequence resets.** A switch starts a new session, exactly like Pi's own `switch_session`: the old session receives `session_shutdown`, the new one starts with a fresh channel, a new `epoch`, and event `seq` starts again at 1. The response is published by the new session, after it started, still correlated by `requestId`; an event of the new session may precede it. Fetch `get_snapshot` after a switch.
 - **One switch at a time; nothing is lost.** From the moment a `switch_session` is dispatched until it answers, every other Desktop request (any method, including another `switch_session` and `capabilities`) is answered at once with the retryable `session_switching` error and does nothing. A request that was already waiting on an owner when the switch tears the session down is answered `session_switching` right before the teardown, and a request Pi delivers to the replaced session during the replacement is answered `session_switching` too. Every request gets exactly one response; only the switch itself answers from the new session. This includes `capabilities` and `get_snapshot`: they are refused too, because their answer would describe the session being replaced. Retry every refused request, including those two, after the switch's response arrives. A switch that ends without replacing the session (cancelled, refused, or `not_found`) releases the gate at once. Use a fresh `requestId` per request: the exemption for the in-flight switch is by `requestId`.
 - **A streaming turn is aborted.** Pi settles any active response before it replaces the session, so a switch during a streaming turn aborts that turn and persists it to the old session first, as Pi's own `switch_session` does.
 - This slice emits no event of its own.
@@ -1568,8 +1648,8 @@ Lists the providers this session knows models for, and whether each has credenti
   "ok": true,
   "data": {
     "providers": [
-      { "provider": "anthropic", "displayName": "Anthropic", "configured": true, "type": "oauth", "source": "stored" },
-      { "provider": "openai-codex", "displayName": "OpenAI Codex", "configured": false, "type": null, "source": null }
+      { "provider": "anthropic", "displayName": "Anthropic", "configured": true, "type": "oauth", "source": "stored", "loginKinds": ["oauth", "api_key"] },
+      { "provider": "openai-codex", "displayName": "OpenAI Codex", "configured": false, "type": null, "source": null, "loginKinds": ["oauth", "device"] }
     ],
     "truncated": false
   }
@@ -1582,6 +1662,7 @@ Lists the providers this session knows models for, and whether each has credenti
 | `configured` | Pi has credentials it can use for this provider. |
 | `type` | `oauth` (a sign-in) or `api_key` when configured, otherwise `null`. |
 | `source` | Where Pi found them: `stored` (Pi's credential store), `runtime`, `environment`, `models_json` (a key or a command in `models.json`; which one is not said), or `extension` (a provider extension's fallback). `null` when not configured. |
+| `loginKinds` | How a client can sign in to this provider, from Pi's provider definition: `oauth` (a browser sign-in), `device` (a device code the user types on the provider's page), `api_key` (a key, with [`set_api_key`](#set_api_key)). Pi's OAuth flows that run a device code only (`github-copilot`, `kimi-coding`, `meta`, `xai`) list `device` and not `oauth`; `openai-codex` and `radius` list both (the flow asks which). Empty when the provider takes only ambient credentials (environment, AWS profiles). |
 
 The registry's status label (an environment variable name or a command) never crosses, nor any value. Errors: `invalid_request` (any param), and `auth_unavailable` (no registry in this session, or the registry read failed).
 
@@ -1594,6 +1675,206 @@ Makes this session pick up credentials added or removed elsewhere (another termi
 ```
 
 `failedProviders` lists the ids whose refresh reported an error; the error text never crosses. Errors: `invalid_request`, `auth_unavailable` (no registry in this session, or the session was replaced during the reload), and `reload_failed` (the refresh itself failed).
+
+### `list_available_models`
+
+The models this session's Pi can use now and the thinking levels of its current model: what Pi RPC's `get_available_models` and `get_available_thinking_levels` answer, from the same registry (`modelRegistry.getAvailable()`, read from memory; no network, no turn). A client without a conversation of its own (a phone, Configuration on a [server](serve.md#desktop-rpc-without-a-session-post-apidesktop)) fills a model picker with it. Params must be an empty object. It has no side effects and emits no event; read it again after a sign-in or a `reload_credentials`.
+
+```json
+{
+  "ok": true,
+  "data": {
+    "models": [
+      { "provider": "anthropic", "id": "claude-sol", "name": "Claude Sol", "contextWindow": 200000, "reasoning": true, "input": ["text", "image"] }
+    ],
+    "thinkingLevels": ["off", "minimal", "low", "medium", "high", "xhigh"],
+    "current": { "provider": "anthropic", "id": "claude-sol", "thinkingLevel": "high" },
+    "truncated": false
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `models` | In Pi's order, at most 1000 (`truncated` says more were left out). `provider` and `id` always (a provider id that is not a plain name, or an id over 256 characters or with control characters, is skipped); `name` (up to 128 characters), `contextWindow`, `reasoning` and `input` (`text`, `image`) only when Pi gives them that shape. Nothing else of a model crosses: no base URL, headers, cost or compatibility settings. |
+| `thinkingLevels` | What the current model accepts, low to high, by Pi's own rule (what `get_available_thinking_levels` answers: `off` only for a model without reasoning, Pi's placeholder before any model is chosen included). |
+| `current` | The session's model and thinking level; absent when no model is chosen yet. |
+
+Errors: `invalid_request` (any param), and `auth_unavailable` (no registry in this session, a Pi without the available-model snapshot, or the read failed).
+
+### `set_host_tools`
+
+Registers the tools a client provides and runs itself (*host tools*): the desktop app today, a phone later. The agent sees each one as an ordinary tool; when it calls one, this channel emits [`host_tool_call`](#host_tool_call), the client runs the tool on its own device, and answers with [`host_tool_result`](#host_tool_result). How to use a tool is told to the model by the tool's `description` and `guidelines`, so a client needs no extension or instructions file on the machine the agent runs on.
+
+```json
+{
+  "provider": "gentle-desktop",
+  "tools": [
+    {
+      "name": "desktop_screenshot",
+      "label": "Screenshot",
+      "description": "Capture the user's screen or one window and return it as an image.",
+      "parameters": { "type": "object", "properties": { "window": { "type": "string" } } },
+      "guidelines": ["Use desktop_screenshot when the user refers to what is on their screen."]
+    }
+  ]
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `provider` | 1-64 characters, no control characters. Names the client. Through `gentle-shell serve` the server replaces it with the calling device's id, so a client cannot register as another device. |
+| `tools` | At most 32. The list is the provider's whole set: it replaces what that provider registered before, and an empty list unregisters it. |
+| `name` | `^[a-z][a-z0-9_]{0,63}$`, unique in the list. |
+| `label` | 1-64 characters; shown in UIs. |
+| `description` | 1-4096 characters; what the model reads about the tool. Its first line is also the tool's entry in the system prompt's tool list. |
+| `parameters` | A JSON Schema object with `type: "object"`, at most 16 KiB serialized. Pi validates the model's arguments against it before a call goes out. |
+| `guidelines` | Optional, at most 16 single-line strings of up to 512 characters. Each becomes a bullet in the system prompt's rules while the tool is registered. A bullet that does not contain the tool's name gets `name: ` in front, so the model knows which tool it means. |
+
+Unknown fields are rejected. The answer lists what registered and what did not:
+
+```json
+{ "ok": true, "data": { "registered": ["desktop_screenshot"], "rejected": [{ "name": "bash", "reason": "A built-in or extension tool already has this name" }] } }
+```
+
+A name is rejected only when a built-in or extension tool already has it; the rest of the set still registers. Several providers may offer the same name (the Mac app and a phone can both offer `device_screenshot`), even with different descriptions or schemas: the model sees one tool, with the definition of the provider that registered it most recently. When that provider drops it, the next most recent provider's definition takes over; when the last one drops it, the tool is hidden. Each tool is registered with Pi's `pi.registerTool()` after startup (again whenever its active definition changes), which refreshes Pi's tool registry and system prompt at once, so the change applies from the next model request. Pi cannot remove a tool, so an unregistered host tool is registered again as `hidden`: never declared to the model, never callable, its guidelines out of the prompt. Its name is free for any provider afterwards.
+
+A call to a tool several providers offer goes to one of them, named in [`host_tool_call`](#host_tool_call)'s `provider`: the most recently active connected provider that offers it, as reported by [`set_host_activity`](#set_host_activity); without that report (one client over stdio), or when none of them is connected, the provider that registered it most recently.
+
+Registrations belong to the session: a new session, a `switch_session`, or a shutdown unregisters every host tool and fails every call still waiting, so a client registers its set again after the session changes. Errors: `invalid_request` (the message says which field), `host_tools_unavailable` (the running Pi has no tool registration API, or registering failed).
+
+### `host_tool_result`
+
+The client's answer to a `host_tool_call`:
+
+```json
+{ "callId": "htc_…", "content": [{ "type": "text", "text": "Captured the editor window." }, { "type": "image", "data": "iVBORw0KGgo…", "mimeType": "image/png" }], "isError": false, "details": { "window": "editor", "width": 1280 } }
+```
+
+`content` holds 1-64 items, each `{ "type": "text", "text" }` or `{ "type": "image", "data": <base64>, "mimeType": "image/…" }`, at most 8 MiB together (text counted in UTF-8 bytes, images in base64 characters). It is what the model reads as the tool's result; with `isError: true` the model reads it as a failed call. `details` (optional, a JSON object of at most 1 MiB serialized) becomes the Pi tool result's `details` as sent, so a client draws from the tool result in the transcript (`get_messages`, `get_entries`) the way an extension's tool result does; the model never reads it. Without it, `details` is `{ "provider", "callId" }`. Answers `{ "accepted": true }`. Errors: `invalid_request`, `too_large` (content over 8 MiB, or `details` over 1 MiB), `unknown_call` (no call with this id in this session), `already_answered` (the call is settled: answered, cancelled, or timed out). Only the first answer counts.
+
+### `host_tool_progress`
+
+A heartbeat from the provider while it is still working on a call, so a long, user-paced call (a review the user is reading, a browser wait, a device flow, a download) is not failed after 10 minutes:
+
+```json
+{ "callId": "htc_…", "message": "Waiting for the user's review" }
+```
+
+`callId` is the call's id; `message` (optional, at most 512 characters) is reserved for showing progress and ignored for now. Each `host_tool_progress` restarts the call's no-answer deadline at 10 minutes from now; there is no upper bound on a call's total time while heartbeats keep coming. Answers `{ "extended": true, "deadlineMs": <epoch ms> }`, the new deadline. Errors: `invalid_request`, `unknown_call`, `already_answered` (the call was answered, cancelled, or timed out: stop working on it). The request is limited to 64 KiB like any other method.
+
+A client sends it every 60 s for every in-flight host tool call it is still working on, whatever the tool, and stops when it answers the call or gets its `host_tool_cancel`. A client that dies or hangs stops sending, and the call still fails 10 minutes after its last heartbeat, so a dead client never blocks a turn forever.
+
+### `host_message`
+
+Puts a client's custom message into the conversation, the way an extension does with Pi's `pi.sendMessage()` (for example: the user clicked a button in a generated UI):
+
+```json
+{ "customType": "host.genui.event", "content": "The user clicked Save on surface s1.", "display": true, "details": { "surface": "s1" }, "deliver": "auto" }
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `customType` | yes | `^host\.[a-z0-9][a-z0-9_.-]{0,63}$`. The `host.` prefix keeps client messages apart from extensions' own. |
+| `content` | yes | The text the model reads (as a user-role message), at most 64 KiB of UTF-8. May be empty. |
+| `display` | yes | Whether a transcript shows the message; the model reads it either way. |
+| `details` | no | A JSON object of at most 1 MiB serialized, kept with the message for the client; the model never reads it. |
+| `deliver` | yes | `auto`, `steer`, `followUp` or `nextTurn`. |
+| `triggerTurn` | no | Boolean, passed to Pi (see below). |
+
+`auto` is what a client wants almost always: when the agent is idle the message starts a run (`triggerTurn`, default `true`; with `false` it is only recorded), and while a run is going it steers that run (delivered after the current tool calls, before the next model request). `steer`, `followUp` and `nextTurn` are Pi's own `deliverAs` with `triggerTurn` passed as given: while a run is going `steer` and `followUp` queue the message into it; `nextTurn` holds it until the next run starts; when idle, a message without `triggerTurn: true` is only recorded. The message is a session entry (`custom_message`) like any extension's custom message, so a client rebuilds its state from `get_entries` / `get_messages`. Answers `{ "delivered": true }` once Pi has it (the run it starts goes on afterwards). Errors: `invalid_request`, `too_large` (content over 64 KiB or `details` over 1 MiB), `host_messages_unavailable` (the running Pi cannot take messages).
+
+### `set_host_context`
+
+Keeps a hidden context message for one provider, added before every agent run while it is set (for example: which simulators are booted):
+
+```json
+{ "provider": "gentle-desktop", "content": "Booted simulators: iPhone 16 (iOS 18.2).", "details": { "booted": ["iPhone 16"] } }
+```
+
+`provider` is 1-64 characters; `content` at most 64 KiB of UTF-8, and an empty `content` clears the provider's context; `details` is optional, a JSON object of at most 1 MiB serialized. While set, Pi's `before_agent_start` adds a custom message `{ "customType": "host.context.<provider>", "content", "display": false, "details" }` to each run (one per provider, at most 16 providers), exactly as the generative UI extension adds its own context. Each injected message is part of that run's history (so it is in `get_messages`); a cleared context is not added to later runs. A new `set_host_context` for the same provider replaces content and details. Contexts belong to the session: a new session, a `switch_session` or a shutdown clears them all. Answers `{ "set": true }`. Errors: `invalid_request`, `too_large` (content or `details` over their limits, or a 17th provider), `host_messages_unavailable`.
+
+### `set_host_activity`
+
+Sent by [`gentle-shell serve`](serve.md#host-tools), never by an app: the providers that are connected right now, most recently active first. It decides which provider runs a call to a host tool several providers offer.
+
+```json
+{ "providers": ["<device id>", "<device id>"] }
+```
+
+At most 64 distinct providers of 1-64 characters each; the list replaces the previous one, and a session change forgets it. Answers `{ "set": true }`. Errors: `invalid_request`.
+
+### `login_start`
+
+Starts Pi's own sign-in to a provider for a client that is not in front of this machine: the flow `/login` runs, through Pi's model runtime (`ModelRuntime.login`, behind the session's `ctx.modelRegistry`). What Pi's login dialog would show becomes a [`login_prompt`](#login_prompt) event; each question waits for [`login_complete`](#login_complete); the end is one [`login_finished`](#login_finished).
+
+```json
+{ "provider": "anthropic", "kind": "oauth" }
+```
+
+`provider` is a provider id from [`get_auth_status`](#get_auth_status). `kind` is optional: `oauth` (the provider's OAuth sign-in, a browser sign-in or a device code, whichever its `loginKinds` say) or `api_key` (the provider's interactive key setup, for a provider whose key comes with other values, such as an account id). Without it, `oauth` when the provider has one, else `api_key`. Answers `{ "loginId": "login_<16 hex>" }` before the flow's first event. One sign-in per provider at a time (also against `set_api_key` and `remove_credentials` for it), and each is cancelled after 15 minutes. A session change (new session, `switch_session`, shutdown) cancels it, with no `login_finished`.
+
+On success Pi stores the credential in its credential store (`auth.json` in the agent home, owner-only) exactly as `/login` does, synchronizes the provider, and this slice then refreshes the registry as [`reload_credentials`](#reload_credentials) does: the provider's models are available at once, without restarting the session. Other sessions read the stored credential on their next request and list the provider as configured after their own `reload_credentials`.
+
+Errors: `invalid_request`, `login_unavailable` (no model runtime in this session), `unknown_provider`, `login_unsupported` (the provider has no sign-in of that kind), `login_in_progress`.
+
+A browser sign-in whose provider redirects to a loopback callback on this machine (`http://localhost:1455/auth/callback` for OpenAI, `http://localhost:53692/callback` for Anthropic) cannot be completed by the browser of another device: that redirect would reach the client's own machine. Pi listens for it here and, at the same time, asks for the code or the redirect URL to be pasted (`input` with `redirectPrefix`). A client intercepts its browser's redirect to `redirectPrefix` (or lets the user paste the address bar) and sends the full URL with `login_complete`; Pi checks the state and exchanges the code exactly as its callback would. When the redirect does reach this machine's callback (the client runs on it), Pi completes on its own and the paste prompt is withdrawn.
+
+### `login_complete`
+
+Answers the question a sign-in is waiting on (the last `login_prompt` of kind `input`):
+
+```json
+{ "loginId": "login_…", "value": "http://localhost:1455/auth/callback?code=…&state=…" }
+```
+
+`value` is at most 8 KiB: the pasted code, the full redirect URL, the text typed, the key (for `secret: true`), or, for a choice (`options`), one option's `id`. Answers `{ "accepted": true }`. Errors: `invalid_request` (also a value that is not one of the options), `unknown_login` (no such sign-in running, or it finished), `no_pending_prompt` (the sign-in is not waiting for an answer: a device code, or the redirect already reached Pi's callback).
+
+### `login_cancel`
+
+```json
+{ "loginId": "login_…" }
+```
+
+Ends a running sign-in: Pi's flow is aborted, nothing is stored, and `login_finished` follows with `ok: false` and `error: "Sign-in cancelled"`. Answers `{ "cancelled": true }`. Errors: `invalid_request`, `unknown_login`.
+
+### `set_api_key`
+
+Saves an API key for a provider, the way `/login`'s key setup does: the provider's own key setup (`apiKey.login`) receives the key, and Pi stores `{ "type": "api_key", "key" }` in its credential store (owner-only) and synchronizes the provider; then the registry is refreshed as `reload_credentials` does.
+
+```json
+{ "provider": "openrouter", "key": "sk-or-…" }
+```
+
+`key` is one line of 1-4096 printable characters; surrounding whitespace is dropped. Answers `{ "saved": true }`. The key is never echoed in an answer, an event or an error, and this process never logs it. Errors: `invalid_request`, `login_unavailable`, `unknown_provider`, `login_unsupported` (no key setup: ambient credentials only, or OAuth only), `login_in_progress`, `interactive_setup_required` (the provider asks for more than the key; use `login_start` with `kind: "api_key"`), `save_failed`.
+
+### `remove_credentials`
+
+```json
+{ "provider": "openrouter" }
+```
+
+`/logout`: removes what Pi stored for the provider, a sign-in or a key, through Pi's runtime (`ModelRuntime.logout`), then refreshes the registry. Environment variables and `models.json` are not touched, so a provider configured there stays configured. Answers `{ "removed": true }`, or `{ "removed": false }` when nothing was stored for it. Errors: `invalid_request`, `login_unavailable`, `login_in_progress`, `remove_failed`.
+
+### `list_packages`
+
+The packages Pi's settings name, as `gentle-shell list` prints them. Params must be an empty object.
+
+```json
+{ "ok": true, "data": { "packages": [{ "source": "npm:pi-skills", "version": "1.4.0", "scope": "user" }, { "source": "git:github.com/acme/tools", "scope": "project" }] } }
+```
+
+`scope` is `user` (the agent home's settings) or `project` (the session folder's). `version` is the installed package's `package.json` version, when it is installed and has one. A local path is listed absolute (settings keep it relative to their own folder, while `remove_package` resolves a path against the session's folder), so every listed `source` can be passed to `remove_package` as it is. At most 500. Errors: `invalid_request`, `packages_unavailable`.
+
+### `install_package`
+
+### `remove_package`
+
+```json
+{ "source": "npm:pi-skills", "scope": "user" }
+```
+
+Run the same CLI a user would, as a job: `gentle-shell [home] install <source> [-l]` / `remove <source> [-l]` (`-l` for `scope: "project"`; `scope` defaults to `user`), with the launcher and home this session was started with, in the session's folder, stdin closed, color off. So the source syntax (`npm:`, `git:`, URLs, local paths), the project trust check (a project-scope change needs the folder trusted), the npm or git work and the settings write are the CLI's own, and so are its error messages. `source` is 1-1024 characters, without control characters, surrounding spaces, or a leading `-` (it would be read as an option). Answers `{ "jobId": "pkg_<16 hex>" }`, then [`package_progress`](#package_progress) events with the CLI's output lines and one [`package_finished`](#package_finished). One job at a time per session; a job still running after 20 minutes is stopped. After a success the session reloads (`/reload`: extensions, skills, prompts and themes) once the agent is idle, so what was installed is there without restarting it; the reload replaces this session's extensions like any `/reload`, so a client asks [`capabilities`](#capabilities) again after it. Other sessions on the same machine load the change when they start or reload. Errors: `invalid_request`, `packages_unavailable`, `package_job_running`.
 
 ## Responses
 
@@ -1624,13 +1905,14 @@ Failure:
 }
 ```
 
-Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `changes_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `sessions_unavailable`, `session_switching`, `review_unavailable`, `review_mode_busy`, `stats_unavailable`, `session_unavailable`, `updates_unavailable`, `agent_definitions_unavailable`, `status_unavailable`, `background_subagents_unavailable`, `background_subagents_busy`, `auth_unavailable`, `reload_failed`, `not_found`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
+Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `changes_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `sessions_unavailable`, `session_switching`, `review_unavailable`, `review_mode_busy`, `stats_unavailable`, `session_unavailable`, `updates_unavailable`, `agent_definitions_unavailable`, `status_unavailable`, `background_subagents_unavailable`, `background_subagents_busy`, `auth_unavailable`, `reload_failed`, `host_tools_unavailable`, `host_messages_unavailable`, `unknown_call`, `already_answered`, `too_large`, `project_untrusted`, `not_found`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
 
 | Code | Meaning |
 | --- | --- |
 | `invalid_request` | Malformed envelope, unsupported params (including a physical path, `set_config` without `data`, or an `apply_profile` mode other than `default`/`session`), or an unknown permission mode. State unchanged. |
 | `unknown_store` | A store identifier this slice does not implement. Nothing was read or written. |
-| `read_only` | `set_config` named `models`, `subagents`, `managed_assets`, `mcp`, `pi_settings`, or `claude_bridge`. Rejected before the payload was inspected; nothing was written. |
+| `read_only` | `set_config` named `models`, `subagents`, `managed_assets`, or `claude_bridge`. Rejected before the payload was inspected; nothing was written. |
+| `project_untrusted` | `set_config` named the `project` layer of `mcp` while the session does not trust the project: Pi does not read that file, so it is not written. Nothing was written. |
 | `invalid_data` | `set_config` data the owner would reject or would silently drop. Nothing was written, and no file was created. |
 | `revision_conflict` | `expectedRevision` was missing, unusable, or no longer current. Nothing was written. |
 | `write_failed` | The owner's atomic write threw. State is whatever the owner left; the message stays generic. |
@@ -1660,6 +1942,11 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `auth_unavailable` | `get_auth_status` or `reload_credentials`: no credential registry in this session, the registry read failed, or the session was replaced during the reload. |
 | `reload_failed` | The `reload_credentials` refresh itself failed. The error text never crosses. |
 | `not_found` | `cancel_job` or `get_job_output` named a job id, or `cancel_subagent` or `get_subagent_thread` named a subagent id, that does not exist, belongs to another session, or was already evicted by the store; or `switch_session` named an id that does not resolve in the requested scope; or `get_change_diff` named a root and path that are not a file in the owner's current change set. Nothing was stopped, read, or switched. |
+| `host_tools_unavailable` | `set_host_tools` could not register with Pi (no tool registration API in the running Pi, or the registration threw). |
+| `unknown_call` | `host_tool_result` or `host_tool_progress` named a call id this session never emitted. |
+| `already_answered` | `host_tool_result` or `host_tool_progress` named a call that is already settled: answered, cancelled because the turn was aborted, or timed out. |
+| `too_large` | `host_tool_result` content over 8 MiB; a `details` over 1 MiB; `host_message` / `set_host_context` content over 64 KiB; a 17th host context provider. |
+| `host_messages_unavailable` | `host_message` / `set_host_context` could not reach Pi (no `sendMessage` / event API in the running Pi, or the call threw). |
 | `internal_error` | Unexpected failure; message stays generic. |
 
 ## Events
@@ -1671,12 +1958,15 @@ Domain events use the same widget channel:
   "schema": "gentle-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 1,
+  "epoch": "3b0e9a52-8c1d-4f7e-9a6b-2d5c7e1f4a90",
   "event": "example_event",
   "data": {}
 }
 ```
 
 The event name above is illustrative; `capabilities` is authoritative for implemented events. `seq` starts at 1 after successful delivery in each newly started session and resets on session shutdown, reload, or a session switch (Pi's own `switch_session` or this channel's). After shutdown the channel does not answer further commands. Clients should fetch `get_snapshot` after connecting and whenever they detect a sequence gap. Responses do not increment the event sequence.
+
+`epoch` tells a client when the numbering restarted. It is an opaque string, compared only for equality, minted each time the channel starts (session start, reload, switch, a restarted process) — exactly when `seq` restarts — and carried by every event and every `get_snapshot` answer of that channel, `session_snapshot` events included. Within one epoch `seq` only advances, so a `seq` at or below the last one seen is a replay; an event or snapshot of another epoch is a new numbering that starts at 1, never a replay. A first event of a new epoch with `seq` above 1 means the events before it were missed: resync from `get_snapshot`. Releases before the epoch send no `epoch`; a client then has only `seq` to go by.
 
 ### `permission_mode_changed`
 
@@ -1781,7 +2071,7 @@ An external change:
 
 `store`, `scope`, `revision`, and `status` match what `get_config` and `get_snapshot` would answer for that store at that moment. There is no `value`, no `writeTarget` or `writeRevision` (an external writer may have touched any layer), and no path; read the store with `get_config` for its content and write targets.
 
-Detection watches the owner files' directories, non-recursively, for an interactive RPC host only: the config home (`profiles.json`, `profile-fallbacks.json`, `models.json`, `persona.json`, `banner.json`, `notifications.json`), the project `.pi/gentle-ai/` directory (`persona.json`), the agent home and its `gentle-ai/` directory (global `subagents.json`, `mcp.json`, `settings.json`, `claude-bridge.json`, the managed-assets manifest), the session cwd's `.pi/` and `.pi/gentle-ai/` (project `subagents.json`, `mcp.json`, `settings.json`, and `models.json`, the `repo` pin), and the Git common dir's `gentle-ai/` (the `local` pin) when the cwd is a resolvable worktree. Only events for those owner file names count. About 250 ms after the last relevant event, every store's revision is recomputed with the same readers `get_config` uses, and an event is emitted only for a store whose revision differs from the last revision this channel reported (a `get_config` answer, a `get_snapshot` projection, a `set_config` answer, or an earlier event). Consequences:
+Detection watches the owner files' directories, non-recursively, for an interactive RPC host only: the config home (`profiles.json`, `profile-fallbacks.json`, `models.json`, `persona.json`, `banner.json`, `notifications.json`), the project `.pi/gentle-ai/` directory (`persona.json`), the agent home and its `gentle-ai/` directory (global `subagents.json`, `mcp.json`, `settings.json`, `claude-bridge.json`, Pi's `models.json` for `custom_models`, the managed-assets manifest), the session cwd's `.pi/` and `.pi/gentle-ai/` (project `subagents.json`, `mcp.json`, `settings.json`, and `models.json`, the `repo` pin), and the Git common dir's `gentle-ai/` (the `local` pin) when the cwd is a resolvable worktree. Only events for those owner file names count. About 250 ms after the last relevant event, every store's revision is recomputed with the same readers `get_config` uses, and an event is emitted only for a store whose revision differs from the last revision this channel reported (a `get_config` answer, a `get_snapshot` projection, a `set_config` answer, or an earlier event). A `custom_models` change seen this way also refreshes the session's model registry, so a model another session added is usable here too. Consequences:
 
 - a Desktop `set_config` is never echoed: its response records the resulting revision before the owner's own rename wakes the watcher;
 - reformatting a file, rewriting identical content, or undoing a change inside the window emits nothing, because the revision did not move;
@@ -1958,15 +2248,76 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 
 `mode` is identical to the response's `mode`. `confirmation_required`, a no-op (`changed: false`), an unreadable re-read, and every error emit nothing. A change made in the TUI, in Herdr, or by another process emits nothing on this channel; re-read with `get_review_mode`.
 
+### `host_tool_call`
+
+The agent called a host tool. The client that registered `provider` runs `tool` with `args` (already validated against the tool's `parameters`) and answers with `host_tool_result` carrying the same `callId`. Other clients ignore it, including another provider of the same tool name: each call goes to exactly one provider (see [`set_host_tools`](#set_host_tools)).
+
+```json
+{ "event": "host_tool_call", "data": { "callId": "htc_3f2a…", "provider": "gentle-desktop", "tool": "desktop_screenshot", "args": { "window": "editor" } } }
+```
+
+The call waits for the answer. When the user aborts the turn, it ends at once as a cancelled call; when no answer comes within 10 minutes, it ends with an error the model reads (`<tool> got no answer from <provider> within 10 minutes.`). Either way `host_tool_cancel` follows. A client working on a long call keeps it alive with [`host_tool_progress`](#host_tool_progress) every 60 s: each one restarts the 10 minutes.
+
+### `host_tool_cancel`
+
+The call is over without the client's answer (the turn was aborted, or 10 minutes passed without a result or a `host_tool_progress`): the client stops running it and stops its heartbeats. A `host_tool_result` or `host_tool_progress` sent afterwards is answered `already_answered`.
+
+```json
+{ "event": "host_tool_cancel", "data": { "callId": "htc_3f2a…" } }
+```
+
+### `login_prompt`
+
+Something a running sign-in ([`login_start`](#login_start)) shows or asks, in order:
+
+```json
+{ "event": "login_prompt", "data": { "loginId": "login_…", "kind": "open_url", "url": "https://auth.openai.com/oauth/authorize?…", "message": "Complete login in your browser.", "redirectPrefix": "http://localhost:1455/" } }
+```
+
+| `kind` | Fields | The client |
+| --- | --- | --- |
+| `open_url` | `url` (`https:`/`http:`), `message?`, `redirectPrefix?` | Opens `url` in a browser. `redirectPrefix` is the loopback callback the provider redirects to (`http://localhost:1455/`, `http://127.0.0.1:53692/`…) when the sign-in waits for that redirect: the client watches for a navigation that starts with it and sends the full URL with `login_complete` when the paste `input` comes. |
+| `device_code` | `url` (the verification page), `userCode` | Shows the code and opens (or offers) the page; nothing to answer, Pi polls the provider. |
+| `input` | `message`, `placeholder?`, `secret?: true`, `options?: [{ id, label }]`, `redirectPrefix?` | Asks the user and answers with `login_complete`. `secret` masks the field (a key). `options` is a choice (Anthropic, OpenAI Codex and Radius first ask browser or device/copy-code); the answer is an option's `id`. `redirectPrefix` marks the paste prompt that races Pi's own callback: the intercepted redirect URL, or the code, is the answer. |
+| `progress` | `message`, `url?` | Shows a status line (`url`: a link to show with it). |
+
+Text fields are one line each, control characters replaced, at most 1024 characters (`placeholder` and option labels 256, `userCode` 64, URLs 4096); an event Pi raises without anything to show is not sent.
+
+### `login_finished`
+
+```json
+{ "event": "login_finished", "data": { "loginId": "login_…", "provider": "anthropic", "ok": true } }
+```
+
+The sign-in is over. `ok: true`: the credential is stored and the registry was refreshed (as `reload_credentials`); a client reads [`get_auth_status`](#get_auth_status) again. `ok: false` carries `error`, Pi's message on one line, at most 300 characters: `Sign-in cancelled`, `Sign-in timed out` (15 minutes), or the provider flow's own failure (a state mismatch, a refused code). Never a credential.
+
+### `package_progress`
+
+```json
+{ "event": "package_progress", "data": { "jobId": "pkg_…", "line": "Installing npm:pi-skills..." } }
+```
+
+One line of the CLI's output (stdout and stderr, in order per stream), color codes and control characters removed, blank lines skipped, at most 2000 characters. At most 2000 lines per job; after that one `… N more lines` line closes the progress.
+
+### `package_finished`
+
+```json
+{ "event": "package_finished", "data": { "jobId": "pkg_…", "ok": false, "error": "No matching package found for npm:pi-skills" } }
+```
+
+The job is over: `ok` is the CLI's exit status 0. On failure `error` is the CLI's last line on stderr (at most 300 characters), or `Stopped: it ran past the time limit`. After `ok: true` the session reloads once idle (see [`install_package`](#install_package)).
+
 ## Configuration limits
 
-- **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`, `persona-config.ts`, `banner-config.ts`, `notification-policy.ts`, Pi's `SettingsManager` through `pi-settings.ts`, `claude-bridge-config.ts`). The one exception is `mcp-config.ts`: Pi does not export its `mcp.json` loader, so this module is a parallel reader that re-implements Pi's resolution and per-entry validation (layering, trust gate, overrides, field and OAuth checks, and the transport Pi connects with). `tests/desktop-rpc-config-mcp-fidelity.test.ts` runs Pi's real `loadMcpConfig` and transport factory on the same fixtures and fails when the two disagree, so a Pi update that changes the rules is caught by the suite. For every other store there is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
+- **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`, `persona-config.ts`, `banner-config.ts`, `notification-policy.ts`, Pi's `SettingsManager` through `pi-settings.ts`, `claude-bridge-config.ts`, `pi-user-config.ts` for Pi's `models.json` and `mcp.json` documents, `profiles-orchestrator.ts` for the model keys of `settings.json`). The one exception is `mcp-config.ts`: Pi does not export its `mcp.json` loader, so this module is a parallel reader that re-implements Pi's resolution and per-entry validation (layering, trust gate, overrides, field and OAuth checks, and the transport Pi connects with) for the `mcp` store's `servers` list. `tests/desktop-rpc-config-mcp-fidelity.test.ts` runs Pi's real `loadMcpConfig` and transport factory on the same fixtures and fails when the two disagree, so a Pi update that changes the rules is caught by the suite. An `mcp` write is checked by Pi's own `validateMcpServerConfig`, and a `custom_models` write by Pi's published models schema, both loaded from Pi's installed package by path because Pi does not export them. For every other store there is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`, `writePiModelDefaults`, `writePiConfigDocument`).
 - **Settings stores.** `persona` takes `{ "mode": "gentleman" | "neutral" }` and writes like `/gentle:persona`: the global file, plus the project file only when it already exists, so a project override never silently outranks the change (its `writeRevision` covers both layers, and a project file is never created). `banner` takes exactly `{ showRose, showTextLogo, color }`. `notifications` takes the settings as read: an event may keep the `"file"` marker only where its current sound is a file, which keeps that file; a new `file:` path is `invalid_data`, because the Desktop never sees one. All three write atomically, and none waits for a profile apply (`profile_apply_busy` applies only to the profile stores). Telemetry and the Pi theme are not config stores here: telemetry is a consent switch, and Pi persists its theme through an asynchronous settings queue and exports no list of installed themes to validate against.
-- **Bounded write surface.** `set_config` exists only for `profiles`, `profile_fallbacks`, `pins`, and the settings stores above, and only as a whole-store replacement, one explicitly selected pin layer, or the explicit clear of one pin layer (`profile: null`). There is no generic physical-file target, no patch operation, no setter for `models`, `subagents`, `managed_assets`, `mcp`, `pi_settings`, or `claude_bridge`, no way to clear both layers in one request, and no profile application or materialization: a profile write stores the definition, it does not apply it, and nothing else is rewritten as a side effect.
-- **Read-only rationale.** `models` and `subagents` are derived: the owners write them when a profile is applied or a route is materialized, so a Desktop write would fight that writer and leave the runtime and the store disagreeing. `managed_assets` is the installer's ownership manifest with hashes it verifies on install, so a client write would silently disable ownership checks. `mcp`, `pi_settings`, and `claude_bridge` are display projections of files Pi and a third-party package own (and `mcp.json` and `settings.json` can hold credentials this channel never returns), so they stay read-only; settings changes go through `apply_profile` and Pi's own editors. Only the stores whose owners accept validated writes report `readOnly: false`, and that flag describes the store's owner capability, which now matches this slice's write surface.
+- **Pi's model keys.** `pi_settings` takes a patch of the four model keys: a key the request names is set, `null` removes it from `settings.json`, and a key it leaves out keeps its value (`{}` changes nothing). Every other settings key (`packages`, theme, telemetry, …) is kept, the project file is never written, and the global file is replaced atomically. Provider and model are 1–256 characters without control characters, `defaultThinkingLevel` a Pi thinking level, `enabledModels` at most 512 distinct such strings; any other key (the read-only `extensions` and `truncated` included) or shape is `invalid_data`. A `settings.json` that is not a JSON object is never replaced: the write answers `write_failed`. The write revision digests only the model keys of the global file. Because `apply_profile` sets the orchestrator's `defaultProvider`/`defaultModel`/`defaultThinkingLevel`, a `pi_settings` write waits for an apply like the profile stores (`profile_apply_busy`). Sessions already running keep the model they have; the defaults apply to new sessions.
+- **Pi's own files.** `custom_models` and `mcp` write Pi's `models.json` and `mcp.json`, so they are validated by Pi's own rules (its published models schema, its MCP server validator and loader rules) rather than a Gentle owner, replaced whole and atomically (`0600`), and never echo a secret: see [Secrets](#secrets-in-custom_models-and-mcp). A client never reads or writes these files itself; the stores are the only way it reaches them.
+- **Bounded write surface.** `set_config` exists only for `profiles`, `profile_fallbacks`, `pins`, `mcp`, `pi_settings`, `custom_models`, and the settings stores above, and only as a whole-store replacement, one explicitly selected pin or MCP layer, the patch of `pi_settings`' four model keys, or the explicit clear of one pin layer (`profile: null`). There is no generic physical-file target, no setter for `models`, `subagents`, `managed_assets`, or `claude_bridge`, no way to clear both layers in one request, and no profile application or materialization: a profile write stores the definition, it does not apply it. The only side effects are Pi's own reloads of what was written: a `custom_models` write refreshes the model registry, an `mcp` write reloads the session.
+- **Read-only rationale.** `models` and `subagents` are derived: the owners write them when a profile is applied or a route is materialized, so a Desktop write would fight that writer and leave the runtime and the store disagreeing. `managed_assets` is the installer's ownership manifest with hashes it verifies on install, so a client write would silently disable ownership checks. `claude_bridge` is the file of a third-party package Gentle Shell does not install. Only the stores whose owners accept validated writes report `readOnly: false`, and that flag describes the store's owner capability, which now matches this slice's write surface.
 - **No-op means no write.** Sending the content a store already holds, or clearing a pin layer that has no file, is answered with `changed: false`, no rewrite, no mtime churn, no removal, and no event, so a client can safely reconcile by re-sending what it read.
 - **Per-process guard, not a transaction.** The `expectedRevision` check and the owner's atomic rename happen in one synchronous step, so concurrent Desktop requests in one process cannot both commit from the same revision. Across processes there is no lock: another `pi` process, `/gentle:profiles`, or the installer can write between the check and the rename, and this contract cannot detect that. Treat `expectedRevision` as conflict detection, not as mutual exclusion.
-- **No paths, no secrets.** Physical paths are rejected as request input and never appear in a response, an event, or an error message. Content is limited to what these stores hold: profile names, routing entries, fallback chains, pin names, layer statuses, asset ownership keys and hashes, MCP server names with their transport and enabled flag, the default model and thinking level, enabled model patterns, extension names, and the bridge plan. `managed_assets` is additionally filtered to ownership-shaped entries — a relative asset path below the agent home plus a 64-hex sha256 digest — so an absolute path, a traversal segment, or an arbitrary string in the manifest is omitted rather than echoed. `mcp.json`, `settings.json`, and `claude-bridge.json` can hold env values, headers, tokens, commands, and paths: they are read to build the projection, but only the fields listed for each store are returned, and the `mcp`, `pi_settings`, and `claude_bridge` revisions digest only the returned value, so a hidden field never reaches the wire, not even as a digest. No auth file, provider error, or conversation content is read or returned.
+- **No paths, no secrets.** Physical paths are rejected as request input and never appear in a response, an event, or an error message, except the paths a user wrote into their own `mcp.json` (`command`, `args`, `cwd`), which the `mcp` documents return so an editor can show them. Content is limited to what these stores hold: profile names, routing entries, fallback chains, pin names, layer statuses, asset ownership keys and hashes, MCP server names with their transport and enabled flag plus the redacted `mcp.json` and `models.json` documents, the default model and thinking level, enabled model patterns, extension names, and the bridge plan. `managed_assets` is additionally filtered to ownership-shaped entries — a relative asset path below the agent home plus a 64-hex sha256 digest — so an absolute path, a traversal segment, or an arbitrary string in the manifest is omitted rather than echoed. `mcp.json`, `models.json`, `settings.json`, and `claude-bridge.json` can hold env values, headers, tokens, commands, and paths: every secret position reads as `"•••"` (see [Secrets](#secrets-in-custom_models-and-mcp)), and `pi_settings` and `claude_bridge` return only the fields listed for them. The `pi_settings` and `claude_bridge` revisions digest only the returned value; the `mcp`, `custom_models`, and `notifications` revisions digest the real content too, so a secret or sound path changed elsewhere still moves them (a digest, never the value). No auth file, provider error, or conversation content is read or returned.
 - **Truthful normalization.** Content is what the owner's normalizer produced. Entries an owner drops (an unsafe agent key, an unknown thinking level, a stale `active` marker) are absent from `value`; if everything was dropped, the store reads `ok` with an empty map rather than being reported as `invalid`. A file the owner cannot parse at all reads `invalid`. A **write** may not rely on that leniency: data the normalizer would drop is rejected as `invalid_data`, so a Desktop write can never delete content it does not understand.
 - **Best-effort external events.** A change made by another `pi` process, by `/gentle:profiles`, by an editor, or by the installer produces a debounced `config_changed` with `source: "external"` when the owner directory can be watched and the store's revision really moved (see [`config_changed`](#config_changed)). When a watcher cannot be created, nothing is pushed for that directory and the change becomes visible on the next read. There is no polling and no cached copy: the watcher only decides when to recompute revisions with the owner readers.
 - **This slice does not implement** permission changes beyond the existing slice, subscription usage beyond the read/refresh contract below, subagents beyond the list/cancel/thread-read contract below, music, profile application, store materialization, or any Gentle Desktop client change.
@@ -2054,7 +2405,7 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **Ids in, ids out.** The wire carries session ids, never a session file path, working directory, or parent-session path. The path Pi resolves stays inside the process and goes straight to the command context's `switchSession`.
 - **Bounded projection.** Each entry carries exactly `id`, `name?`, `modified`, `messageCount?`, `firstMessage` (at most 200 characters), `project` (a display name), and `current`. The full conversation text Pi reads for search is never returned. A page holds at most 50 entries.
 - **The listing reads files.** Pi reads every session file in scope to build its list, so `scope: "all"` over a large history costs as much as Pi's own `/resume` across all projects. Prefer `project` and page with `limit`.
-- **A switch replaces the session.** Every per-session bridge and the router restart with the new session; event `seq` restarts at 1, and Desktop should re-read `get_snapshot` and any state it shows. A switch during a streaming turn aborts that turn first (Pi's behavior). A failure after Pi already tore the old session down cannot be answered by either session.
+- **A switch replaces the session.** Every per-session bridge and the router restart with the new session; event `seq` restarts at 1 under a new `epoch`, and Desktop should re-read `get_snapshot` and any state it shows. A switch during a streaming turn aborts that turn first (Pi's behavior). A failure after Pi already tore the old session down cannot be answered by either session.
 - **Exactly once across a switch.** Pi dispatches prompts concurrently, so requests sent right after a `switch_session` can reach the session being replaced. The router refuses them with `session_switching` while the switch is in flight, answers any request still waiting on an owner right before the teardown, and the replaced instance answers late deliveries through the UI object it extracted before Pi invalidated its context. The switch's own response comes from the new session.
 - **No agent tool.** Sessions are reachable only through `/gentle:desktop` over the interactive RPC channel.
 
@@ -2123,10 +2474,28 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 
 ## Credential limits
 
-- **Status, never values.** Only `getAll`, `getProviderAuthStatus`, `isUsingOAuth`, `getProviderDisplayName`, and `refresh` are called. The slice never reads `auth.json` and never calls a registry method that returns a key or a token.
-- **No sign-in or sign-out.** Signing in stays with Pi's login flow; removing credentials is out of scope.
-- **Offline reload.** `reload_credentials` never allows the network, so it does not fetch model catalogs.
-- **No event.** Ask again, or call `reload_credentials`, after a change elsewhere.
+- **Status, never values.** `get_auth_status` and `reload_credentials` call only `getAll`, `getProviderAuthStatus`, `isUsingOAuth`, `getProviderDisplayName`, `getProvider` (for `loginKinds`: which sign-in methods a provider defines), and `refresh`; `list_available_models` calls only `getAvailable`. They never read `auth.json` and never call a registry method that returns a key or a token.
+- **Sign-in is Pi's.** `login_start`, `set_api_key` and `remove_credentials` drive Pi's own `ModelRuntime.login` / `logout`, the code `/login` and `/logout` run: the provider's flow, Pi's credential store (`auth.json`, `0600` in a `0700` agent home) and Pi's synchronization. This slice keeps no credential, never reads one back, never logs one, and never puts one in an answer or an event; an API key goes one way.
+- **Bounded sign-ins.** One per provider at a time, 15 minutes each, cancelled with the session. A client answers only the question the flow is waiting on.
+- **Offline reload.** `reload_credentials` (and the reload after a sign-in, a saved key or a removal) never allows the network, so it does not fetch model catalogs.
+- **No status event.** Ask again, or call `reload_credentials`, after a change elsewhere; a sign-in from this channel ends with `login_finished`.
+
+## Packages limits
+
+- **The CLI's own rules.** Installs and removals run `gentle-shell install|remove <source> [-l]` with this session's launcher and home (`GENTLE_SHELL_LAUNCH`, set by the launcher for every Pi it starts; a Pi started without it uses this package's launcher with `--home <agent dir>`). A source that starts with `-` is refused before it could become an option; everything else (source syntax, project trust, npm, git) is the CLI's.
+- **One job per session, 20 minutes.** Its output is bounded (2000 lines of 2000 characters); stdin is closed, so nothing can wait for a prompt.
+- **Reload after success.** The session reloads once idle, as a user would after installing; a failed job reloads nothing. A session change stops a running job, with no `package_finished`.
+- **Same authority as the terminal.** Installing a package runs its install scripts as the server user, exactly as `gentle-shell install` typed in the session's terminal would; through `gentle-shell serve` it needs `sessions:operate`.
+
+## Host tools limits
+
+- **The client's code, the client's authority.** A host tool runs on the device that registered it, with that device's permissions (its screen, its files, its accounts), never on the machine where the agent runs. This process only relays: it emits the call and hands the model whatever content comes back. No client code, script, or command ever reaches the agent's machine, and a host tool cannot reach anything there that the agent could not already reach.
+- **The model's arguments are untrusted input to the client.** They come from the model, shaped by the tool's schema; a client validates them and asks its user before anything sensitive, just as it would for any input from the agent.
+- **Results are untrusted input to the model.** Text and images a client returns go into the conversation like any tool output.
+- **No impersonation in serve.** Through `gentle-shell serve`, `provider` is always the calling device's id, and only that device may answer its calls; see [`docs/serve.md`](serve.md#host-tools).
+- **Bounded.** 32 tools per provider, 16 KiB of schema and 16 guidelines per tool, 8 MiB of content per result, 10 minutes per call without a result or a `host_tool_progress` heartbeat. A name never shadows a built-in or extension tool.
+- **Not persisted.** Nothing is written to disk; registrations last for the session.
+- **Over stdio there is no "not connected".** The client that owns the Pi process is the only provider; if it stops answering and stops sending `host_tool_progress`, the 10-minute limit or an abort ends the call.
 
 ## Verification
 
@@ -2152,10 +2521,13 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-status.test.ts \
   tests/desktop-rpc-background-subagents.test.ts \
   tests/desktop-rpc-auth.test.ts \
+  tests/desktop-rpc-host-tools.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 
 The permission tests register the real `registerYoloSessionPolicy` owner with an isolated temporary config home and a stub identity resolver; they never read or write the user's own permission store.
+
+The host tools tests run the real extension over a fake Pi tool registry with fake timers and a fake clock: they cover every `set_host_tools`, `host_tool_result`, `host_tool_progress`, `host_message`, `set_host_context` and `set_host_activity` limit, registration as a `direct` Pi tool with its schema, snippet, and guidelines (and the tool name prefixed where a guideline lacks it), collisions with built-in and extension tools, two providers of one name (the newest definition wins, unregistering falls back to the other, the last one leaving hides it), calls routed to the most recently active connected provider, the next one when it is offline, the newest registration without an activity list, set replacement and unregistering as `hidden` (whose names are free again), the first answer settling a call with later answers `already_answered` and strangers `unknown_call`, error results, a result's `details` passed through, an abort cancelling the call with `host_tool_cancel`, the 10-minute limit, `host_tool_progress` restarting it (with its `deadlineMs`) as often as it comes while the call still fails 10 minutes after the last one, shutdown failing waiting calls and hiding every tool, every `host_message` delivery mode reaching `pi.sendMessage` (idle and streaming `auto`), host contexts injected per provider before a run, replaced, cleared and dropped on a session change, and the larger request caps for these methods only. Four more tests run a real Pi SDK session with an offline scripted provider (no model): a registered tool is declared in the next request with its guideline in the system prompt, the scripted tool call round-trips through `host_tool_call` and `host_tool_result` into the tool result the provider receives, unregistering removes the tool and its guideline from the next request, aborting the turn emits `host_tool_cancel`, an idle `host_message` starts a run and is persisted as a `custom_message` entry, a host context rides along hidden and stops after clearing, a `host_message` during a call steers the running turn, and a result's `details` lands in the Pi tool result.
 
 The design tests use only injected fake canvas/server/browser factories and a fake owner service: they cover stopped/running/open/refresh/stop state, slug and connected-client counts, default URL omission, explicit `includeUrl` inclusion only after trust, untrusted omission, malformed adapters and params, owner absence (`design_unavailable`, never a fabricated `running: false`), failed and no-op actions emitting nothing, external (agent-driven) transition events, late-reset disposal and stale-outcome drops, and raw-error/token redaction. One test runs the real `gentleDesign` owner seam in-process to prove the stopped canvas state and the design list arrive from the single owner adapter.
 

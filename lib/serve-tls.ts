@@ -1,0 +1,450 @@
+// TLS for `gentle-shell serve` on the network: a self-signed ECDSA P-256
+// certificate made on first run (a minimal DER encoder builds the X.509 here,
+// no dependencies), kept owner-only in `<home>/serve/tls/`, and pinned by
+// clients through its SHA-256 fingerprint. A client that found the server
+// through untrusted discovery checks a pairing proof before it sends the
+// pairing code: only a server that knows the code can bind it to the
+// fingerprint the client saw in the handshake. Listeners here speak TLS to the
+// network and keep plain HTTP for connections from this machine.
+
+import { createHash, createHmac, createPrivateKey, generateKeyPairSync, randomBytes, scrypt, sign, timingSafeEqual, X509Certificate } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
+import { createServer as createNetServer, isIPv4, isIPv6, type Server as NetServer, type Socket } from "node:net";
+import { connect as tlsConnect, type TLSSocket } from "node:tls";
+import { join } from "node:path";
+import { normalizePairingCode } from "./serve-auth.ts";
+
+// --- DER ---------------------------------------------------------------------------
+
+function derLength(length: number): Buffer {
+	if (length < 0x80) return Buffer.from([length]);
+	const bytes: number[] = [];
+	for (let n = length; n > 0; n >>= 8) bytes.unshift(n & 0xff);
+	return Buffer.from([0x80 | bytes.length, ...bytes]);
+}
+
+/** One DER TLV: tag, length, the concatenated content. */
+export function der(tag: number, ...content: Buffer[]): Buffer {
+	const body = Buffer.concat(content);
+	return Buffer.concat([Buffer.from([tag]), derLength(body.length), body]);
+}
+
+const sequence = (...content: Buffer[]) => der(0x30, ...content);
+const set = (...content: Buffer[]) => der(0x31, ...content);
+const octets = (value: Buffer) => der(0x04, value);
+const bits = (value: Buffer, unused = 0) => der(0x03, Buffer.from([unused]), value);
+const bool = (value: boolean) => der(0x01, Buffer.from([value ? 0xff : 0x00]));
+const explicit = (n: number, content: Buffer) => der(0xa0 + n, content);
+
+function oid(dotted: string): Buffer {
+	const arcs = dotted.split(".").map(Number);
+	const out = [arcs[0] * 40 + arcs[1]];
+	for (const arc of arcs.slice(2)) {
+		const chunk = [arc & 0x7f];
+		for (let n = Math.floor(arc / 128); n > 0; n = Math.floor(n / 128)) chunk.unshift(0x80 | (n & 0x7f));
+		out.push(...chunk);
+	}
+	return der(0x06, Buffer.from(out));
+}
+
+/** A non-negative INTEGER from big-endian bytes: leading zeros dropped, one added when the high bit is set. */
+function integer(value: Buffer): Buffer {
+	let start = 0;
+	while (start < value.length - 1 && value[start] === 0) start += 1;
+	const trimmed = value.subarray(start);
+	return der(0x02, trimmed[0] & 0x80 ? Buffer.concat([Buffer.from([0]), trimmed]) : trimmed);
+}
+
+/** UTCTime through 2049, GeneralizedTime after (RFC 5280 §4.1.2.5). */
+function time(date: Date): Buffer {
+	const two = (n: number) => String(n).padStart(2, "0");
+	const rest = `${two(date.getUTCMonth() + 1)}${two(date.getUTCDate())}${two(date.getUTCHours())}${two(date.getUTCMinutes())}${two(date.getUTCSeconds())}Z`;
+	const year = date.getUTCFullYear();
+	return year < 2050 ? der(0x17, Buffer.from(`${two(year % 100)}${rest}`, "ascii")) : der(0x18, Buffer.from(`${year}${rest}`, "ascii"));
+}
+
+/** The 4 or 16 bytes of an IP literal (brackets and an IPv6 zone ignored); undefined for anything else. */
+export function ipBytes(address: string): Buffer | undefined {
+	const ip = address.replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+	if (isIPv4(ip)) return Buffer.from(ip.split(".").map(Number));
+	if (!isIPv6(ip)) return undefined;
+	let text = ip;
+	const v4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(text);
+	if (v4) {
+		const [a, b, c, d] = v4[1].split(".").map(Number);
+		text = `${text.slice(0, -v4[1].length)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+	}
+	const [head, tail] = text.split("::");
+	const left = head ? head.split(":") : [];
+	const right = tail === undefined ? [] : tail ? tail.split(":") : [];
+	const groups = tail === undefined ? left : [...left, ...Array(8 - left.length - right.length).fill("0"), ...right];
+	const out = Buffer.alloc(16);
+	groups.forEach((g, i) => out.writeUInt16BE(Number.parseInt(g, 16), i * 2));
+	return out;
+}
+
+// --- certificate -------------------------------------------------------------------
+
+export const SERVE_TLS_LIMITS = {
+	validityYears: 10,
+	/** A certificate this close to its end is replaced at start. */
+	renewBeforeMs: 30 * 24 * 60 * 60_000,
+};
+
+const OID = {
+	ecdsaWithSha256: "1.2.840.10045.4.3.2",
+	commonName: "2.5.4.3",
+	basicConstraints: "2.5.29.19",
+	keyUsage: "2.5.29.15",
+	extKeyUsage: "2.5.29.37",
+	subjectAltName: "2.5.29.17",
+	serverAuth: "1.3.6.1.5.5.7.3.1",
+};
+
+export interface CertificateRequest {
+	commonName: string;
+	/** DNS names for the subjectAltName. */
+	dnsNames: readonly string[];
+	/** IP literals for the subjectAltName. */
+	ips: readonly string[];
+	now?: Date;
+}
+
+/** Base64url (no padding) SHA-256 of the certificate's DER: what clients pin. */
+export function certificateFingerprint(derBytes: Buffer): string {
+	return createHash("sha256").update(derBytes).digest("base64url");
+}
+
+function pem(label: string, body: Buffer): string {
+	const lines = body.toString("base64").match(/.{1,64}/g) ?? [];
+	return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----\n`;
+}
+
+/**
+ * A self-signed X.509 v3 server certificate on a fresh P-256 key: a random
+ * serial, valid from an hour ago for ten years, CA false, digitalSignature,
+ * serverAuth, and every name and address given as subjectAltName.
+ */
+export function createSelfSignedCertificate(request: CertificateRequest): { certPem: string; keyPem: string; der: Buffer } {
+	const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+	const serial = randomBytes(16);
+	serial[0] = (serial[0] & 0x7f) | 0x01;
+	const algorithm = sequence(oid(OID.ecdsaWithSha256));
+	const name = sequence(set(sequence(oid(OID.commonName), der(0x0c, Buffer.from(request.commonName.slice(0, 64), "utf8")))));
+	const notBefore = new Date((request.now ?? new Date()).getTime() - 60 * 60_000);
+	const notAfter = new Date(notBefore);
+	notAfter.setUTCFullYear(notAfter.getUTCFullYear() + SERVE_TLS_LIMITS.validityYears);
+	const names: Buffer[] = [];
+	for (const dns of new Set(request.dnsNames.map((n) => n.toLowerCase()))) if (/^[\x21-\x7e]{1,253}$/.test(dns)) names.push(der(0x82, Buffer.from(dns, "ascii")));
+	const seen = new Set<string>();
+	for (const ip of request.ips) {
+		const raw = ipBytes(ip);
+		if (raw && !seen.has(raw.toString("hex"))) {
+			seen.add(raw.toString("hex"));
+			names.push(der(0x87, raw));
+		}
+	}
+	const extensions = sequence(
+		sequence(oid(OID.basicConstraints), bool(true), octets(sequence())),
+		sequence(oid(OID.keyUsage), bool(true), octets(bits(Buffer.from([0x80]), 7))),
+		sequence(oid(OID.extKeyUsage), octets(sequence(oid(OID.serverAuth)))),
+		...(names.length > 0 ? [sequence(oid(OID.subjectAltName), octets(sequence(...names)))] : []),
+	);
+	const tbs = sequence(
+		explicit(0, integer(Buffer.from([2]))),
+		integer(serial),
+		algorithm,
+		name,
+		sequence(time(notBefore), time(notAfter)),
+		name,
+		publicKey.export({ type: "spki", format: "der" }),
+		explicit(3, extensions),
+	);
+	const certificate = sequence(tbs, algorithm, bits(sign("sha256", tbs, privateKey)));
+	return { certPem: pem("CERTIFICATE", certificate), keyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(), der: certificate };
+}
+
+/** The server's TLS identity: PEMs for the listeners, the DER and its fingerprint for clients. */
+export interface ServeTlsIdentity {
+	certPem: string;
+	keyPem: string;
+	der: Buffer;
+	/** Base64url SHA-256 of `der`. */
+	fingerprint: string;
+	notAfter: Date;
+	/** Whether this run made it (first run, or the old one was unusable or near its end). */
+	created: boolean;
+}
+
+export function serveTlsFiles(serveDir: string) {
+	const dir = join(serveDir, "tls");
+	return { dir, cert: join(dir, "cert.pem"), key: join(dir, "key.pem") };
+}
+
+function writePrivate(path: string, text: string): void {
+	const temp = `${path}.${process.pid}.tmp`;
+	writeFileSync(temp, text, { mode: 0o600 });
+	renameSync(temp, path);
+	try { chmodSync(path, 0o600); } catch { /* Windows: ACLs, not modes */ }
+}
+
+function readIdentity(certPath: string, keyPath: string, now: number): ServeTlsIdentity | undefined {
+	if (!existsSync(certPath) || !existsSync(keyPath)) return undefined;
+	try {
+		const certPem = readFileSync(certPath, "utf8");
+		const keyPem = readFileSync(keyPath, "utf8");
+		const cert = new X509Certificate(certPem);
+		const notAfter = new Date(cert.validTo);
+		if (!cert.checkPrivateKey(createPrivateKey(keyPem)) || notAfter.getTime() - now < SERVE_TLS_LIMITS.renewBeforeMs) return undefined;
+		return { certPem, keyPem, der: cert.raw, fingerprint: certificateFingerprint(cert.raw), notAfter, created: false };
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The certificate in `<serveDir>/tls/`, made when missing, unreadable, not
+ * matching its key, or within 30 days of its end. Names and addresses are a
+ * snapshot of the first run: clients pin the fingerprint, not the names, so a
+ * changed address never replaces it (that would break every paired device).
+ */
+export function loadOrCreateServeTls(serveDir: string, request: Omit<CertificateRequest, "now">, now: () => number = Date.now): ServeTlsIdentity {
+	const files = serveTlsFiles(serveDir);
+	const existing = readIdentity(files.cert, files.key, now());
+	if (existing) return existing;
+	mkdirSync(files.dir, { recursive: true, mode: 0o700 });
+	try { chmodSync(files.dir, 0o700); } catch { /* Windows */ }
+	const made = createSelfSignedCertificate({ ...request, now: new Date(now()) });
+	writePrivate(files.key, made.keyPem);
+	writePrivate(files.cert, made.certPem);
+	const cert = new X509Certificate(made.der);
+	return { certPem: made.certPem, keyPem: made.keyPem, der: made.der, fingerprint: certificateFingerprint(made.der), notAfter: new Date(cert.validTo), created: true };
+}
+
+// --- pairing proof -----------------------------------------------------------------
+
+/**
+ * `POST /api/pair/proof`. The key is stretched with scrypt because a proof is
+ * a function of a 40-bit code: with plain HMAC anyone could ask for one and
+ * search every code offline in minutes. Every number here is part of the contract.
+ */
+export const PAIR_PROOF = {
+	salt: "gentle-shell/pair-proof/v1",
+	N: 32768,
+	r: 8,
+	p: 1,
+	keyBytes: 32,
+	/** Nonce bytes after base64url decoding. */
+	nonceMinBytes: 16,
+	nonceMaxBytes: 64,
+	/** Proof requests answered per window across all callers (like failed pairings). */
+	perWindow: 20,
+	windowMs: 60_000,
+};
+
+/** scrypt(P = normalized code as ASCII, S = "gentle-shell/pair-proof/v1" || raw fingerprint, N=32768, r=8, p=1, 32 bytes). */
+export function pairProofKey(code: string, fingerprint: Buffer): Promise<Buffer> {
+	const { promise, resolve, reject } = Promise.withResolvers<Buffer>();
+	scrypt(Buffer.from(normalizePairingCode(code), "ascii"), Buffer.concat([Buffer.from(PAIR_PROOF.salt, "ascii"), fingerprint]), PAIR_PROOF.keyBytes,
+		{ N: PAIR_PROOF.N, r: PAIR_PROOF.r, p: PAIR_PROOF.p, maxmem: 64 * 1024 * 1024 }, (error, key) => (error ? reject(error) : resolve(key)));
+	return promise;
+}
+
+/** HMAC-SHA256(key, raw fingerprint || nonce). */
+export function pairProof(key: Buffer, fingerprint: Buffer, nonce: Buffer): Buffer {
+	return createHmac("sha256", key).update(fingerprint).update(nonce).digest();
+}
+
+/** Decodes a base64url fingerprint; undefined unless it is 32 bytes. */
+export function fingerprintBytes(fingerprint: string): Buffer | undefined {
+	if (!/^[A-Za-z0-9_-]{43}$/.test(fingerprint)) return undefined;
+	const raw = Buffer.from(fingerprint, "base64url");
+	return raw.length === 32 ? raw : undefined;
+}
+
+/** The client's check: one of `proofs` binds `code` to the fingerprint it saw in the handshake. */
+export async function verifyPairProof(input: { code: string; fingerprint: string; nonce: Buffer; proofs: readonly unknown[] }): Promise<boolean> {
+	const fp = fingerprintBytes(input.fingerprint);
+	if (!fp) return false;
+	const expected = pairProof(await pairProofKey(input.code, fp), fp, input.nonce);
+	let match = false;
+	for (const proof of input.proofs) {
+		if (typeof proof !== "string") continue;
+		const given = Buffer.from(proof, "base64url");
+		if (given.length === expected.length && timingSafeEqual(given, expected)) match = true;
+	}
+	return match;
+}
+
+/** Proof keys for the live codes (one scrypt per code, cached) and the global request budget. */
+export class PairProofs {
+	private readonly fingerprint: Buffer;
+	private readonly now: () => number;
+	private readonly keys = new Map<string, Promise<Buffer>>();
+	private requests: number[] = [];
+	constructor(fingerprint: string, now: () => number = Date.now) {
+		const fp = fingerprintBytes(fingerprint);
+		if (!fp) throw new Error("bad certificate fingerprint");
+		this.fingerprint = fp;
+		this.now = now;
+	}
+
+	/** False once `perWindow` requests came within the window. */
+	allow(): boolean {
+		const now = this.now();
+		this.requests = this.requests.filter((t) => now - t < PAIR_PROOF.windowMs);
+		if (this.requests.length >= PAIR_PROOF.perWindow) return false;
+		this.requests.push(now);
+		return true;
+	}
+
+	/** One base64url proof per live code, in random order. */
+	async proofs(codes: readonly string[], nonce: Buffer): Promise<string[]> {
+		const live = new Set(codes.map(normalizePairingCode));
+		for (const code of this.keys.keys()) if (!live.has(code)) this.keys.delete(code);
+		const keys = await Promise.all([...live].map((code) => {
+			let key = this.keys.get(code);
+			if (!key) this.keys.set(code, (key = pairProofKey(code, this.fingerprint)));
+			return key;
+		}));
+		const out = keys.map((key) => pairProof(key, this.fingerprint, nonce).toString("base64url"));
+		for (let i = out.length - 1; i > 0; i -= 1) {
+			const j = randomBytes(4).readUInt32BE() % (i + 1);
+			[out[i], out[j]] = [out[j], out[i]];
+		}
+		return out;
+	}
+}
+
+// --- listeners ---------------------------------------------------------------------
+
+/** How a connection reached a listener: plain HTTP from this machine, TLS, or TLS through a relay. */
+export type ConnectionVia = "plain" | "tls" | "relay";
+
+export interface ServeTlsMaterial {
+	certPem: string;
+	keyPem: string;
+}
+
+/** `https` when the request came over TLS (directly or through a relay), else `http`. */
+export function requestScheme(req: IncomingMessage): "http" | "https" {
+	return "encrypted" in req.socket && req.socket.encrypted === true ? "https" : "http";
+}
+
+/** Whether the peer is this machine: a loopback address, or the address it connected to (a remote host cannot have ours). */
+export function isLocalPeer(socket: Pick<Socket, "remoteAddress" | "localAddress">): boolean {
+	const remote = (socket.remoteAddress ?? "").replace(/^::ffff:/i, "");
+	const local = (socket.localAddress ?? "").replace(/^::ffff:/i, "");
+	if (remote === "") return false;
+	return remote === "::1" || /^127\./.test(remote) || remote === local;
+}
+
+/** The first byte of a TLS ClientHello record. */
+const TLS_HANDSHAKE = 0x16;
+const SNIFF_TIMEOUT_MS = 20_000;
+const TLS_REQUIRED = JSON.stringify({ error: { code: "tls_required", message: "This server speaks HTTPS on the network: connect with https:// and pin its certificate fingerprint" } });
+
+export interface ServeListener {
+	/** Listen, address and close on this one. */
+	server: NetServer;
+	/** A connection a relay spliced to this listener: always TLS, never plain. */
+	acceptRelayed(socket: Socket): void;
+	/** Ends every open connection (after `server.close()`). */
+	closeAllConnections(): void;
+}
+
+/**
+ * One listening socket for an HTTP API: without `tls`, plain HTTP for every
+ * peer; with it, TLS for every peer, plus plain HTTP from this machine (the
+ * first byte tells them apart), so local tools keep `http://127.0.0.1`. A
+ * network peer that speaks plain HTTP gets `400 tls_required`. `setup` gets
+ * each underlying HTTP server once, with how its connections arrive.
+ */
+export function createServeListener(options: { tls?: ServeTlsMaterial; setup: (server: HttpServer | HttpsServer, via: ConnectionVia) => void; onConnection?: (socket: Socket) => void }): ServeListener {
+	const sockets = new Set<Socket>();
+	const plain = createHttpServer();
+	options.setup(plain, "plain");
+	const tlsOptions = options.tls ? { key: options.tls.keyPem, cert: options.tls.certPem, minVersion: "TLSv1.2" as const, ALPNProtocols: ["http/1.1"] } : undefined;
+	const secure = tlsOptions ? createHttpsServer(tlsOptions) : undefined;
+	if (secure) options.setup(secure, "tls");
+	let relayed: HttpsServer | undefined;
+	const track = (socket: Socket) => {
+		sockets.add(socket);
+		socket.once("close", () => sockets.delete(socket));
+		options.onConnection?.(socket);
+	};
+	const server = createNetServer({ pauseOnConnect: false }, (socket) => {
+		track(socket);
+		socket.on("error", () => socket.destroy());
+		if (!secure) return void plain.emit("connection", socket);
+		const local = isLocalPeer(socket);
+		const timer = setTimeout(() => socket.destroy(), SNIFF_TIMEOUT_MS);
+		socket.once("data", (chunk: Buffer) => {
+			clearTimeout(timer);
+			socket.pause();
+			socket.unshift(chunk);
+			if (chunk[0] === TLS_HANDSHAKE) secure.emit("connection", socket);
+			else if (local) plain.emit("connection", socket);
+			else return void socket.end(`HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(TLS_REQUIRED)}\r\nConnection: close\r\n\r\n${TLS_REQUIRED}`);
+			process.nextTick(() => socket.resume());
+		});
+	});
+	return {
+		server,
+		acceptRelayed(socket) {
+			if (!tlsOptions) return void socket.destroy();
+			if (!relayed) {
+				relayed = createHttpsServer(tlsOptions);
+				options.setup(relayed, "relay");
+			}
+			track(socket);
+			socket.on("error", () => socket.destroy());
+			relayed.emit("connection", socket);
+		},
+		closeAllConnections() {
+			for (const s of [plain, secure, relayed]) {
+				if (!s) continue;
+				s.closeAllConnections();
+				s.close(() => {});
+			}
+			for (const socket of sockets) socket.destroy();
+		},
+	};
+}
+
+// --- client side -------------------------------------------------------------------
+
+/**
+ * A TLS connection that ends unless the server's certificate has `fingerprint`
+ * (base64url SHA-256 of its DER): the check is the certificate, not a CA or a
+ * name. Resolves after the handshake, before a byte of the request is sent.
+ */
+export function connectPinned(target: { host: string; port: number } | { socket: Socket }, fingerprint: string): Promise<TLSSocket> {
+	const { promise, resolve, reject } = Promise.withResolvers<TLSSocket>();
+	const socket = tlsConnect({ ...target, rejectUnauthorized: false, ALPNProtocols: ["http/1.1"] });
+	socket.once("error", reject);
+	socket.once("secureConnect", () => {
+		const seen = certificateFingerprint(socket.getPeerCertificate(false).raw);
+		if (seen !== fingerprint) {
+			socket.destroy();
+			return reject(Object.assign(new Error(`certificate fingerprint ${seen} is not the pinned ${fingerprint}`), { code: "fingerprint_mismatch", seen }));
+		}
+		socket.off("error", reject);
+		resolve(socket);
+	});
+	return promise;
+}
+
+/** The fingerprint a TLS server presents, trusting nothing yet (first contact, before a pairing proof). */
+export function peekFingerprint(target: { host: string; port: number } | { socket: Socket }): Promise<{ socket: TLSSocket; fingerprint: string }> {
+	const { promise, resolve, reject } = Promise.withResolvers<{ socket: TLSSocket; fingerprint: string }>();
+	const socket = tlsConnect({ ...target, rejectUnauthorized: false, ALPNProtocols: ["http/1.1"] });
+	socket.once("error", reject);
+	socket.once("secureConnect", () => {
+		socket.off("error", reject);
+		resolve({ socket, fingerprint: certificateFingerprint(socket.getPeerCertificate(false).raw) });
+	});
+	return promise;
+}

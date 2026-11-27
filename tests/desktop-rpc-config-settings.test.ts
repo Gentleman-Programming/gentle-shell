@@ -12,7 +12,7 @@ import { DEFAULT_NOTIFICATION_SETTINGS, NOTIFICATION_EVENTS, NOTIFICATION_SCHEMA
 // parity, T3): read and written through the same get_config/set_config
 // contract as the profile stores, by their own owners.
 
-function env(t: test.TestContext) {
+function env(t: test.TestContext, context: Record<string, unknown> = {}) {
 	const root = mkdtempSync(join(tmpdir(), "desktop-config-settings-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const configHome = join(root, "config");
@@ -20,10 +20,11 @@ function env(t: test.TestContext) {
 	const workspace = join(root, "workspace");
 	for (const dir of [configHome, agentHome, workspace]) mkdirSync(dir, { recursive: true });
 	const bridge = new DesktopConfigBridge({ configHome, agentHome });
-	bridge.attach({ cwd: workspace } as unknown as ExtensionContext);
+	bridge.attach({ cwd: workspace, ...context } as unknown as ExtensionContext);
 	return {
 		root,
 		configHome,
+		agentHome,
 		workspace,
 		bridge,
 		projectPersona: join(workspace, ".pi", "gentle-ai", "persona.json"),
@@ -231,4 +232,87 @@ test("an unknown or prototype event key is rejected, never silently dropped", as
 	const withProto = JSON.parse(JSON.stringify(data).replace('"events":{', '"events":{"__proto__":null,'));
 	assert.equal((await e.write("notifications", withProto)).error?.code, "invalid_data");
 	assert.equal(existsSync(join(e.configHome, "notifications.json")), false);
+});
+
+// ---- pi_settings: Pi's settings.json model keys (Configuration › Models) ----
+
+test("pi_settings reads Pi's merged display view and writes the global file's model keys", async (t) => {
+	const e = env(t);
+	const empty = await e.read("pi_settings");
+	assert.deepEqual([empty.status, empty.scope, empty.readOnly, empty.value], ["missing", "global+project", false, undefined]);
+	assert.deepEqual(empty.writeTargets.map((entry: any) => [entry.target, entry.status]), [["global", "missing"]]);
+	writeFileSync(join(e.agentHome, "settings.json"), JSON.stringify({ packages: ["npm:x"], theme: "dark", defaultProvider: "anthropic", defaultModel: "claude-opus", defaultThinkingLevel: "high", enabledModels: ["anthropic/*", "openai/gpt-5"] }));
+	const read = await e.read("pi_settings");
+	assert.equal(read.status, "ok");
+	assert.deepEqual(read.value, { defaultProvider: "anthropic", defaultModel: "claude-opus", defaultThinkingLevel: "high", enabledModels: ["anthropic/*", "openai/gpt-5"], extensions: [], truncated: false });
+});
+
+test("a pi_settings write patches the model keys and keeps every other settings key", async (t) => {
+	const e = env(t);
+	const path = join(e.agentHome, "settings.json");
+	writeFileSync(path, JSON.stringify({ packages: ["npm:x"], defaultProvider: "anthropic", defaultModel: "claude-opus", defaultThinkingLevel: "high" }));
+	const patch = { defaultProvider: "openai", defaultModel: "gpt-5", defaultThinkingLevel: null, enabledModels: ["openai/gpt-5", "anthropic/claude-opus"] };
+	const outcome = await e.write("pi_settings", patch);
+	assert.equal(outcome.ok, true, JSON.stringify(outcome));
+	assert.equal(outcome.data.changed, true);
+	assert.equal(outcome.event?.name, "config_changed");
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { packages: ["npm:x"], defaultProvider: "openai", defaultModel: "gpt-5", enabledModels: ["openai/gpt-5", "anthropic/claude-opus"] }, "null removes a key");
+	assert.equal(outcome.data.value.defaultModel, "gpt-5");
+	const same = await e.write("pi_settings", patch);
+	assert.deepEqual([same.ok, same.data.changed, same.event], [true, false, undefined]);
+	assert.equal((await e.write("pi_settings", { defaultModel: "gpt-5-mini" })).ok, true);
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { packages: ["npm:x"], defaultProvider: "openai", defaultModel: "gpt-5-mini", enabledModels: ["openai/gpt-5", "anthropic/claude-opus"] }, "a key the patch leaves out keeps its value");
+	assert.deepEqual([(await e.write("pi_settings", {})).data.changed], [false]);
+	assert.equal((await e.write("pi_settings", { defaultProvider: null, defaultModel: null, enabledModels: null })).ok, true);
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { packages: ["npm:x"] });
+});
+
+test("a pi_settings write goes to the global file even when a trusted project's file wins the merge", async (t) => {
+	const e = env(t, { isProjectTrusted: () => true });
+	mkdirSync(join(e.workspace, ".pi"), { recursive: true });
+	writeFileSync(join(e.workspace, ".pi", "settings.json"), JSON.stringify({ defaultModel: "project-model" }));
+	const outcome = await e.write("pi_settings", { defaultModel: "global-model" });
+	assert.equal(outcome.ok, true, JSON.stringify(outcome));
+	assert.deepEqual(JSON.parse(readFileSync(join(e.agentHome, "settings.json"), "utf8")), { defaultModel: "global-model" });
+	assert.deepEqual(JSON.parse(readFileSync(join(e.workspace, ".pi", "settings.json"), "utf8")), { defaultModel: "project-model" });
+	assert.equal(outcome.data.value.defaultModel, "project-model", "the store shows what Pi runs with");
+	assert.deepEqual(outcome.data.layers, [{ source: "global", status: "ok" }, { source: "project", status: "ok" }]);
+});
+
+test("a pi_settings write validates every key and never replaces an unreadable settings file", async (t) => {
+	const e = env(t);
+	for (const data of [
+		{ theme: "dark" },
+		{ extensions: [] },
+		{ truncated: false },
+		{ defaultProvider: "" },
+		{ defaultModel: 3 },
+		{ defaultThinkingLevel: "extreme" },
+		{ enabledModels: "openai/gpt-5" },
+		{ enabledModels: ["a", "a"] },
+		{ enabledModels: ["bad\nline"] },
+		[],
+	]) {
+		assert.equal((await e.write("pi_settings", data)).error?.code, "invalid_data", JSON.stringify(data));
+	}
+	assert.equal(existsSync(join(e.agentHome, "settings.json")), false);
+	const stale = await e.revision("pi_settings");
+	writeFileSync(join(e.agentHome, "settings.json"), JSON.stringify({ defaultModel: "x" }));
+	assert.equal((await e.write("pi_settings", { defaultModel: "y" }, stale)).error?.code, "revision_conflict");
+	writeFileSync(join(e.agentHome, "settings.json"), "{ not json");
+	const broken = await e.read("pi_settings");
+	assert.equal(broken.status, "invalid");
+	assert.equal((await e.write("pi_settings", { defaultModel: "y" })).error?.code, "write_failed");
+	assert.equal(readFileSync(join(e.agentHome, "settings.json"), "utf8"), "{ not json");
+});
+
+test("a pi_settings write waits for a profile apply, which also sets the orchestrator", async (t) => {
+	const e = env(t);
+	const revision = await e.revision("pi_settings");
+	beginDesktopProfileApply();
+	try {
+		assert.equal((await e.write("pi_settings", { defaultModel: "y" }, revision)).error?.code, "profile_apply_busy");
+	} finally {
+		endDesktopProfileApply();
+	}
 });

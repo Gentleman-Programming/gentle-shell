@@ -464,12 +464,12 @@ test("S12: the action kinds add refresh_usage and apply_profile and keep every e
 // ---- The desktop RPC is unchanged ----
 
 
-/** Channel lines other than the feed's session_snapshot events, without the shared event counter. */
+/** Channel lines other than the feed's session_snapshot events, without the shared event counter and the channel's epoch. */
 function withoutSessionSnapshots(lines: Array<string | undefined>): unknown[] {
 	return lines
 		.map((line) => JSON.parse(line!) as Record<string, unknown>)
 		.filter((line) => line.event !== "session_snapshot")
-		.map(({ seq: _seq, ...line }) => line);
+		.map(({ seq: _seq, epoch: _epoch, ...line }) => line);
 }
 
 test("S12: desktop RPC refresh_subscription_usage and apply_profile answers are byte-identical with the feed loaded", async (t) => {

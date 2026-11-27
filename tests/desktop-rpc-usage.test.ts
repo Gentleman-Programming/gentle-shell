@@ -684,8 +684,23 @@ test("the Desktop transport advertises the usage methods and rate_limit event", 
 		"clear_profile_binding",
 		"get_auth_status",
 		"reload_credentials",
+		"list_available_models",
+		"set_host_tools",
+		"host_tool_result",
+		"host_tool_progress",
+		"host_message",
+		"set_host_context",
+		"set_host_activity",
+		"login_start",
+		"login_complete",
+		"login_cancel",
+		"set_api_key",
+		"remove_credentials",
+		"list_packages",
+		"install_package",
+		"remove_package",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel", "login_prompt", "login_finished", "package_progress", "package_finished"]);
 });
 
 test("get_subscription_usage answers usage_unavailable through the transport without an owner extension", async (t) => {

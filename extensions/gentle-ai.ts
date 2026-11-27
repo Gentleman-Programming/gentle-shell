@@ -32,6 +32,9 @@ import { ReviewContinuationRegistry, type RetainedReviewContinuation, type Retai
 import { boundedFindingClaims, parseReviewCoordinatorInput, runReviewCoordinator } from "../lib/review-coordinator.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
+import { PROFILE_CARD_SETTINGS_CHANGED, writeProfileCard } from "../lib/profile-card-policy.ts";
+import { loadKeymaps } from "../lib/keymaps.ts";
+import { createProfileCardOwner, createProfileCardReader, createProfileCardUseHandler, mountProfileCard, PROFILE_CARD_USE_CONFIRM_TITLE, profileCardUseConfirmMessage, registerProfileCardShortcuts } from "../lib/profile-card-sidebar.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { resolveSessionWorktree, SessionWorktreeRegistry, toolWorktreePath } from "../lib/session-worktree-registry.ts";
 import { canonicalizeTarget, clearPathConsentSkills, isIndexedSkillTarget, isTempTarget, isWithinPath, setPathConsentSkills } from "../lib/path-consent-fence.ts";
@@ -3702,6 +3705,31 @@ function sessionProfileAuthorityAvailable(ctx: ExtensionContext): boolean {
 	return readSessionProfileAuthority(manager).available;
 }
 
+/**
+ * The card's use action: asks the user to confirm, then runs the owner's "Use in
+ * this session" with the real session context so its binding notices appear. The
+ * confirmation lives on this path and not in the shared action: the
+ * `/gentle:profiles` `use-session` branch applies without asking (a maintainer
+ * follow-up), while the card must bind nothing and move no live model or
+ * thinking level until the user approves. Declining changes nothing; a busy
+ * apply gate never prompts. Reads the store (never seeds or writes it) and runs
+ * only for a profile that still exists.
+ */
+async function useProfileFromCard(ctx: ExtensionContext, live: LiveSession, name: string): Promise<void> {
+	const path = profilesFilePath(gentleAiConfigHome());
+	const read = readProfilesFileResult(path);
+	if (read.status !== "valid") {
+		ctx.ui.notify(`el Gentleman cannot use profile "${name}": ${path} is missing or invalid. Run /gentle:profiles.`, "warning");
+		return;
+	}
+	if (!hasOwnProfile(read.file.profiles, name)) {
+		ctx.ui.notify(`el Gentleman cannot use profile "${name}": it is no longer in profiles.json.`, "warning");
+		return;
+	}
+	const config = normalizeModelConfig(read.file.profiles[name]) ?? {};
+	await runProfilesPanelAction(ctx, live, path, read.file, { type: "use-session", name, config });
+}
+
 /** The routing this session's launches use: its profile, or the global effective routing. */
 async function readSessionLaunchModelConfigAsync(ctx: ExtensionContext, authorityAvailable: boolean): Promise<AgentModelConfig> {
 	return sessionLaunchProfile(ctx, authorityAvailable)?.modelProfiles
@@ -7102,7 +7130,7 @@ async function runProfilesPanelAction(
 }
 
 /** `/gentle:profiles`: seed or open the store, then loop the panel over one action at a time until it closes. */
-const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import | publish <name> | export-routing | restore-routing | clear]";
+const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import | publish <name> | export-routing | restore-routing | clear | card on|off]";
 
 /**
  * `/gentle:profiles` opens the models screen. File operations live in
@@ -7111,13 +7139,33 @@ const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import 
  * profile through `profiles.export.json`, `publish <name>` toggles the
  * committed repository declaration, and `export-routing` / `restore-routing`
  * move the saved global routing (models.json, not a profile) through
- * `models.export.json`. The routing verbs carry their own names so a profile
+ * `models.export.json`. `card on|off` shows or hides the sidebar profile card
+ * (a global flag, hidden by default, live). The routing verbs carry their own names so a profile
  * can never be mistaken for them.
  */
 async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession, args = ""): Promise<void> {
 	const [verb = "", ...rest] = args.trim().split(/\s+/).filter(Boolean);
 	if (verb === "") {
 		await openModelsScreen(ctx, live);
+		return;
+	}
+	if (verb === "card") {
+		const choice = rest.length === 1 ? rest[0] : undefined;
+		if (choice !== "on" && choice !== "off") {
+			ctx.ui.notify(PROFILES_COMMAND_USAGE, "warning");
+			return;
+		}
+		try {
+			writeProfileCard(choice === "on");
+		} catch (error) {
+			ctx.ui.notify(`Could not save the profile card setting: ${profilesErrorMessage(error)}`, "warning");
+			return;
+		}
+		live.events?.emit(PROFILE_CARD_SETTINGS_CHANGED, { visible: choice === "on" });
+		ctx.ui.notify(
+			choice === "on" ? "Profile card shown. Turn it off with /gentle:profiles card off." : "Profile card hidden. Turn it on with /gentle:profiles card on.",
+			"info",
+		);
 		return;
 	}
 	if (verb === "export-routing" || verb === "restore-routing" || verb === "clear") {
@@ -12468,6 +12516,36 @@ function createGentleAiExtensionForTesting(
 	const statusTiming = new StatusTimingDiagnostics();
 	const reviewSidebar = createReviewSidebarPublisher(pi);
 	const sessionProfiles = createSessionProfileIntegration();
+	// The sidebar profile card: one owner holds the card state (visibility, shown
+	// profile) so the use action and keyboard shortcuts act on the same selection.
+	let profileCardCtx: ExtensionContext | undefined;
+	let stopProfileCardEvents: (() => void) | undefined;
+	const profileCardReader = createProfileCardReader();
+	const profileCard = createProfileCardOwner({
+		loadItems: () => {
+			if (!profileCardCtx) throw new Error("no session");
+			return profileCardReader.items({ configHome: gentleAiConfigHome(), sessionId: profileCardCtx.sessionManager?.getSessionId?.(), cwd: profileCardCtx.cwd, ...(typeof profileCardCtx.sessionManager?.getBranch === "function" ? { session: profileCardCtx.sessionManager } : {}) });
+		},
+	});
+	profileCard.setUseHandler(createProfileCardUseHandler({
+		begin: beginDesktopProfileApply,
+		end: endDesktopProfileApply,
+		notify: (message, level) => { profileCardCtx?.ui.notify(message, level); },
+		// /gentle:profiles `use-session` applies without asking; the card binds nothing
+		// before the user approves. An unanswerable dialog is never an approval.
+		confirm: async (name) => {
+			const current = profileCardCtx;
+			if (!current) return false;
+			try { return (await current.ui.confirm(PROFILE_CARD_USE_CONFIRM_TITLE, profileCardUseConfirmMessage(name))) === true; }
+			catch { return false; }
+		},
+		run: async (name) => {
+			if (!profileCardCtx) throw new Error("no active session");
+			await useProfileFromCard(profileCardCtx, pi, name);
+		},
+		// A use just changed the session record: drop what the reader cached so the markers re-read.
+		refresh: () => { profileCardReader.invalidate(); profileCard.refreshItems(); },
+	}));
 	pi.on("session_before_fork", async (event, ctx) => {
 		await waitCurrentSessionProfileSelection(ctx.sessionManager);
 		sessionProfiles.beforeFork(ctx.sessionManager, { entryId: event.entryId, position: event.position });
@@ -12521,6 +12599,9 @@ function createGentleAiExtensionForTesting(
 		statusTiming.reset();
 		reminderSessionActive = false;
 		reminderEpoch += 1;
+		stopProfileCardEvents?.();
+		stopProfileCardEvents = undefined;
+		profileCardCtx = undefined;
 		activeRddContext = undefined;
 		unbindPreparation?.();
 		unbindPreparation = undefined;
@@ -13015,6 +13096,12 @@ function createGentleAiExtensionForTesting(
 		});
 	}
 
+	// Pi reads extension shortcuts at startup and /reload; the keys resolve like every Gentle keymap.
+	{
+		const keymapEnv = dependencies.processEnv ?? process.env;
+		registerProfileCardShortcuts(pi, profileCard, keymapEnv, loadKeymaps(keymapEnv).bindings);
+	}
+
 	pi.on("session_start", async (event, ctx) => {
 		const startupEpoch = reminderEpoch;
 		const profileSessionId = ctx.sessionManager?.getSessionId?.();
@@ -13059,6 +13146,17 @@ function createGentleAiExtensionForTesting(
 			}
 		}
 		readSessionProfileAuthority(ctx.sessionManager);
+		// The card's first read comes after this session recorded its startup profile
+		// and published it as the session profile, so the card starts on the profile in
+		// effect for this session (S2/T4b), not on the store's active one. A session
+		// boundary resets a card that stayed visible across a session replacement.
+		// The card re-reads its visibility store on the settings event (the payload is not trusted).
+		profileCardCtx = ctx;
+		stopProfileCardEvents?.();
+		stopProfileCardEvents = pi.events?.on?.(PROFILE_CARD_SETTINGS_CHANGED, () => profileCard.refreshVisibility());
+		profileCard.refreshVisibility();
+		profileCard.resetForSession();
+		if (ctx.hasUI && typeof ctx.ui.setWidget === "function") ctx.ui.setWidget("gentle-profile-card", (tui, theme) => mountProfileCard(tui, theme, profileCard));
 		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 		auto.reset();
 		yolo.reset(ctx);
@@ -13635,7 +13733,7 @@ function createGentleAiExtensionForTesting(
 	}
 
 	pi.registerCommand("gentle:profiles", {
-		description: "Open the models screen (profiles as tabs). Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear.",
+		description: "Open the models screen (profiles as tabs). Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear, card on|off.",
 		handler: async (args, ctx) => {
 			await handleProfilesCommand(ctx, pi, typeof args === "string" ? args : "");
 		},

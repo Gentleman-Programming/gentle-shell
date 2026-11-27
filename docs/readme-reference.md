@@ -735,7 +735,7 @@ Synthetic tests prove the observer's behavior, not the cause of issue #213. A ne
 ```text
 /gentle:status          Check package assets and global model config.
 /gentle:doctor          Run read-only diagnostics for assets, config, tools, guards, and Herdr setup.
-/gentle:profiles           Open the models screen on this repository's profile. Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear.
+/gentle:profiles           Open the models screen on this repository's profile. Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear, card on|off.
 /gentle:persona            Switch between gentleman and neutral persona modes.
 /gentle:background-subagents  Show or set the managed background-subagents policy, with its deciding source.
 /gentle:rdd                  Open the interactive RDD selector for this repository or an explicit machine-wide choice.
@@ -1220,6 +1220,9 @@ The file operations are subcommands:
 | ------------------------------------ | ------ |
 | `/gentle:profiles export <name>`     | Export a profile to `~/.pi/gentle-ai/profiles.export.json`. |
 | `/gentle:profiles import`            | Import the profile in `~/.pi/gentle-ai/profiles.export.json`, asking before it replaces one with the same name. |
+| `/gentle:profiles card on\|off`      | Show or hide the sidebar profile card. Hidden by default, persisted globally in `~/.pi/gentle-ai/profile-card.json`, and applied live without `/reload`. Any other argument prints the usage and changes nothing. |
+| `alt+,` / `alt+.` / `alt+m` | Profile card shortcuts: previous profile, next profile (both wrap), and use the shown profile in this session (the same action as the card's use click, so it asks for the same confirmation first). Rebind with `GENTLE_PI_PROFILE_CARD_PREVIOUS_KEY`, `GENTLE_PI_PROFILE_CARD_NEXT_KEY` and `GENTLE_PI_PROFILE_CARD_USE_KEY` (`off` or empty disables one). Hidden card or no saved profiles: no change and one notice naming `/gentle:profiles card on` or `/gentle:profiles`. |
+| `ctrl+shift+e` | Collapse or expand the profile card (the same in-memory state as clicking its title, like `ctrl+shift+a` / `ctrl+shift+j` / `ctrl+shift+t` for agents, jobs and todo). Rebind with `GENTLE_PI_PROFILE_CARD_COLLAPSE_KEY` (`off` or empty disables it). Hidden card: no change and one notice naming `/gentle:profiles card on`. |
 | `/gentle:profiles publish <name>`    | Publish the shared repository declaration at `<worktree-root>/.pi/gentle-ai/profile.json` so the whole team starts from that profile; run it again to remove the declaration. |
 
 The binding made by **Use in this session** writes no shared routing: not `models.json`, Pi's global `settings.json`, agent frontmatter, `subagents.json`, or repository pins. When the table has unsaved edits, they are saved to the profile in `profiles.json` first, exactly as **Save** would, and the screen says so; with no pending edits nothing is written at all. Other open sessions keep their own bindings and live orchestrators. The session binding overrides pins and global routing as a complete snapshot, including reviewer routing; omitted roles do not fall back to another profile. The selection is appended to the session file as its own record, so start, resume, reload, fork and tree navigation restore it from the current branch without selecting it again. Re-selecting re-copies the profile definition from `profiles.json`; later edits to `subagents.json` or agent frontmatter never reach a bound session, in that session or through a re-selection.
@@ -1437,7 +1440,7 @@ The notice appears once per distinct change: further launches stay quiet until t
 | -------------------------------- | ------------------------------------------------------------------- |
 | `/gentle:status`              | Shows package assets and global model config status. |
 | `/gentle:doctor`              | Runs read-only diagnostics for assets, model/persona config, memory tools, safety guards, and (inside Herdr) the task-summary sidebar setup. |
-| `/gentle:profiles`               | Opens the models screen on this repository's profile. `export <name>`, `import`, and `publish <name>` handle profile files and the repository declaration; `export-routing` and `restore-routing` move the saved global routing through `models.export.json`. |
+| `/gentle:profiles`               | Opens the models screen on this repository's profile. `export <name>`, `import`, and `publish <name>` handle profile files and the repository declaration; `export-routing` and `restore-routing` move the saved global routing through `models.export.json`; `card on\|off` shows or hides the sidebar profile card (hidden by default, persisted globally, live). |
 | `/gentle:commands`               | Opens the command palette (default `alt+k`): a curated, grouped menu (Configuration, Session, Diagnostics, Skills) of registered Gentle commands; search and run by label. |
 | `/gentle:persona`                | Switches global persona mode, with project override support.        |
 | `/gentle:background-subagents`   | Shows or sets the managed background-subagents policy (`status\|enable\|disable`), naming the source that decided it. |

@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 import { createAgentSession, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
@@ -20,6 +20,9 @@ import type {
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { PROFILE_CARD_SIDEBAR_KEY } from "../lib/profile-card-sidebar.ts";
+import { writeProfileCard } from "../lib/profile-card-policy.ts";
+import { sidebarState } from "../lib/shell-sidebar.ts";
 import { freezeSessionProfileAtOwnStart, freezeSessionProfileAtStartup, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import { createSessionProfileBind, createSessionProfileClear, createSessionProfileStartupBind, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { createSessionProfileIntegration, runCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
@@ -4657,9 +4660,17 @@ test("Enter skipped by a session replacement while queued never touches the stal
 	assert.equal(readSessionProfileBinding(manager.getSessionId()), undefined);
 });
 
+/**
+ * The exact `/gentle:profiles` usage notice, as a literal (not the production
+ * constant): the usage text ends with `card on|off` since the profile card's
+ * subcommand landed, and a later usage change must update this deliberately.
+ */
+const PROFILES_COMMAND_USAGE_TEXT =
+	"Usage: /gentle:profiles [export <name> | import | publish <name> | export-routing | restore-routing | clear | card on|off]";
+
 /** Runs `/gentle:profiles <args>` through the registered command on a real persisted session. */
-function profilesCommandHarness(t: test.TestContext, profiles: Record<string, unknown> = { team: { orchestrator: { model: "openai/beta", thinking: "high" }, worker: { model: "openai/alpha" } } }) {
-	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+function profilesCommandHarness(t: test.TestContext, profiles: Record<string, unknown> = { team: { orchestrator: { model: "openai/beta", thinking: "high" }, worker: { model: "openai/alpha" } } }, options: { widgets?: Map<string, (tui: unknown, theme: unknown) => unknown> } = {}) {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings, writePin, repoPinPath } = profilesStoreFixture(t);
 	writeSettings();
 	writeStore(profiles, undefined);
 	resetSessionProfileBindingsForTesting();
@@ -4683,7 +4694,10 @@ function profilesCommandHarness(t: test.TestContext, profiles: Record<string, un
 	const ctx = {
 		cwd: fixture.root,
 		hasUI: true,
-		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
+		ui: {
+			notify(message: string, severity: string) { notifications.push({ message, severity }); },
+			...(options.widgets === undefined ? {} : { setWidget(name: string, factory: (tui: unknown, theme: unknown) => unknown) { options.widgets!.set(name, factory); } }),
+		},
 		sessionManager: manager,
 		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
 	} as unknown as ExtensionCommandContext;
@@ -4696,7 +4710,8 @@ function profilesCommandHarness(t: test.TestContext, profiles: Record<string, un
 		assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false, "no materialized store is written");
 	};
 	return {
-		manager, ctx, notifications, liveCalls, family, assertSharedUntouched, storePath,
+		manager, ctx, notifications, liveCalls, family, assertSharedUntouched, storePath, fixture, writeStore, writePin, writeSettings,
+		repoPinPath,
 		run: (args: string, runCtx: ExtensionCommandContext = ctx) => commands.get("gentle:profiles")!.handler(args, runCtx),
 		start: (event: unknown, startCtx: ExtensionContext = ctx) => {
 			started = startCtx.sessionManager as SessionManager;
@@ -4705,6 +4720,40 @@ function profilesCommandHarness(t: test.TestContext, profiles: Record<string, un
 		last: () => notifications.at(-1) ?? { message: "", severity: "" },
 	};
 }
+
+test("the profile card starts on the profile this session started with, not the store's active one", async (t) => {
+	// A running harness may itself be a child of another agent; this session is a parent's own start.
+	const previousChild = process.env.GENTLE_PI_AGENTS_CHILD;
+	const previousFollow = process.env.GENTLE_PI_PROFILE_FOLLOW;
+	delete process.env.GENTLE_PI_AGENTS_CHILD;
+	delete process.env.GENTLE_PI_PROFILE_FOLLOW;
+	t.after(() => {
+		if (previousChild === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
+		else process.env.GENTLE_PI_AGENTS_CHILD = previousChild;
+		if (previousFollow === undefined) delete process.env.GENTLE_PI_PROFILE_FOLLOW;
+		else process.env.GENTLE_PI_PROFILE_FOLLOW = previousFollow;
+	});
+	const widgets = new Map<string, (tui: unknown, theme: unknown) => unknown>();
+	const h = profilesCommandHarness(t, withFast, { widgets });
+	// The store's active profile is "fast"; this session's own start freezes "team"
+	// from the repository declaration, so the card must show "team" (S2/T4b).
+	h.writeStore(withFast, "fast");
+	h.writePin(h.repoPinPath, "team");
+	writeProfileCard(true, { gentlePiConfigHome: h.fixture.configHome });
+	const manager = SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "card-start-sessions"));
+	const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+	await h.start({ type: "session_start", reason: "startup" }, ctx);
+	assert.equal(manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === SESSION_PROFILE_CUSTOM_TYPE).length, 1, "the session recorded its startup profile");
+	const factory = widgets.get("gentle-profile-card");
+	assert.equal(typeof factory, "function", "session_start mounts the card");
+	const tui = { terminal: {}, requestRender() {} } as unknown as TUI;
+	const mounted = factory!(tui, lifecycleTheme) as { dispose(): void };
+	t.after(() => mounted.dispose());
+	const rail = sidebarState(tui).parts.get(PROFILE_CARD_SIDEBAR_KEY);
+	assert.ok(rail, "the card registered its rail section");
+	const row = rail!.render(60).map((line) => line.trimEnd().replace(/<[^>]+>/g, "")).find((line) => line.includes("◀"));
+	assert.match(row ?? "", /◀ team \(session\)/, "the card starts on the startup profile, not the active one");
+});
 
 test("/gentle:profiles clear removes the session binding and records an explicit clear", async (t) => {
 	const h = profilesCommandHarness(t);
@@ -4756,7 +4805,7 @@ test("/gentle:profiles clear with extra arguments shows the usage warning and wr
 	const recordsBefore = h.family().length;
 	await h.run("clear extra");
 	assert.equal(h.last().severity, "warning");
-	assert.match(h.last().message, /^Usage: \/gentle:profiles \[.*clear\]/);
+	assert.equal(h.last().message, PROFILES_COMMAND_USAGE_TEXT);
 	assert.equal(h.family().length, recordsBefore, "no clear record is appended");
 	assert.equal(readSessionProfileBinding(h.manager.getSessionId())?.name, "team");
 	await h.run("  clear  ");
@@ -5502,7 +5551,9 @@ test("file operations are subcommands: profiles restore-routing, export and impo
 
 	for (const args of ["export", "export ghost", "publish", "frobnicate", "restore", "export-routing extra"]) {
 		await fixture.run("gentle:profiles", args);
-		assert.match(fixture.notifications.at(-1)?.message ?? "", /Usage: \/gentle:profiles \[export <name> \| import \| publish <name> \| export-routing \| restore-routing \| clear\]/, args);
+		// `export ghost` prefixes a missing-profile notice; every one of them ends with the usage text.
+		const message = fixture.notifications.at(-1)?.message ?? "";
+		assert.ok(message.endsWith(PROFILES_COMMAND_USAGE_TEXT), `${args}: ${JSON.stringify(message)}`);
 	}
 	assert.equal(fixture.panelVisits(), 0, "no subcommand opens the screen");
 });

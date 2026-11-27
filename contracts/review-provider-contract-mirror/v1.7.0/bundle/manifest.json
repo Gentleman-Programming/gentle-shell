@@ -22,11 +22,11 @@
       ],
       "schema": {
         "path": "schemas/lens.schema.json",
-        "sha256": "9b8a2354a570888486015434501b66b51441a3baf5bf858635e4fff56b2e8298"
+        "sha256": "fb4b03ef18925c0ad9e804ecea50c30037fa9cb947a7e45ffa8fe0d6693177ab"
       },
       "vector": {
         "path": "vectors/lens.json",
-        "sha256": "7ef0b08404645eeb5dba92aba5f8e4780667b6ec775f43ed8547ff9f2a7148c8"
+        "sha256": "82f89f20bcf58d7bf32889cf01397068b88649bf4ddf9ecb322fdc0338d7e701"
       }
     },
     {

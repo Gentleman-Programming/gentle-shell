@@ -2861,6 +2861,70 @@ test("vim paste overflow and policy cancellation discard partial frames without 
 	} finally { editor.dispose(); }
 });
 
+// gentle-shell#1519: a bracketed paste whose terminator never arrives must not
+// leave the Vim prompt inert for the rest of the session.
+function clockedVimEditor() {
+	const clock = { now: 0 };
+	const submitted: string[] = [];
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
+		now: () => clock.now, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => INSTALLED_PI,
+	});
+	editor.onSubmit = (text: string) => { submitted.push(text); };
+	editor.setVimPolicy("on");
+	return { editor, clock, submitted };
+}
+
+test("vim abandons an unterminated paste frame after it stays idle, discarding its bytes", () => {
+	const { editor, clock, submitted } = clockedVimEditor();
+	try {
+		editor.handleInput("\x1b[200~");
+		editor.handleInput("abandoned");
+		clock.now = 1001;
+		editor.handleInput("x");
+		assert.equal(editor.getText(), "x", "first key after the idle window types normally");
+		editor.handleInput("\r");
+		assert.deepEqual(submitted, ["x"], "Enter submits without the abandoned paste");
+		editor.handleInput("\x1b");
+		assert.match(editor.render(40).join("\n"), /NORMAL/, "Esc reaches Vim again");
+	} finally { editor.dispose(); }
+});
+
+test("vim keeps buffering a paste frame whose chunks arrive within the idle window", () => {
+	const { editor, clock } = clockedVimEditor();
+	try {
+		editor.handleInput("\x1b[200~");
+		clock.now = 1000;
+		editor.handleInput("he");
+		clock.now = 2000;
+		editor.handleInput("llo\x1b[20");
+		assert.equal(editor.getText(), "", "open frame stays buffered");
+		clock.now = 3000;
+		editor.handleInput("1~");
+		assert.equal(editor.getText(), "hello");
+	} finally { editor.dispose(); }
+});
+
+test("vim abandons an idle overflowed paste frame and drops its late terminator", () => {
+	const { editor, clock } = clockedVimEditor();
+	try {
+		editor.handleInput("\x1b[200~");
+		editor.handleInput("z".repeat(1024 * 1024 + 1));
+		clock.now = 1001;
+		editor.handleInput("a");
+		assert.equal(editor.getText(), "a", "overflowed frame no longer swallows input");
+		editor.handleInput("\x1b[201~");
+		editor.handleInput("b");
+		assert.equal(editor.getText(), "ab", "late terminator is not inserted");
+		editor.handleInput("\x1b");
+		editor.handleInput("\x1b[201~");
+		assert.equal(editor.getText(), "ab", "late terminator in NORMAL changes nothing");
+		assert.match(editor.render(40).join("\n"), /NORMAL/);
+		editor.handleInput("i");
+		assert.match(editor.render(40).join("\n"), /INSERT/, "modal keys still reach Vim");
+	} finally { editor.dispose(); }
+});
+
 test("vim NORMAL rejects encoded insertions and paste without losing Unicode multiline draft", async () => {
 	const { pi, handlers, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: mkdtempSync(join(tmpdir(), "gentle-vim-safety-")) });

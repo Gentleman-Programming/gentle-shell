@@ -565,6 +565,10 @@ const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 // Bound our framing buffer even when a terminal never sends the closing marker.
 const MAX_BRACKETED_PASTE_CHARS = 1024 * 1024;
+// An open frame that receives no input for this long is abandoned, so a lost
+// terminator cannot leave the Vim prompt inert (gentle-shell#1519). Terminals
+// deliver a paste in one burst; only an interrupted one goes quiet.
+const BRACKETED_PASTE_IDLE_ABANDON_MS = 1000;
 
 /**
  * Pi's own Esc-abort handler (`restoreQueuedMessagesToEditor({ abort: true
@@ -605,6 +609,7 @@ export class GentlePromptEditor extends CustomEditor {
 	private pasteFrame: string | undefined;
 	private pasteOverflow = false;
 	private pasteTail = "";
+	private pasteLastInputAt = 0;
 	private visualReplacePending = false;
 	private visualObjectPending: "i" | "a" | undefined;
 	private visualAnchor: { line: number; col: number } | undefined;
@@ -1274,6 +1279,15 @@ export class GentlePromptEditor extends CustomEditor {
 	 * the entire frame rather than interpreting its contents as keystrokes.
 	 */
 	private handleVimPasteFrame(data: string): boolean {
+		const now = this.deps.now();
+		if (this.pasteFrame !== undefined && now - this.pasteLastInputAt > BRACKETED_PASTE_IDLE_ABANDON_MS) {
+			// Discard the abandoned bytes instead of replaying them as keystrokes;
+			// this input is a fresh event. A late lone terminator is inert.
+			this.pasteFrame = undefined;
+			this.pasteOverflow = false;
+			this.pasteTail = "";
+		}
+		this.pasteLastInputAt = now;
 		if (this.pasteFrame === undefined) {
 			const start = data.indexOf(BRACKETED_PASTE_START);
 			if (start < 0) return false;

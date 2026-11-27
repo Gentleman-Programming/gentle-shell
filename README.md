@@ -684,7 +684,7 @@ gentle-shell upgrade --rollback
 
 <br>
 
-More: **[upgrade reference](docs/readme-reference.md#upgrade-subcommand-and-channels)**.
+More: **[upgrade reference](docs/readme-reference.md#upgrade-subcommand-and-channels)**. If you manage Engram with Homebrew on Linux, see [keeping Engram available after an upgrade](docs/engram-homebrew-upgrades.md) for backup, restart, and verification precautions.
 
 ### Remove it
 

@@ -17,7 +17,7 @@ function clean(platform = "linux", arch = "x64") {
 function installed(platform = "linux") {
 	return { ...clean(platform), node: tool("24.1.0"),
 		pnpm: { ...tool("12.0.0"), compatible: true }, pi: tool("1.2.0"),
-		shell: { ...tool("5.0.0"), global: true },
+		shell: { ...tool(requirements.shell), global: true },
 		gentleAi: { ...tool(requirements.gentleAi), compatible: true },
 		globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: true }, setup: true };
 }
@@ -29,6 +29,7 @@ test("requirements follow repository metadata and native installer pin", () => {
 	assert.equal(requirements.pi, pkg.peerDependencies["@earendil-works/pi-coding-agent"].slice(2));
 	assert.equal(requirements.pnpm, pkg.packageManager.split("@")[1]);
 	assert.equal(requirements.shell, pkg.version);
+	assert.equal(requirements.gentleAi, "5.1.0");
 	assert.equal(requirements.go, "1.25.10");
 });
 
@@ -362,7 +363,7 @@ test("an unknown Gentle AI still blocks when the Shell is reusable", () => {
 });
 
 test("a current Shell without its global command still blocks as unknown", () => {
-	const plan = planPreflight({ ...installed(), shell: { available: true, version: "5.0.0", usable: false, global: true } });
+	const plan = planPreflight({ ...installed(), shell: { available: true, version: requirements.shell, usable: false, global: true } });
 	assert.deepEqual(plan.blockers, [{ code: "unknown-tool", tool: "shell" }]);
 	assert.deepEqual(plan.actions, []);
 });

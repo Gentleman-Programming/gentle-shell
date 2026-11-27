@@ -33,15 +33,29 @@ try {
 	const scratchPath = scratchArg.replace(process.platform === "win32" ? /[\\/]+$/ : /\/+$/, "");
 	const scratchStat = lstatSync(scratchPath);
 	if (scratchStat.isSymbolicLink() || !scratchStat.isDirectory() || !inside(realpathSync(tmpdir()), scratch) || inside(source, scratch) || inside(scratch, source) || source === scratch || readdirSync(scratch).length) fail("scratch must be an empty real directory under system temp, outside source");
-	if (!lstatSync(join(source, ".git")).isDirectory() || lstatSync(join(source, ".git")).isSymbolicLink() ||
-		realpathSync(git(source, ["rev-parse", "--show-toplevel"]).trim()) !== source ||
-		resolve(source, git(source, ["rev-parse", "--git-common-dir"]).trim()) !== join(source, ".git")) fail("unsupported repository: ordinary single-root Git directory required");
+	const dotGit = lstatSync(join(source, ".git"));
+	if (dotGit.isSymbolicLink() || !(dotGit.isDirectory() || dotGit.isFile()) ||
+		realpathSync(git(source, ["rev-parse", "--show-toplevel"]).trim()) !== source) fail("unsupported repository: ordinary Git directory or registered linked worktree required");
+	const gitDir = realpathSync(git(source, ["rev-parse", "--absolute-git-dir"]).trim());
+	const commonDir = realpathSync(resolve(source, git(source, ["rev-parse", "--git-common-dir"]).trim()));
+	// A linked worktree's .git file may name any directory; accept it only when the common directory
+	// registered it for this exact checkout, so another checkout's index and HEAD are never borrowed.
+	const ordinary = dotGit.isDirectory() && gitDir === join(source, ".git") && commonDir === gitDir;
+	const registeredBack = path => { try { return realpathSync(resolve(gitDir, readFileSync(path, "utf8").trim())) === join(source, ".git"); } catch { return false; } };
+	const linked = dotGit.isFile() && dirname(gitDir) === join(commonDir, "worktrees") && registeredBack(join(gitDir, "gitdir"));
+	if (!ordinary && !linked) fail("unsupported repository: ordinary Git directory or registered linked worktree required");
 	const head = git(source, ["rev-parse", "--verify", "HEAD^{commit}"]).trim();
-	const config = git(source, ["config", "--local", "--list"]);
-	if (existsSync(join(source, ".git", "shallow")) || existsSync(join(source, ".git", "objects", "info", "alternates")) ||
-		/^(core\.sparsecheckout=true|extensions\.partialclone=|remote\..*\.promisor=true)/mi.test(config) || git(source, ["for-each-ref", "--format=%(refname)", "refs/replace"]).trim()) fail("unsupported shallow, shared, sparse, partial or replaced Git history");
+	// Global and system config are disabled in env, so --list reads only repository and per-worktree config.
+	const config = git(source, ["config", "--list"]);
+	// Git also reads yes, on and 1 as true, and a later scope (config.worktree) overrides an earlier one:
+	// read each matching key's effective value through --get instead of matching every listed spelling.
+	const unsetAsEmpty = args => { try { return git(source, args); } catch (error) { if (error.status === 1) return ""; throw error; } };
+	const enabled = pattern => [...new Set(unsetAsEmpty(["config", "--name-only", "--get-regexp", pattern]).split("\n").filter(Boolean))]
+		.some(key => git(source, ["config", "--type=bool", "--get", key]).trim() === "true");
+	if (existsSync(join(commonDir, "shallow")) || existsSync(join(commonDir, "objects", "info", "alternates")) ||
+		/^extensions\.partialclone=/mi.test(config) || enabled("^core\\.sparsecheckout$") || enabled("^remote\\..*\\.promisor$") || git(source, ["for-each-ref", "--format=%(refname)", "refs/replace"]).trim()) fail("unsupported shallow, shared, sparse, partial or replaced Git history");
 	if (plan.baseline !== undefined && (typeof plan.baseline !== "string" || !/^[a-f0-9]{40,64}$/.test(plan.baseline))) fail("baseline must be a full commit object ID");
-	const indexPath = join(source, ".git", "index"), indexHash = hash(readFileSync(indexPath));
+	const indexPath = join(gitDir, "index"), indexHash = hash(readFileSync(indexPath));
 	const staged = git(source, ["ls-files", "--stage", "-z"]);
 	if (names(staged).some(entry => !/^100(644|755) [a-f0-9]+ 0\t/.test(entry))) fail("unsupported index: links, submodules or conflicts");
 	if (names(git(source, ["ls-files", "-v", "-z"])).some(entry => !entry.startsWith("H "))) fail("unsupported index flags: sparse or assume-unchanged entries");

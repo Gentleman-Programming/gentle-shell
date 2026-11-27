@@ -12,7 +12,7 @@ import { SessionChanges, type SessionChangeEvidence } from "../lib/session-chang
 import test, { after, afterEach, before, mock } from "node:test";
 import type { TestContext } from "node:test";
 import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, validateToolArguments, type AssistantMessage } from "@earendil-works/pi-ai";
 import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
@@ -55,7 +55,7 @@ interface Registered {
 	parameters: { properties: Record<string, unknown> };
 	renderShell?: string;
 	name: string;
-	execute(id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext): Promise<{ content: Array<{ text: string }>; details: Record<string, unknown> }>;
+	execute(id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext): Promise<{ content: Array<{ text: string }>; details: Record<string, unknown>; isError?: boolean }>;
 	renderCall(args: unknown, theme: unknown, context?: unknown): { render(width: number): string[] };
 	renderResult(result: { content: Array<{ type: string; text: string }>; details: Record<string, unknown> | undefined }, options: { expanded: boolean; isPartial?: boolean }, theme: unknown, context?: unknown): { render(width: number): string[] };
 }
@@ -4306,6 +4306,21 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 		assert.match(listed.content[0].text, /- unknown \(global\): unverified name \[declared tools \(not verified\): glob\]/);
 		assert.match(listed.content[0].text, /- denied \(global\): only a wildcard \[declared tools: no tool names declared\]/);
 	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
+});
+
+test("subagent_list_agents accepts an optional reason field models often attach spuriously", async () => {
+	const h = fakePi();
+	gentleAgents(h.pi, {}, deps().deps);
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	const listAgents = h.tools.get("subagent_list_agents")!;
+	const listTasks = h.tools.get("subagent_list_tasks")!;
+	const reason = "need explorer agent name for codebase mapping";
+	for (const tool of [listAgents, listTasks]) {
+		validateToolArguments(tool as never, { type: "toolCall", id: "c-reason", name: tool.name, arguments: { reason } });
+		const result = await tool.execute("c-reason", { reason }, undefined, undefined, ctx);
+		assert.notEqual(result.isError, true);
+	}
 });
 
 test("subagent_list_agents and subagent_run in task mode launch a child with the resolved profile and return its answer", async () => {

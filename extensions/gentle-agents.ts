@@ -563,6 +563,15 @@ const ACTION_HEADING: Record<string, string> = {
 	list_tasks: "Agent tasks",
 	list_agents: "Agent roster",
 };
+// Models trained on orchestration tools often attach `reason` to every call; listing tools ignore it.
+const LIST_TOOL_PARAMS = {
+	properties: {
+		reason: {
+			type: "string",
+			description: "Optional caller note. Ignored for this read-only listing tool.",
+		},
+	},
+} as const;
 
 // The state word as a scanable pill: uppercase, colored by the state's role.
 function statusPill(status: string, theme: CardTheme): string {
@@ -3404,7 +3413,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		},
 	});
 
-	tool("list_agents", "List the subagents defined for this project and user, with their descriptions and declared tool inventory.", { properties: {} }, async (_params, ctx) => {
+	tool("list_agents", "List the subagents defined for this project and user, with their descriptions and declared tool inventory. No required arguments; an optional reason is ignored.", LIST_TOOL_PARAMS, async (_params, ctx) => {
 		const { agents, errors, notices } = discoverAgents(roots(ctx));
 		const lines = agents.map((agent) => `- ${agent.name} (${agent.scope}): ${agent.description || "no description"} ${declaredToolInventory(agent)}`);
 		const problems = [...errors, ...notices].map((problem) => `! ${problem}`);
@@ -3486,7 +3495,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		return text(isFinished(task.status) ? finishedText(task) : `Task ${task.id} is still ${task.status} (last: ${task.lastStep}).`, taskDetails(task));
 	});
 
-	tool("list_tasks", "List the subagent tasks of this session, newest first.", { properties: {} }, async (_params, ctx) => {
+	tool("list_tasks", "List the subagent tasks of this session, newest first. No required arguments; an optional reason is ignored.", LIST_TOOL_PARAMS, async (_params, ctx) => {
 		await sessionRestoration;
 		const sessionId = ctx.sessionManager.getSessionId() ?? "";
 		const tasks = store.list(sessionId);

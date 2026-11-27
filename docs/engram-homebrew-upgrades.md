@@ -20,7 +20,7 @@ curl --noproxy '*' --fail --silent --show-error --max-time 3 http://127.0.0.1:74
 curl --noproxy '*' --fail --silent --show-error --max-time 3 http://127.0.0.1:7437/compatibility
 ```
 
-The first two show the Homebrew version and the path of its executable. The `version` in the `/health` answer is the version of the server actually running. Shell reuses that server only when `/compatibility` answers `"status":"ready"` with `"active_reuse_authorized":true`; any other answer from a listening server means Shell disables memory for that launch. If the request fails because nothing listens on the port, Shell instead starts its bundled core on the next launch.
+The first two show the Homebrew version and the path of its executable. The `version` in the `/health` answer is the version of the server actually running. Shell reuses that server only when its `/compatibility` answer meets the [complete reuse contract](bundled-install.md#compatible-reuse-and-authorization), which includes `"status":"ready"` and `"active_reuse_authorized":true` among other fields; any other answer from a listening server means Shell disables memory for that launch. If the request fails because nothing listens on the port, Shell starts its bundled core on the next launch only when its [startup safety checks](bundled-install.md#decision) pass; a missing or unverified core, or a store migrated by a newer Engram, keeps memory disabled.
 
 To see which executable that server runs from, find the process listening on the port:
 

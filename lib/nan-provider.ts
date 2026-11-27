@@ -1,5 +1,8 @@
 import * as piAi from "@earendil-works/pi-ai";
-import type { Provider, ProviderStreams, RefreshModelsContext } from "@earendil-works/pi-ai";
+import type { Provider, RefreshModelsContext } from "@earendil-works/pi-ai";
+// The bare root lacks the factory outside Pi's extension loader (native hosts);
+// compat exposes it in both. Revisit when Pi retires compat.
+import { openAICompletionsApi } from "@earendil-works/pi-ai/compat";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 export const NAN_PROVIDER_ID = "nan";
@@ -183,13 +186,7 @@ function cloneCatalog(models: readonly NanChatModelConfig[]): NanChatModelConfig
 /** Native auth belongs to the provider; Pi persists only a successful login result. */
 export function createNanProviderConfig(options: NanProviderOptions = {}): Provider<"openai-completions"> {
 	const config = createCatalogConfig(options);
-	// Pi's extension loader aliases the bare root to compat, which exposes this
-	// host-owned lazy API factory. Do not import an SDK implementation subpath.
-	const api = piAi.lazyApi(async () => {
-		const runtime = piAi as typeof piAi & { openAICompletionsApi?: () => ProviderStreams };
-		if (!runtime.openAICompletionsApi) throw new Error("NaN requires Pi's OpenAI completions API factory");
-		return runtime.openAICompletionsApi();
-	});
+	const api = piAi.lazyApi(async () => openAICompletionsApi());
 	return {
 		id: NAN_PROVIDER_ID,
 		name: "NaN",

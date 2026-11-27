@@ -2128,6 +2128,19 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **Offline reload.** `reload_credentials` never allows the network, so it does not fetch model catalogs.
 - **No event.** Ask again, or call `reload_credentials`, after a change elsewhere.
 
+## Provider sign-in outside the channel
+
+A host that signs in with its own Pi `ModelRuntime` (the desktop app's sign-in helper) loads no extensions, so it does not see the providers gentle-pi registers, such as NaN. The package publishes them as `runtime/provider-configs.mjs`:
+
+```js
+import { getProviderConfigs } from "<gentle-pi>/runtime/provider-configs.mjs";
+for (const provider of getProviderConfigs()) runtime.registerNativeProvider(provider);
+```
+
+- **Same providers as the session.** Each entry is the provider the extension registers, with its own `login()`, so `runtime.login()` stores the result in `auth.json` exactly as `/login` does.
+- **No credential on the channel.** The secret goes from the host's prompt to Pi's runtime; nothing crosses Desktop RPC.
+- **gentle-pi's providers only.** Third-party extension providers are not included.
+
 ## Verification
 
 ```sh

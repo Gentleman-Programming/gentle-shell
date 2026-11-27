@@ -437,18 +437,20 @@ export function renderTodoSection(state: TodoState, theme: TodoTheme, width: num
 	});
 	const open = state.tasks.filter((task) => task.status !== TODO_STATUS.DONE && task.status !== TODO_STATUS.DROPPED);
 	if (options.collapsed) {
-		const current = [TODO_STATUS.IN_PROGRESS, TODO_STATUS.PENDING, TODO_STATUS.BLOCKED].map((status) => open.find((task) => task.status === status)).find(Boolean);
+		const current = [TODO_STATUS.IN_PROGRESS, TODO_STATUS.BLOCKED, TODO_STATUS.PENDING].map((status) => open.find((task) => task.status === status)).find(Boolean);
 		const row = current
 			? `${theme.fg(GLYPH_ROLE[current.status], STATUS_GLYPH[current.status])} ${theme.fg(STATUS_ROLE[current.status], current.title)}`
 			: `${theme.fg(GLYPH_ROLE[TODO_STATUS.DONE], STATUS_GLYPH[TODO_STATUS.DONE])} ${theme.fg(NOTE_ROLE, `${done} done`)}`;
 		return { header, body: [renderPanelRow(width, row)] };
 	}
 	const body: string[] = [];
+	// Keep the current plan above historical totals, retaining the user's order
+	// within the plan. This makes active and blocked work visible at a glance.
+	for (const task of open) body.push(...sectionTaskRows(task, theme, width));
 	for (const [status, label] of [[TODO_STATUS.DONE, "done"], [TODO_STATUS.DROPPED, "dropped"]] as const) {
 		const count = countStatus(state, status);
 		if (count > 0) body.push(renderPanelRow(width, `${theme.fg(GLYPH_ROLE[status], STATUS_GLYPH[status])} ${theme.fg(NOTE_ROLE, `${count} ${label}`)}`));
 	}
-	for (const task of open) body.push(...sectionTaskRows(task, theme, width));
 	return { header, body };
 }
 
@@ -457,7 +459,7 @@ export function todoWorkSummary(state: TodoState, theme: TodoTheme): PanelSummar
 	if (state.tasks.length === 0) return undefined;
 	const { done, total } = todoSummary(state);
 	const planned = total - countStatus(state, TODO_STATUS.DROPPED);
-	const current = [TODO_STATUS.IN_PROGRESS, TODO_STATUS.PENDING, TODO_STATUS.BLOCKED].map((status) => state.tasks.find((task) => task.status === status)).find(Boolean);
+	const current = [TODO_STATUS.IN_PROGRESS, TODO_STATUS.BLOCKED, TODO_STATUS.PENDING].map((status) => state.tasks.find((task) => task.status === status)).find(Boolean);
 	const left = current
 		? `${theme.fg(GLYPH_ROLE[current.status], STATUS_GLYPH[current.status])} ${theme.fg(STATUS_ROLE[current.status], current.title)}`
 		: `${theme.fg(GLYPH_ROLE[TODO_STATUS.DONE], STATUS_GLYPH[TODO_STATUS.DONE])} ${theme.fg(NOTE_ROLE, `${done} done`)}`;

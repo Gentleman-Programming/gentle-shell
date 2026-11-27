@@ -4437,7 +4437,7 @@ test("an agent tool result takes the error tone from the host error flag", () =>
 	assert.doesNotMatch(render(false), /<error>/, "an ordinary result keeps the agent chrome");
 });
 
-test("the iris float tint stays on agent info cards and leaves success cards on the theme background", async () => {
+test("the iris float tint stays on agent info cards and leaves subagent boxes and success cards off it", async () => {
 	const { pi, tools, renderers } = fakePi();
 	gentleAgents(pi, {}, deps().deps);
 	const irisTint = "\x1b[48;2;26;21;38m";
@@ -4445,7 +4445,15 @@ test("the iris float tint stays on agent info cards and leaves success cards on 
 	const bgTheme = { fg: (_color: string, text: string) => text, bg: (_role: string, text: string) => `${themeBg}${text}\x1b[49m` };
 	setCardStyle(CARD_STYLE.FLOAT);
 	try {
-		const running = tools.get("subagent_status")!.renderCall({ task_id: "t1" }, bgTheme).render(80).join("\n");
+		const call = tools.get("subagent_status")!.renderCall({ task_id: "t1" }, bgTheme).render(80).join("\n");
+		assert.match(stripAnsi(call), /^┌─ /);
+		assert.ok(!call.includes(irisTint), "a live subagent call uses the event box without float tint");
+		const running = (tools.get("subagent_status")!.renderResult as (r: unknown, o: unknown, t: unknown, c: unknown) => { render(width: number): string[] })(
+			{ content: [{ type: "text", text: "Subagent explore is running." }], details: { gentleAgents: { taskId: "t1", agent: "explore", status: "running" } } },
+			{ expanded: false, isPartial: false },
+			bgTheme,
+			{ isError: false, state: {} },
+		).render(80).join("\n");
 		assert.ok(running.includes(irisTint), "an info agent card wears the iris tint");
 		const answer = renderers.get("gentle-agents.result")!({ customType: "gentle-agents.result", content: "Subagent explore (task t1, \"x\") finished.\n\nAll done.", details: { gentleAgents: { taskId: "t1", agent: "explore", status: "completed" } } }, { expanded: false }, bgTheme).render(80).join("\n");
 		assert.ok(!answer.includes(irisTint), "a completed answer card keeps the theme's success background");

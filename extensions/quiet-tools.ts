@@ -19,7 +19,7 @@ import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
 import { offerBuiltinCodemodeOptOut, type BuiltinCodemodeOptOutOptions } from "../lib/builtin-codemode-optout.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import {
-	CARD_TONE, CardFrame, cardAwaitingResult, cardBottom, cardInnerWidth, cardLine, cardRunningLine, cardTopRows, floatRows, markCardResult,
+	CARD_FAMILY, CARD_FAMILY_GLYPH, CARD_TONE, CardFrame, cardAwaitingResult, cardBottom, cardInnerWidth, cardLine, cardRunningLine, cardTopRows, familyTone, floatRows, markCardResult,
 	type CardRowContext, type CardTheme,
 } from "../lib/shell-card.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
@@ -601,11 +601,21 @@ class BoundedRows implements Component {
 // frame tone carries the status the painted Box would otherwise show. The call
 // owns the top rule; the result draws the sides and always closes the frame.
 // Until the first result exists, the call closes the frame itself.
-type ToolTone = typeof CARD_TONE.WARNING | typeof CARD_TONE.SUCCESS | typeof CARD_TONE.ERROR;
+// `bash` is an event family (DESIGN.md §C2): its box has a one-cell green
+// border, square corners and the `>_` family glyph, and the border stays green
+// while the command runs — the running state rides the body line, never the
+// border. A failure swaps the whole box to the error family.
+type ToolTone = typeof CARD_TONE.WARNING | typeof CARD_TONE.SUCCESS | typeof CARD_TONE.ERROR | typeof CARD_TONE.BASH | typeof CARD_TONE.BASH_ERROR;
 
-function toolTone(pending: boolean, failed: boolean): ToolTone {
+function toolTone(toolName: QuietToolName, pending: boolean, failed: boolean): ToolTone {
+	if (toolName === "bash") return familyTone(CARD_FAMILY.BASH, failed) as ToolTone;
 	if (failed) return CARD_TONE.ERROR;
 	return pending ? CARD_TONE.WARNING : CARD_TONE.SUCCESS;
+}
+
+/** The family glyph the call's title is bitten with. */
+function toolGlyph(toolName: QuietToolName): string {
+	return toolName === "bash" ? CARD_FAMILY_GLYPH[CARD_FAMILY.BASH] : TOOL_GLYPH[toolName];
 }
 
 class ToolCardTop implements Component {
@@ -764,15 +774,18 @@ export function createQuietToolRenderer(
 				const detail = renderContext.expanded === true && typeof callArgs.command === "string" ? `$ ${callArgs.command}` : undefined;
 				return renderGentleAiLifecycleCall(operationPath, theme, withElapsedTiming(renderContext as GentleAiRenderContext), detail);
 			}
-			const tone = toolTone(renderContext.isPartial !== false, renderContext.isError === true);
+			const tone = toolTone(toolName, renderContext.isPartial !== false, renderContext.isError === true);
 			// Same place and wording as the Gentle AI card: the expand key rides the top rule once the call finished.
 			// Pi flips isPartial to false only with a result; a card rebuilt from the
 			// session history has one even though Pi never saw its execution start.
 			const finished = renderContext.isPartial === false;
 			const hint = finished ? stripAnsi(keyHint("app.tools.expand", renderContext.expanded === true ? "to collapse" : "to expand")) : undefined;
 			// Minimal collapsed cards fit the call in the top rule; the room leaves the rule's glyph, edges and hint.
-			const summary = renderContext.expanded === true ? undefined : (inner: number) => ({ width: inner - CARD_TOP_CHROME - (hint ? visibleWidth(hint) + 2 : 0) });
-			return new ToolCardTop((inner) => formatToolCall(toolName, callArgs, theme, summary?.(inner)), tone, theme, TOOL_GLYPH[toolName], hint, renderContext, toolName === "bash");
+			// The family glyph counts in that room: `>_` is two cells wide where the plain `$` was one, and a title that
+			// overruns the rule spills into a continuation row, which breaks the one-row contract of a collapsed card.
+			const glyphCells = visibleWidth(toolGlyph(toolName)) - 1;
+			const summary = renderContext.expanded === true ? undefined : (inner: number) => ({ width: inner - CARD_TOP_CHROME - glyphCells - (hint ? visibleWidth(hint) + 2 : 0) });
+			return new ToolCardTop((inner) => formatToolCall(toolName, callArgs, theme, summary?.(inner)), tone, theme, toolGlyph(toolName), hint, renderContext, toolName === "bash");
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {
@@ -794,7 +807,7 @@ export function createQuietToolRenderer(
 			if (directResult) {
 				return renderGentleAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext ? withElapsedTiming(renderContext as GentleAiRenderContext) : undefined);
 			}
-			const resultTone = toolTone(options.isPartial === true, isError);
+			const resultTone = toolTone(toolName, options.isPartial === true, isError);
 			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, resultTone, theme, cacheable);
 			// Under the minimal Card content preference, every quiet tool draws
 			// the command alone while collapsed; the expand key still reveals

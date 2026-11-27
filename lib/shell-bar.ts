@@ -44,6 +44,8 @@ export interface ShellBarModel {
 	subscription: boolean;
 	usage: ProviderUsage | undefined;
 	statuses: string[];
+	/** Optional Gentle Dots HUD, identified by its registered status key. */
+	gentleDotsStatus?: string;
 	/** The permission mode published under its own status key, shown once in the status bar. */
 	permission?: { mode: string; detail?: string };
 	/** Statuses for the rail's Integrations: `statuses` without the permission keys. */
@@ -242,6 +244,8 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 export type StatusSection = "session" | "changes" | "review" | "stats" | "integrations";
 export type StatusTarget = { row: number; kind: "toggle"; section: StatusSection } | { row: number; kind: "open-changes" };
 export interface StatusSectionsOptions {
+	/** Optional subset for a selected agentic sidebar tab. */
+	sections?: ReadonlySet<StatusSection>;
 	/** Keep the session name (no title row shows it). */
 	session?: boolean;
 	/** Sections folded to their header. */
@@ -312,7 +316,7 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 	// transparent rail can draw every section as its own card.
 	const groups: Array<{ start: number; end: number }> = [];
 	const loose: number[] = [];
-	sections.forEach((section, index) => {
+	sections.filter((section) => !options.sections || !section.key || options.sections.has(section.key)).forEach((section, index) => {
 		if (index) lines.push(...gap);
 		const start = lines.length;
 		if (section.key && section.header) {
@@ -346,7 +350,12 @@ function projectIdentity(cwd: string, theme: ShellBarTheme): { name: string; ful
 /** `✿ name  path` left; the session name, or the model and profile on mobile, right. */
 export function renderShellTitleRow(model: ShellBarModel, theme: ShellBarTheme, width: number, options: { model?: boolean } = {}): string {
 	const target = Math.max(0, Math.floor(width));
-	const left = projectIdentity(model.cwd, theme).full;
+	const path = sanitizeStatus(model.cwd);
+	const name = path.split("/").filter(Boolean).pop() ?? path;
+	// The split layout has a dedicated status bar for the branch. On narrow
+	// screens the title keeps it because that status bar may not be present.
+	const branch = options.model && model.branch ? `  ${theme.fg("muted", `· ${sanitizeStatus(model.branch)}`)}` : "";
+	const left = `${theme.fg("accent", "◆")} ${theme.fg("accent", theme.bold("GENTLE"))}  ${theme.fg("dim", "/")}  ${theme.fg("text", theme.bold(name))}${branch}`;
 	// Mobile: the narrow status bar leaves the model out, so the title row carries
 	// it with the agent profile; wide, the status bar carries both and this row keeps the session.
 	const profileName = model.profile ? sanitizeStatus(model.profile) : "";
@@ -376,7 +385,8 @@ export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme,
 	const divider = ` ${theme.fg(ROLE.SEPARATOR, STATUS_BAR_DIVIDER)} `;
 	const join = (segments: string[]) => segments.filter(Boolean).join(divider);
 	const dirty = model.dirty ? theme.fg(ROLE.DIRTY, `±${model.dirty}`) : "";
-	const branch = [model.branch ? theme.fg(ROLE.BRANCH, model.branch) : "", dirty].filter(Boolean).join(" ");
+	const safeBranch = model.branch ? sanitizeStatus(model.branch) : "";
+	const branch = [safeBranch ? theme.fg(ROLE.BRANCH, safeBranch) : "", dirty].filter(Boolean).join(" ");
 	const mode = model.permission && model.permission.mode !== "NORMAL" ? theme.fg("warning", theme.bold(modeBadge(sanitizeStatus(model.permission.mode)))) : "";
 	// Without a rail (mobile) the running jobs keep their compact count here.
 	const runningJobs = extras.jobs ? (model.jobs?.filter((job) => job.status === undefined).length ?? 0) : 0;
@@ -393,6 +403,9 @@ export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme,
 	const cost = showCounters ? costSegment(model.costTotal, model.subscription, theme) : "";
 	const contexts = showCounters ? contextSegments(model, theme, paint, !minimal) : [];
 	const counterStages = showCounters ? contexts.map((context) => [context, cost]) : [[]];
+	// Context is already drawn by the shell. Add only the remaining Gentle Dots
+	// fields and let them yield before model, context and cost at narrow widths.
+	const gentleHud = model.gentleDotsStatus?.split(" │ ").slice(1).map(sanitizeStatus).filter(Boolean).join(" │ ") ?? "";
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
 	const stages: Array<UsageStage | undefined> = !showCounters ? [undefined] : minimal ? ["text", "primary", undefined] : ["full", "text", "primary", undefined];
 	const attempts = [...stages.flatMap((stage) => [{ stage, withExec: true, withTier: true, withProfile: true }, ...(profile ? [{ stage, withExec: true, withTier: true, withProfile: false }] : [])]),
@@ -400,17 +413,22 @@ export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme,
 	// Retry without the headroom label before giving up existing status text.
 	for (const { stage, withExec, withTier, withProfile } of attempts) for (const counters of counterStages) {
 		const usage = stage ? usageSegmentText(windows, theme, stage, minimal ? undefined : usageHint, paint) : "";
-		const right = join([withExec ? exec + (exec && withTier ? tier : "") + (exec && withProfile ? profile : "") : "", ...counters, usage]);
+		const rightSegments = [withExec ? exec + (exec && withTier ? tier : "") + (exec && withProfile ? profile : "") : "", ...counters];
+		let right = join([...rightSegments, usage]);
+		if (gentleHud) {
+			const withHud = join([...rightSegments, theme.fg(ROLE.STATUS, gentleHud), usage]);
+			if (visibleWidth(left) + (withHud ? RIGHT_PADDING : 0) + visibleWidth(withHud) <= room) right = withHud;
+		}
 		let shownLeft = left;
 		if (visibleWidth(shownLeft) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > room) {
-			if (!model.branch || visibleWidth(model.branch) <= COMPACT_BRANCH_WIDTH) continue;
+			if (!safeBranch || visibleWidth(safeBranch) <= COMPACT_BRANCH_WIDTH) continue;
 			// Reserve the dirty count and the permission/job badges before clipping
 			// the branch itself. Keep a recognizable prefix while usage is present;
 			// after usage gives way, a shorter prefix can still save model and effort.
 			const protectedWidth = visibleWidth(join([dirty, tail])) + (dirty ? 1 : tail ? visibleWidth(divider) : 0);
 			const branchRoom = room - visibleWidth(right) - (right ? RIGHT_PADDING : 0) - protectedWidth;
 			if (branchRoom < (stage ? COMPACT_BRANCH_WIDTH : 4)) continue;
-			const shortened = theme.fg(ROLE.BRANCH, clipPanelText(model.branch, branchRoom));
+			const shortened = theme.fg(ROLE.BRANCH, clipPanelText(safeBranch, branchRoom));
 			shownLeft = join([[shortened, dirty].filter(Boolean).join(" "), tail]);
 			if (visibleWidth(shownLeft) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > room) continue;
 		}

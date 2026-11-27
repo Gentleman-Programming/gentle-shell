@@ -28,6 +28,267 @@ export interface PanelTheme extends CardTheme {
 	bold?(text: string): string;
 }
 
+// Console panels (DESIGN.md §C2, design/gentle-tui-cinlo/01-cinlo-console.html):
+// a box whose title is bitten into the top rule (`┌─ ◆ Sesión ── [ 4/6 ] ┐`),
+// the content below and, when the panel has rows, the scroll bar bitten into
+// the bottom rule (`└── [ 1..7/7 ▼ ] ──┘`). One column of border on each side.
+
+/** Literal the console uses for every panel frame. */
+export const CONSOLE_GLYPH = "◆";
+
+/** Frame role for a console panel: the box is structure, never emphasis. */
+export const CONSOLE_FRAME_ROLE = "border";
+/** Role of the bitten title (glyph and name) and of the top-rule count. */
+export const CONSOLE_TITLE_ROLE = "accent";
+
+/** `[ 1..7/7 ▼ ]`: the rows a console panel shows against its total. */
+export function consoleScrollBar(first: number, last: number, total: number): string {
+	if (total <= 0) return "";
+	const top = Math.max(1, Math.min(first, total));
+	const bottom = Math.max(top, Math.min(last, total));
+	return `[ ${top}..${bottom}/${total} ▼ ]`;
+}
+
+export interface ConsolePanel {
+	/** Panel name as it is bitten into the top rule, e.g. `Sesión`. */
+	title: string;
+	/** Right-aligned tag on the top rule, e.g. `[ 4/6 ]` or `6%`. */
+	count?: string;
+	/** Body rows, already styled and rendered at `width - 2`. */
+	rows: readonly string[];
+}
+
+/** Splits an interior slice into a surface-painted run, keeping SGR resets armed. */
+function consoleInterior(theme: CardTheme, text: string): string {
+	const open = panelSurfaceOpener(theme);
+	return paintSurfaceRow(text, open);
+}
+
+/**
+ * Whether the "Cine-Estelar" skin is active (`GENTLE_SHELL_SKIN=cine-estelar`, default).
+ * Setting `GENTLE_SHELL_SKIN=cinlo` or `GENTLE_SHELL_SKIN=classic` switches back to square corners.
+ */
+export function isCineEstelarSkin(env: NodeJS.ProcessEnv = process.env): boolean {
+	const raw = (env.GENTLE_SHELL_SKIN ?? "cine-estelar").trim().toLowerCase();
+	return raw !== "cinlo" && raw !== "classic" && raw !== "off" && raw !== "0";
+}
+
+/** True when running in the live Gentle Shell TUI with the Cine-Estelar skin enabled. */
+export function isCineEstelarLive(env: NodeJS.ProcessEnv = process.env): boolean {
+	return isCineEstelarSkin(env) && !env.NODE_TEST_CONTEXT;
+}
+
+export type RgbStop = readonly [number, number, number];
+
+export const GLASS_SLATE_BG_STOPS: readonly RgbStop[] = [
+	[36, 45, 64],
+	[50, 61, 86],
+	[43, 53, 75],
+	[34, 42, 60],
+];
+
+export const GLASS_SLATE_BORDER_STOPS: readonly RgbStop[] = [
+	[104, 120, 152],
+	[134, 150, 182],
+	[98, 112, 144],
+];
+
+export const GLASS_CONTEXT_BG_STOPS: readonly RgbStop[] = [
+	[32, 78, 98],
+	[46, 90, 112],
+	[62, 66, 110],
+	[72, 52, 106],
+];
+
+export const GLASS_CONTEXT_BORDER_STOPS: readonly RgbStop[] = [
+	[102, 234, 248],
+	[148, 202, 255],
+	[192, 150, 255],
+];
+
+export function interpolateRgb(stops: readonly RgbStop[], t: number): RgbStop {
+	if (stops.length === 0) return [30, 34, 50];
+	if (stops.length === 1 || t <= 0) return stops[0]!;
+	if (t >= 1) return stops[stops.length - 1]!;
+	const scaled = t * (stops.length - 1);
+	const idx = Math.min(stops.length - 2, Math.floor(scaled));
+	const frac = scaled - idx;
+	const a = stops[idx]!;
+	const b = stops[idx + 1]!;
+	return [
+		Math.round(a[0] + (b[0] - a[0]) * frac),
+		Math.round(a[1] + (b[1] - a[1]) * frac),
+		Math.round(a[2] + (b[2] - a[2]) * frac),
+	];
+}
+
+/**
+ * Paints a horizontal 24-bit RGB background gradient across `text`, preserving
+ * foreground SGR sequences and visible width.
+ */
+export function paintHorizontalGradientRow(
+	text: string,
+	width: number,
+	bgStops: readonly RgbStop[],
+	defaultFg?: RgbStop,
+): string {
+	const total = Math.max(1, width);
+	let col = 0;
+	let out = "";
+	let lastBg = "";
+	const defaultFgSgr = defaultFg ? `\x1b[38;2;${defaultFg[0]};${defaultFg[1]};${defaultFg[2]}m` : "";
+	if (defaultFgSgr) out += defaultFgSgr;
+	for (const unit of text.match(/\x1b\[[0-9;]*m|[\s\S]/gu) ?? []) {
+		if (unit.startsWith("\x1b[")) {
+			if (unit === "\x1b[0m" || unit === "\x1b[m") {
+				out += `\x1b[22;23;24;25;27;28;29;39m${defaultFgSgr}`;
+				lastBg = "";
+			} else if (unit === "\x1b[49m") {
+				lastBg = "";
+			} else if (unit === "\x1b[39m" && defaultFgSgr) {
+				out += defaultFgSgr;
+			} else {
+				out += unit;
+			}
+			continue;
+		}
+		const bucket = Math.floor(col / 2) * 2;
+		const [r, g, b] = interpolateRgb(bgStops, bucket / Math.max(1, total - 1));
+		const bg = `\x1b[48;2;${r};${g};${b}m`;
+		if (bg !== lastBg) {
+			out += bg;
+			lastBg = bg;
+		}
+		out += unit;
+		col += Math.max(1, visibleWidth(unit));
+	}
+	return `${out}\x1b[49m${defaultFgSgr ? "\x1b[39m" : ""}`;
+}
+
+function paintBorderChar(ch: string, col: number, total: number, borderStops: readonly RgbStop[]): string {
+	const t = total <= 1 ? 0 : col / (total - 1);
+	const [fr, fg, fb] = interpolateRgb(borderStops, t);
+	return `\x1b[49m\x1b[38;2;${fr};${fg};${fb}m${ch}\x1b[39m`;
+}
+
+/** `╭─ ◆ Sesión ───────── [ 4/6 ] ─╮`, exactly `width` columns. */
+export function renderConsoleTop(
+	theme: PanelTheme,
+	width: number,
+	panel: { title: string; count?: string },
+	variant: "slate" | "context" = "slate",
+): string {
+	const target = Math.max(0, Math.floor(width));
+	const [tl, tr] = isCineEstelarSkin() ? ["╭", "╮"] : ["┌", "┐"];
+	if (isCineEstelarLive()) {
+		const bgStops = variant === "context" ? GLASS_CONTEXT_BG_STOPS : GLASS_SLATE_BG_STOPS;
+		const borderStops = variant === "context" ? GLASS_CONTEXT_BORDER_STOPS : GLASS_SLATE_BORDER_STOPS;
+		const glyphColor = variant === "context" ? "\x1b[38;2;120;240;255m" : "\x1b[38;2;199;155;255m";
+		const titleColor = "\x1b[1m\x1b[38;2;242;246;255m";
+		const countColor = variant === "context" ? "\x1b[38;2;232;244;255m" : "\x1b[38;2;210;220;242m";
+		const title = `${glyphColor}${CONSOLE_GLYPH}\x1b[39m ${titleColor}${panel.title}\x1b[22m\x1b[39m`;
+		const count = panel.count ? `${countColor}${panel.count}\x1b[39m` : "";
+		const leftPart = ` ${title}`;
+		const rightPart = count ? `${count} ` : "";
+		const inner = Math.max(0, target - 2);
+		const gap = Math.max(1, inner - visibleWidth(leftPart) - visibleWidth(rightPart));
+		const interior = clipPanelText(`${leftPart}${" ".repeat(gap)}${rightPart}`, inner);
+		const pad = " ".repeat(Math.max(0, inner - visibleWidth(interior)));
+		return (
+			paintBorderChar("╭", 0, target, borderStops) +
+			paintHorizontalGradientRow(interior + pad, inner, bgStops) +
+			paintBorderChar("╮", target - 1, target, borderStops)
+		);
+	}
+	const frame = (text: string) => theme.fg(CONSOLE_FRAME_ROLE, text);
+	const bold = theme.bold ? theme.bold(panel.title) : panel.title;
+	const title = theme.fg(CONSOLE_TITLE_ROLE, `${CONSOLE_GLYPH} ${bold}`);
+	const count = panel.count ? theme.fg(CONSOLE_TITLE_ROLE, panel.count) : "";
+	// ╭ ─ space TITLE space RULE [space COUNT space] ─ ╮
+	const fixed = 2 + 1 + visibleWidth(title) + 1 + (count ? 1 + visibleWidth(count) + 1 : 0) + 1 + 1;
+	const room = target - fixed;
+	if (room < 0) return frame(tl) + consoleInterior(theme, clipPanelText(` ${title} `, Math.max(0, target - 2))) + frame(tr);
+	const middle = `${theme.fg(CONSOLE_FRAME_ROLE, "─".repeat(room))}${count ? ` ${count} ` : ""}`;
+	return `${frame(tl)}${consoleInterior(theme, `─ ${title} ${middle}`)}${frame("─")}${frame(tr)}`;
+}
+
+/** `╰──────── [ 1..7/7 ▼ ] ─╯`, exactly `width` columns; an empty bar paints a plain rule. */
+export function renderConsoleBottom(
+	theme: PanelTheme,
+	width: number,
+	bar = "",
+	variant: "slate" | "context" = "slate",
+): string {
+	const target = Math.max(0, Math.floor(width));
+	const [bl, br] = isCineEstelarSkin() ? ["╰", "╯"] : ["└", "┘"];
+	if (isCineEstelarLive()) {
+		const borderStops = variant === "context" ? GLASS_CONTEXT_BORDER_STOPS : GLASS_SLATE_BORDER_STOPS;
+		const fixed = 2 + (bar ? 2 + visibleWidth(bar) : 0);
+		const room = target - fixed;
+		if (room < 0) return paintBorderChar(bl, 0, target, borderStops) + paintBorderChar(br, 1, target, borderStops);
+		let rule = "\x1b[49m";
+		for (let i = 0; i < room; i++) {
+			const [fr, fg, fb] = interpolateRgb(borderStops, (i + 1) / Math.max(1, target - 1));
+			rule += `\x1b[38;2;${fr};${fg};${fb}m─`;
+		}
+		rule += "\x1b[39m";
+		const middle = bar ? `\x1b[49m\x1b[38;2;180;194;224m ${bar} \x1b[39m` : "";
+		return (
+			paintBorderChar(bl, 0, target, borderStops) +
+			rule +
+			middle +
+			paintBorderChar(br, target - 1, target, borderStops)
+		);
+	}
+	const frame = (text: string) => theme.fg(CONSOLE_FRAME_ROLE, text);
+	const middle = bar ? theme.fg("muted", bar) : "";
+	const fixed = 2 + (bar ? 2 + visibleWidth(bar) : 0);
+	const room = target - fixed;
+	if (room < 0) return frame(bl) + frame(br);
+	const rule = theme.fg(CONSOLE_FRAME_ROLE, "─".repeat(room));
+	const body = bar ? `${rule} ${middle} ` : rule;
+	return `${frame(bl)}${consoleInterior(theme, body)}${frame(br)}`;
+}
+
+/** `│ body │` at `width` columns, the body clipped and padded to `width - 2`. */
+export function renderConsoleRow(
+	theme: PanelTheme,
+	width: number,
+	row: string,
+	variant: "slate" | "context" = "slate",
+): string {
+	const target = Math.max(0, Math.floor(width));
+	const inner = Math.max(0, target - 2);
+	const shown = clipPanelText(row, inner);
+	const padded = `${shown}${" ".repeat(Math.max(0, inner - visibleWidth(shown)))}`;
+	if (isCineEstelarLive()) {
+		const bgStops = variant === "context" ? GLASS_CONTEXT_BG_STOPS : GLASS_SLATE_BG_STOPS;
+		const borderStops = variant === "context" ? GLASS_CONTEXT_BORDER_STOPS : GLASS_SLATE_BORDER_STOPS;
+		return (
+			paintBorderChar("│", 0, target, borderStops) +
+			paintHorizontalGradientRow(padded, inner, bgStops) +
+			paintBorderChar("│", target - 1, target, borderStops)
+		);
+	}
+	const frame = theme.fg(CONSOLE_FRAME_ROLE, "│");
+	return frame + consoleInterior(theme, padded) + frame;
+}
+
+/**
+ * A whole console panel: top rule with the bitten title and count, one row per
+ * body line, and the bottom rule carrying the scroll bar over the rows it shows.
+ * `total` is what the panel could show (the caller owns any cap); omitting it
+ * makes the bar report every row.
+ */
+export function renderConsolePanel(theme: PanelTheme, width: number, panel: ConsolePanel, view?: { first: number; last: number; total: number }): string[] {
+	const variant: "slate" | "context" = panel.title === "Contexto" ? "context" : "slate";
+	const rows = panel.rows.map((row) => renderConsoleRow(theme, width, row, variant));
+	// Only a panel that shows a slice of its rows reports a range; a panel that
+	// fits closes with a plain rule, like the mockup's Sesión and Engram.
+	const bar = view ? consoleScrollBar(view.first, view.last, view.total) : "";
+	return [renderConsoleTop(theme, width, panel, variant), ...rows, renderConsoleBottom(theme, width, bar, variant)];
+}
+
 export interface PanelHeader {
 	title: string;
 	/** Right-aligned summary, e.g. `2/6` or `1 running`. */
@@ -66,7 +327,7 @@ export function fitPanelLine(left: string, right: string, width: number): string
 }
 
 export function renderPanelHeader(theme: PanelTheme, width: number, header: PanelHeader): string {
-	const glyph = paintHoverable(theme, header.open ? "▾" : "▸", header.hovered ?? false, "muted");
+	const glyph = paintHoverable(theme, header.open ? "▾" : "▸", header.hovered ?? false, "accent");
 	const name = header.title.toUpperCase();
 	// The hover paints the name too: a lone glyph is too small a signal, and other rail controls paint their text.
 	const title = theme.fg(header.hovered ? HOVER_ROLE : "text", theme.bold ? theme.bold(name) : name);
@@ -122,7 +383,7 @@ export interface PanelSheet {
 	maxScroll: number;
 }
 
-const SHEET_ORDER = ["todo", "jobs", "agents", "footer"] as const;
+const SHEET_ORDER = ["todo", "agents", "jobs", "footer"] as const;
 
 /**
  * The rail's sections as a full-width sheet (/gentle:panel, mobile): a fixed

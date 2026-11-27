@@ -34,8 +34,8 @@ const OWNING = {
   railColumns: SIDEBAR_RAIL_COLUMNS,
 };
 
-test("the published rail reservation pins the gentle-shell rail geometry (RAIL_WIDTH 50 + GAP 3)", () => {
-  assert.equal(SIDEBAR_RAIL_COLUMNS, 53);
+test("the published rail reservation pins the gentle-shell rail geometry (CONSOLE_COLUMNS.wide 62 + CONSOLE_BORDER 1)", () => {
+  assert.equal(SIDEBAR_RAIL_COLUMNS, 63);
 });
 
 test("padding constant pins the user-directed 1-column breathing room", () => {
@@ -95,7 +95,7 @@ test("returns 0 unless the sidebar publishes a positive integer rail reservation
 });
 
 test("returns the rail reservation plus padding only while the sidebar owns the host", () => {
-  assert.equal(editorOverlayMargin(terminalWithState(OWNING)), 54);
+  assert.equal(editorOverlayMargin(terminalWithState(OWNING)), 64);
   assert.equal(
     editorOverlayMargin(terminalWithState({ ...OWNING, railColumns: 40 })),
     41,
@@ -155,16 +155,16 @@ function sidebarHost(columns: number) {
 }
 
 test("the installed sidebar publishes its rail reservation; the margin tracks the breakpoint", (t) => {
-  const { host, tui, root } = sidebarHost(140);
+  const { host, tui, root } = sidebarHost(180);
   t.after(installSidebar(tui, shellTheme));
   assert.equal(sidebarState(tui).railColumns, SIDEBAR_RAIL_COLUMNS);
   root[NODE]();
   assert.equal(
     editorOverlayMargin(host.terminal),
     SIDEBAR_RAIL_COLUMNS + SIDEBAR_OVERLAY_PADDING,
-    "fullscreen at the breakpoint with a painting rail",
+    "fullscreen at wide width with a painting rail",
   );
-  host.terminal.columns = 139;
+  host.terminal.columns = 119;
   root[NODE]();
   assert.equal(editorOverlayMargin(host.terminal), 0, "below the breakpoint");
 });
@@ -263,21 +263,21 @@ test("the picker keeps the native full-window overlay without a painting sidebar
 test("the picker margin stays live while the overlay is open", async () => {
   const state = { ...OWNING };
   const options = await captureOverlayOptions(terminalWithState(state));
-  assert.deepEqual(options.margin, { right: 54 });
+  assert.deepEqual(options.margin, { right: 64 });
   // Resizing below the breakpoint: pi-tui calls visible() on every render
   // pass, then re-reads margin while resolving the layout.
   state.active = false;
-  assert.equal(options.visible?.(139, 50), true);
+  assert.equal(options.visible?.(119, 50), true);
   assert.equal(options.margin, undefined);
   state.active = true;
-  assert.equal(options.visible?.(140, 50), true);
-  assert.deepEqual(options.margin, { right: 54 });
+  assert.equal(options.visible?.(180, 50), true);
+  assert.deepEqual(options.margin, { right: 64 });
 });
 
 // Review advisory A4 (#1480): the live margin must follow the REAL installed
 // sidebar after the overlay opened, not only a hand-built state object.
 test("the open picker's margin follows the real sidebar across the breakpoint and teardown", async (t) => {
-  const { host, tui, root } = sidebarHost(139);
+  const { host, tui, root } = sidebarHost(119);
   let uninstall = installSidebar(tui, shellTheme);
   t.after(() => uninstall());
   root[NODE]();
@@ -285,42 +285,42 @@ test("the open picker's margin follows the real sidebar across the breakpoint an
   assert.equal(options.margin, undefined, "opened below the breakpoint: no rail");
 
   // Widening across the breakpoint paints the rail while the picker is open.
-  host.terminal.columns = 140;
+  host.terminal.columns = 180;
   root[NODE]();
-  assert.equal(options.visible?.(140, 50), true);
+  assert.equal(options.visible?.(180, 50), true);
   assert.deepEqual(options.margin, {
     right: SIDEBAR_RAIL_COLUMNS + SIDEBAR_OVERLAY_PADDING,
   });
 
   // Narrowing below it removes the rail again.
-  host.terminal.columns = 139;
+  host.terminal.columns = 119;
   root[NODE]();
-  assert.equal(options.visible?.(139, 50), true);
+  assert.equal(options.visible?.(119, 50), true);
   assert.equal(options.margin, undefined);
 
   // Back at the breakpoint, then the sidebar is torn down: the rail
   // disappears and the picker returns to the full window.
-  host.terminal.columns = 140;
+  host.terminal.columns = 180;
   root[NODE]();
-  assert.equal(options.visible?.(140, 50), true);
+  assert.equal(options.visible?.(180, 50), true);
   assert.deepEqual(options.margin, {
     right: SIDEBAR_RAIL_COLUMNS + SIDEBAR_OVERLAY_PADDING,
   });
   uninstall();
   uninstall = () => {};
-  assert.equal(options.visible?.(140, 50), true);
+  assert.equal(options.visible?.(180, 50), true);
   assert.equal(options.margin, undefined);
 });
 
 test("the margin getter reports the value refreshed by the last visible() pass", async () => {
   const state = { ...OWNING };
   const options = await captureOverlayOptions(terminalWithState(state));
-  assert.deepEqual(options.margin, { right: 54 });
+  assert.deepEqual(options.margin, { right: 64 });
   // pi-tui re-reads margin several times per layout; between visible()
   // passes every read agrees, and the next pass picks up the change.
   state.active = false;
-  assert.deepEqual(options.margin, { right: 54 });
-  assert.equal(options.visible?.(139, 50), true);
+  assert.deepEqual(options.margin, { right: 64 });
+  assert.equal(options.visible?.(119, 50), true);
   assert.equal(options.margin, undefined);
   assert.equal(options.margin, undefined);
 });

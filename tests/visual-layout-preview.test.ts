@@ -12,7 +12,7 @@ test("the layout schematic draws where the header, Status and sections go", () =
 	assert.doesNotMatch(neutral[0]!, /┬|Status/);
 	assert.match(neutral.join("\n"), /todos/);
 	assert.doesNotMatch(neutral.join("\n"), /stats/);
-	assert.match(neutral[3]!, /bar under 140 cols/, "auto explains its fallback");
+	assert.match(neutral[3]!, /bar under 120 cols/, "auto explains its fallback");
 
 	const power = layoutSchematic(applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.POWER_USER)).split("\n");
 	assert.match(power.join("\n"), /stats/, "Power user shows its Stats section");

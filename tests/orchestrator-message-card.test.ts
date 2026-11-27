@@ -148,8 +148,9 @@ for (const style of Object.values(CARD_STYLE)) {
 						call.invalidate();
 						const callRows = call.render(width);
 						const bodyRows = expanded ? 4 : 3;
-						const expectedRows = pending ? bodyRows + (style === CARD_STYLE.FLOAT ? 5 : 3) : style === CARD_STYLE.FLOAT ? 2 : 1;
+						const expectedRows = pending ? bodyRows + 3 : 1;
 						assert.equal(callRows.length, expectedRows, `${style}/${state} call height at width ${width}`);
+						assert.match(stripAnsi(callRows[0]!), /^┌─ /);
 						const rows = [...callRows, ...(pending ? [] : result.render(width))];
 						const text = stripAnsi(rows.join("\n"));
 						assert.ok(text.includes(title));

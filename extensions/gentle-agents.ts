@@ -3015,7 +3015,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						// has to travel through the shared row state: a rejected call wears the
 						// error frame instead of reading as a delegation still in flight. The
 						// row context is a snapshot, so its own isError cannot be trusted here.
-						const tone = row.isError || row.state?.agentFailed ? CARD_TONE.ERROR : CARD_TONE.INFO;
+						// A live delegation is the subagent event family (DESIGN.md §C2): its
+						// box is the rose one, and the settled result keeps its own state tone
+						// below, so finished and failed delegations still read at a glance.
+						const tone = row.isError || row.state?.agentFailed ? CARD_TONE.ERROR : CARD_TONE.SUBAGENT;
 						const iris = agentTheme(theme, tone);
 						const hint = expandHint(!!row.expanded);
 						return floatRows(tone, iris, width, (inner) => ({

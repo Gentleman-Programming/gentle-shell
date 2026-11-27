@@ -31,7 +31,7 @@ export function layoutSchematic(settings: VisualSettings): string {
 	const main = ["conversation", input];
 	const width = MAIN + (rail ? RAIL + 1 : 0);
 	const railBottomBar = rail && (split || !top);
-	const bottom = settings.statusPlacement === "bottom" || railBottomBar ? "status bar" : settings.statusPlacement === "auto" ? "bar under 140 cols" : "";
+	const bottom = settings.statusPlacement === "bottom" || railBottomBar ? "status bar" : settings.statusPlacement === "auto" ? "bar under 120 cols" : "";
 	if (rail) {
 		return [
 			top ? `┌${rule(split ? "title" : "header", width)}┐` : `┌${rule("", MAIN)}┬${rule("Status", RAIL)}┐`,

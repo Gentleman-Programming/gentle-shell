@@ -13,7 +13,7 @@ import {
 
 const DEFAULTS: Record<string, string | undefined> = {
 	commands: "alt+k", changes: "alt+g", usage: "alt+u", preset: "alt+l", "agents.view": "alt+a",
-	"agents.stop": "alt+s", "agents.collapse": "ctrl+shift+a", "jobs.collapse": "ctrl+shift+j", "todo.collapse": "ctrl+shift+t", "stats.view": undefined,
+	"agents.stop": "alt+s", "agents.collapse": "ctrl+shift+a", "jobs.collapse": "ctrl+shift+j", "todo.collapse": "ctrl+shift+t", "console.collapse": "alt+r", "stats.view": undefined,
 };
 
 function scratch(): string {

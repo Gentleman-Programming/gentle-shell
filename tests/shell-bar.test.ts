@@ -370,8 +370,11 @@ test("shellEnabled honors GENTLE_PI_SHELL=0", () => {
 });
 
 test("renderShellSidebarBar draws panel section headers, never a card frame", () => {
+	// The chrome paints the fold glyph in the accent role and the section name in
+	// the plain text role: the console (`lib/shell-sidebar-layout.ts`) is what
+	// bites that name into a violet `┌─ ◆ …` rule, not the section header.
 	const lines = renderShellSidebarBar(model(), taggedTheme, 160);
-	assert.match(lines[0], /^<muted>▾<\/muted> <text>.*CHANGES.*<\/text>/);
+	assert.match(lines[0], /^<accent>▾<\/accent> <text>.*CHANGES.*<\/text>/);
 	assert.doesNotMatch(lines.join("\n"), /[╭╮╰╯│]/u);
 });
 
@@ -628,7 +631,7 @@ test("single top and below-input chrome includes the project identity without du
 	const split = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" as const };
 	const title = renderShellTitleRow(data, plainTheme, 240);
 	const bar = renderShellChromeBar(data, plainTheme, 240, "alt+u", split, undefined).rows.join("\n");
-	assert.match(title, /✿ 庫-shell-ui-feedback  ~\/work\/gentle-pi\/\.worktrees\/庫-shell-ui-feedback/);
+	assert.match(title, /◆ GENTLE  \/  庫-shell-ui-feedback/);
 	assert.doesNotMatch(bar, /庫-shell-ui-feedback|~\/work/);
 	assert.match(bar, /gpt-5\.5 · medium · Fast · current/);
 });
@@ -672,7 +675,7 @@ test("project path then name yield without displacing existing live values at an
 	const mobile = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "top" as const };
 	const title = renderShellTitleRow(data, plainTheme, 120, { model: true });
 	const bottom = renderShellStatusBar(data, plainTheme, 120, "alt+u", mobile, undefined, { jobs: true }).rows[0]!;
-	assert.match(title, /✿ folder  ~\/work\/gentle-pi\/\.worktrees\/folder/);
+	assert.match(title, /◆ GENTLE  \/  folder/);
 	assert.doesNotMatch(bottom, /folder|~\/work/, "the narrow mobile title already owns the identity");
 });
 
@@ -1094,4 +1097,16 @@ test("fullscreen bars outside the rail never list the integrations: they live on
 	setCardStyle(CARD_STYLE.FLOAT);
 	const float = renderShellBelowInputFloat(data, painted as never, 120, "alt+u", presentation)!;
 	assert.doesNotMatch(float.rows.map(stripAnsi).join("\n"), /gentle-pi · ready|MCP connected/, "no integrations under the input");
+});
+
+
+test("Gentle Dots HUD joins the status bar only when space is available", () => {
+	const data = model({ gentleDotsStatus: "ctx 34% │ quota 3h12 │ wt 2 │ engram ✓" });
+	const wide = stripAnsi(renderShellStatusBar(data, plainTheme, 180).rows[0]!);
+	assert.match(wide, /quota 3h12 │ wt 2 │ engram ✓/);
+	assert.equal((wide.match(/ctx/g) ?? []).length, 1);
+	for (const width of [40, 80, 120, 180]) {
+		const line = renderShellStatusBar(data, plainTheme, width).rows[0]!;
+		assert.ok(visibleWidth(line) <= width);
+	}
 });

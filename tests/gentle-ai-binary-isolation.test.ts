@@ -60,6 +60,10 @@ test("gentleAiIsolationEnv adds the four Gentle AI variables for this package in
 		PATH: `${dirname(engram)}${delimiter}/usr/bin`,
 	});
 	assert.equal("GENTLE_AI_HOME" in base, false, "the caller's environment is not changed");
+	// #3365: an explicit GENTLE_PI_CONFIG_HOME does not change the bundled pair.
+	const explicit = gentleAiIsolationEnv({ ...base, GENTLE_PI_CONFIG_HOME: "/space/gentle-ai" }, { packageRoot });
+	assert.equal(explicit.GENTLE_AI_PI_CONFIG_DIR, join(prefix, "config", "gentle-ai"));
+	assert.equal(explicit.GENTLE_PI_CONFIG_HOME, join(prefix, "config"));
 	// Without the published Engram, Gentle AI gets no Engram to use, and PATH stays as it was.
 	rmSync(engram);
 	const without = gentleAiIsolationEnv(base, { packageRoot });

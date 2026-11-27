@@ -20,13 +20,15 @@ curl --noproxy '*' --fail --silent --show-error --max-time 3 http://127.0.0.1:74
 curl --noproxy '*' --fail --silent --show-error --max-time 3 http://127.0.0.1:7437/compatibility
 ```
 
-The first two show the Homebrew version and the path of its executable. The `version` in the `/health` answer is the version of the server actually running. Shell reuses that server only when `/compatibility` answers `"status":"ready"` with `"active_reuse_authorized":true`; any other answer, or an error, means Shell disables memory for that launch.
+The first two show the Homebrew version and the path of its executable. The `version` in the `/health` answer is the version of the server actually running. Shell reuses that server only when `/compatibility` answers `"status":"ready"` with `"active_reuse_authorized":true`; any other answer from a listening server means Shell disables memory for that launch. If the request fails because nothing listens on the port, Shell instead starts its bundled core on the next launch.
 
 To see which executable that server runs from, find the process listening on the port:
 
 ```bash
 ss -ltnpH 'sport = :7437'
 ```
+
+If several lines appear, use the one whose local address accepts connections to `127.0.0.1`: `127.0.0.1:7437`, `0.0.0.0:7437` or `*:7437`. Ignore listeners on other addresses such as `127.0.0.2:7437`.
 
 - No output: nothing is listening.
 - A line with `pid=<number>`: run `readlink /proc/<number>/exe` to print its executable.
@@ -64,7 +66,7 @@ If the server was Shell's bundled core and you want the Homebrew Engram to serve
 Sessions keep the memory decision made when they started, so open a new interactive Gentle Shell session after the restart.
 
 1. Startup must not show an `Engram memory disabled` notice. If it does, follow [Recovery and setup](bundled-install.md#recovery-and-setup).
-2. Ask the agent to run `echo "$ENGRAM_URL"` in its shell. `http://127.0.0.1:7437` means Shell verified the shared server and uses it. An empty value means memory is disabled for this session.
+2. Ask the agent to run `echo "$ENGRAM_URL"` in its shell. If you did not set `ENGRAM_URL` yourself (step 1), `http://127.0.0.1:7437` means Shell verified the shared server and uses it, and an empty value means memory is disabled for this session. A value you set yourself proves nothing: Shell keeps it even when it disables memory.
 3. Ask the agent to search memory for something you know is stored, for example a recent project decision. A result, or an empty result without an error, shows the memory tools reach the server.
 
 If any of these fail, stop. Keep the backup, do not delete the store or bypass the memory guard, and do not run the upgrade again. When you report the problem, include your Linux distribution, the Homebrew version and the `/health` version (not the whole answer), the server executable path from step 1, and the exact startup notice, without tokens, memory contents or environment dumps.

@@ -126,7 +126,7 @@ export function init(ctx) {
 		els.viewport.inert = true;
 		els.panel.inert = true;
 		els.rail.inert = true;
-		for (const control of [els.zoomOut, els.zoomIn, els.fit, els.railFit, els.design]) control.disabled = true;
+		for (const control of [els.zoomOut, els.zoomIn, els.fit, els.railFit, els.design, els.group]) control.disabled = true;
 		// Compare covers the canvas: nothing to arrange, and no minimap.
 		actions.renderArrange();
 		actions.renderMinimap();

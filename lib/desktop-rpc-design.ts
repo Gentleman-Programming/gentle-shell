@@ -28,6 +28,8 @@ export interface DesktopDesignEntry {
 	title: string;
 	/** design.json modification time in milliseconds. */
 	mtime: number;
+	/** The area the design belongs to (design.json "group"); absent when it has none. */
+	group?: string;
 }
 
 /**
@@ -118,7 +120,7 @@ export function isValidDesktopDesignOwnerState(value: unknown): value is Desktop
 
 /**
  * Projects one owner design list, rebuilding each entry with only the named
- * fields (`slug`, `title`, `mtime`) so a foreign `token`, `url`, or path member
+ * fields (`slug`, `title`, `mtime`, `group`) so a foreign `token`, `url`, or path member
  * is dropped rather than echoed. Returns `undefined` for a non-array or any
  * malformed entry, which the bridge treats as an unavailable owner instead of a
  * malformed success.
@@ -132,7 +134,8 @@ export function parseDesktopDesignEntries(value: unknown): DesktopDesignEntry[] 
 		if (typeof raw.slug !== "string" || raw.slug.length === 0) return undefined;
 		if (typeof raw.title !== "string") return undefined;
 		if (typeof raw.mtime !== "number" || !Number.isFinite(raw.mtime) || raw.mtime < 0) return undefined;
-		entries.push({ slug: raw.slug, title: raw.title, mtime: raw.mtime });
+		if (raw.group !== undefined && typeof raw.group !== "string") return undefined;
+		entries.push({ slug: raw.slug, title: raw.title, mtime: raw.mtime, ...(typeof raw.group === "string" && raw.group ? { group: raw.group } : {}) });
 	}
 	return entries;
 }

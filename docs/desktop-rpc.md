@@ -732,7 +732,7 @@ Success:
 | `running` | Whether the session's canvas server is actually running, as the owner reports it. |
 | `slug` | The slug the canvas last showed, or `null` for the system-only root. `null` is not "stopped": `running` answers that. |
 | `connectedClients` | How many canvas pages the running server has connected (live-reload streams). `0` when stopped. |
-| `designs` | The designs under `<cwd>/design` the owner's `listDesigns` reports (`slug`, `title`, `mtime`), most recent first. Empty when none exist. |
+| `designs` | The designs under `<cwd>/design` the owner's `listDesigns` reports (`slug`, `title`, `mtime`, and `group` when design.json sets one), most recent first. Empty when none exist. |
 | `url` | Present only after `includeUrl: true` **and** the interactive-host trust check. The tokenized canvas URL is a capability; it is never a default field and never a bare token. |
 
 When the design owner is absent (the extension that owns the canvas is not loaded), the answer is `design_unavailable` — never a fabricated `running: false`:

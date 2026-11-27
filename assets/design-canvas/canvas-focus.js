@@ -156,6 +156,7 @@ export function init(ctx) {
 		// The rail's Overview sits under Compare: a reload while it is open must not turn it back on.
 		els.railFit.disabled = Boolean(focused || state.compare);
 		els.design.disabled = Boolean(focused) || state.designCount === 0;
+		els.group.disabled = els.design.disabled;
 		els.back.hidden = !focused;
 		renderNavMode();
 		els.navMode.classList.toggle("gd-using", Boolean(focused));

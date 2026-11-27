@@ -59,6 +59,25 @@ body {
 	flex-direction: column;
 }
 
+/* Labelled pickers: the name shows beside the control, so the design picker says which list it is. */
+.gd-field { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+.gd-field[hidden] { display: none; }
+/* The chevron belongs to the picker: the label ends where its select ends, so the mark sits inside the select's right edge. */
+.gd-field select { padding-right: 26px; }
+.gd-field::after {
+	content: "";
+	position: absolute;
+	right: 11px;
+	top: 50%;
+	width: 5px;
+	height: 5px;
+	margin-top: -4px;
+	border-right: 1.6px solid var(--gd-muted);
+	border-bottom: 1.6px solid var(--gd-muted);
+	transform: rotate(45deg);
+	pointer-events: none;
+}
+.gd-field-name { color: var(--gd-muted); font-size: inherit; font-weight: normal; }
 .gd-visually-hidden {
 	position: absolute;
 	width: 1px;
@@ -115,8 +134,12 @@ button:hover { border-color: var(--gd-muted); }
 
 select {
 	min-height: 32px;
-	padding: 4px 8px;
+	/* The chevron is drawn here, not by the browser, so it keeps its own space on the right instead of touching the border. */
+	padding: 4px 10px;
 	max-width: 28ch;
+	-webkit-appearance: none;
+	appearance: none;
+	background-image: none;
 }
 
 button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport:focus-visible {
@@ -1414,3 +1437,20 @@ kbd, .gd-menu-kbd {
 
 /* Show's ring pulses twice when it appears, only with motion allowed. */
 @keyframes gd-mark-pulse { 50% { box-shadow: 0 0 0 calc(6px * var(--gd-inv-zoom, 1)) var(--gd-mark-color); } }
+
+/* The group pill (canvas-boards.js) floats over the canvas, top-left; its popover lists the groups and marks the open design's one. */
+.gd-group-float { position: absolute; top: 12px; left: 12px; z-index: 5; }
+.gd-group-float[hidden] { display: none; }
+.gd-group-pill { position: relative; padding: 4px 28px 4px 12px; border-radius: 999px; background: var(--gd-panel); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3); }
+.gd-group-pill::after { content: ""; position: absolute; right: 12px; top: 50%; width: 5px; height: 5px; margin-top: -4px; border-right: 1.6px solid var(--gd-muted); border-bottom: 1.6px solid var(--gd-muted); transform: rotate(45deg); pointer-events: none; }
+.gd-group-menu { position: absolute; top: calc(100% + 6px); left: 0; min-width: 240px; max-height: min(360px, calc(100vh - 80px)); overflow-y: auto; padding: 6px; background: var(--gd-panel); border: 1px solid var(--gd-border); border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+.gd-group-menu[hidden] { display: none; }
+.gd-group-item { display: flex; width: 100%; justify-content: space-between; align-items: center; min-height: 32px; padding: 6px 10px; border: 0; border-radius: 6px; background: transparent; text-align: left; }
+.gd-group-item:hover { background: var(--gd-stage); }
+.gd-group-item[aria-checked="true"]::after { content: "\2713"; color: var(--gd-accent); }
+.gd-group-add { margin-top: 4px; border-top: 1px solid var(--gd-border); border-radius: 0 0 6px 6px; color: var(--gd-muted); }
+.gd-group-new { display: grid; gap: 6px; padding: 6px 4px; }
+.gd-group-new[hidden] { display: none; }
+.gd-group-new input { min-height: 32px; padding: 4px 8px; }
+.gd-group-hint { color: var(--gd-accent); border-color: transparent; background: transparent; padding: 2px 4px; justify-self: start; }
+.gd-group-error { margin: 6px 4px 0; color: var(--gd-danger); font-size: inherit; }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -218,6 +218,26 @@ test("designs are listed from design.json manifests, most recent first", async (
 	assert.deepEqual(designs.map((design: { slug: string }) => design.slug), ["alpha", "broken", "beta"]);
 	assert.deepEqual(designs[0], { slug: "alpha", title: "Alpha", mtime: 3000000, valid: true });
 	assert.deepEqual(designs[1], { slug: "broken", title: "broken", mtime: 2000000, valid: false });
+});
+
+test("a design's group is trimmed, listed and returned; an empty group is dropped and a non-string one refused", async (t) => {
+	const { port, base, root } = await start(t);
+	const write = (group: unknown) => {
+		mkdirSync(join(root, "gamma"), { recursive: true });
+		writeFileSync(join(root, "gamma", "design.json"), JSON.stringify({ title: "G", group, artboards: [] }));
+	};
+	const listed = async () => JSON.parse((await rawRequest(port, `${base}api/designs`)).body).designs.find((design: { slug: string }) => design.slug === "gamma");
+	write("  Admin  ");
+	assert.equal((await listed()).group, "Admin");
+	assert.equal(JSON.parse((await rawRequest(port, `${base}api/designs/gamma`)).body).group, "Admin");
+	write("   ");
+	assert.equal("group" in (await listed()), false, "an empty group is no group");
+	assert.equal("group" in JSON.parse((await rawRequest(port, `${base}api/designs/gamma`)).body), false);
+	write(7);
+	const refused = await rawRequest(port, `${base}api/designs/gamma`);
+	assert.equal(refused.status, 422);
+	assert.match(JSON.parse(refused.body).reason, /group must be a string/);
+	assert.equal((await listed()).valid, false);
 });
 
 test("a manifest is returned normalized, and invalid slugs or manifests are refused", async (t) => {
@@ -1935,4 +1955,78 @@ test("canvas-layout S17: an edited comment's message names it as an edit and quo
 test("describeWatchFailure names the exhausted inotify limit (gentle-shell#3156)", () => {
 	assert.match(describeWatchFailure(Object.assign(new Error("watch failed"), { code: "ENOSPC" })), /fs\.watch failed: ENOSPC .*fs\.inotify\.max_user_watches/);
 	assert.match(describeWatchFailure(new Error("boom")), /fs\.watch failed: /);
+});
+
+const GROUP_PATH = "api/designs/alpha/group";
+
+test("design-group: POST sets or clears design.json's group, keeps the other fields, and never rewrites a broken manifest", async (t) => {
+	const { port, base, root } = await start(t);
+	const manifestPath = join(root, "alpha", "design.json");
+	const before = JSON.parse(readFileSync(manifestPath, "utf8"));
+	const set = await postJson(port, GROUP_PATH, { group: "  Admin  " });
+	assert.equal(set.status, 200);
+	assert.deepEqual(JSON.parse(set.body), { ok: true, group: { slug: "alpha", group: "Admin", changed: true } });
+	assert.deepEqual(JSON.parse(readFileSync(manifestPath, "utf8")), { ...before, group: "Admin" });
+	const listed = JSON.parse((await rawRequest(port, `${base}api/designs`)).body);
+	assert.equal(listed.designs.find((design: { slug: string }) => design.slug === "alpha").group, "Admin");
+	// The same value again is a no-op: nothing is written, so the file's mtime (and the default open order) stays.
+	const mtime = statSync(manifestPath).mtimeMs;
+	assert.deepEqual(JSON.parse((await postJson(port, GROUP_PATH, { group: "Admin" })).body).group.changed, false);
+	assert.equal(statSync(manifestPath).mtimeMs, mtime);
+	// null or an empty name clears the key.
+	assert.equal(JSON.parse((await postJson(port, GROUP_PATH, { group: null })).body).group.changed, true);
+	assert.deepEqual(JSON.parse(readFileSync(manifestPath, "utf8")), before);
+	assert.equal((await postJson(port, GROUP_PATH, { group: "   " })).status, 200);
+	// Refused input: a non-string, a missing member, an over-long name, control characters. Nothing changes.
+	for (const body of [{ group: 7 }, {}, { group: "x".repeat(41) }, { group: "bad\u0007name" }]) {
+		const reply = await postJson(port, GROUP_PATH, body);
+		assert.equal(reply.status, 422, JSON.stringify(body));
+		assert.equal(JSON.parse(reply.body).error, "invalid-group");
+	}
+	assert.deepEqual(JSON.parse(readFileSync(manifestPath, "utf8")), before);
+	// A design.json that is not a valid manifest is reported and left as it is.
+	writeFileSync(manifestPath, "{ broken");
+	const broken = await postJson(port, GROUP_PATH, { group: "Admin" });
+	assert.equal(broken.status, 422);
+	assert.equal(readFileSync(manifestPath, "utf8"), "{ broken");
+	// An unknown design is 404.
+	assert.equal((await postJson(port, "api/designs/nope/group", { group: "Admin" })).status, 404);
+});
+
+test("design-group: a design whose folder or design.json resolves outside design/ is refused, and the file outside is never written", async (t) => {
+	const { port, base, root } = await start(t);
+	const outside = scratch(t, "gentle-design-group-outside-");
+	const outsideFolder = join(outside, "linked");
+	mkdirSync(outsideFolder);
+	const outsideManifest = join(outsideFolder, "design.json");
+	const manifest = JSON.stringify({ title: "Outside", brief: "b", artboards: [] });
+	writeFileSync(outsideManifest, manifest);
+	// A folder that is a link out of design/, and a design.json that is a link out of design/.
+	symlinkSync(outsideFolder, join(root, "linked"));
+	mkdirSync(join(root, "sneaky"));
+	symlinkSync(outsideManifest, join(root, "sneaky", "design.json"));
+	for (const slug of ["linked", "sneaky"]) {
+		const reply = await postJson(port, `api/designs/${slug}/group`, { group: "Admin" });
+		assert.equal(reply.status, 404, slug);
+	}
+	assert.equal(readFileSync(outsideManifest, "utf8"), manifest, "the file outside design/ is untouched");
+	// The listing never shows them, and a contained design still takes a group.
+	assert.equal(JSON.parse((await rawRequest(port, `${base}api/designs`)).body).designs.some((design: { slug: string }) => design.slug === "linked" || design.slug === "sneaky"), false);
+	assert.equal((await postJson(port, GROUP_PATH, { group: "Admin" })).status, 200);
+});
+
+test("design-group: a change that would push design.json past the manifest limit is refused before anything is written", async (t) => {
+	const { port, root } = await start(t);
+	const manifestPath = join(root, "alpha", "design.json");
+	// Pad the brief so the file is exactly 5 bytes under the limit: the group member would push it over.
+	const base = (brief: string) => `${JSON.stringify({ title: "Alpha", brief, artboards: [{ file: "01-hero.html", title: "Hero", tradeoff: "t", width: 800, height: 600 }] }, null, 2)}\n`;
+	const limit = 256 * 1024;
+	const pad = limit - 5 - Buffer.byteLength(base(""), "utf8");
+	const content = base("x".repeat(pad));
+	assert.equal(Buffer.byteLength(content, "utf8"), limit - 5);
+	writeFileSync(manifestPath, content);
+	const reply = await postJson(port, GROUP_PATH, { group: "Admin" });
+	assert.equal(reply.status, 422);
+	assert.equal(JSON.parse(reply.body).error, "manifest-too-large");
+	assert.equal(readFileSync(manifestPath, "utf8"), content);
 });

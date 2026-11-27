@@ -16,6 +16,7 @@ import {
 	DESIGN_UNAVAILABLE,
 	isDesktopDesignServiceShape,
 	parseDesignCanvasParams,
+	parseDesktopDesignEntries,
 	type DesktopDesignEntry,
 	type DesktopDesignOwnerState,
 	type DesktopDesignOwnerTransition,
@@ -698,4 +699,9 @@ test("the router publishes a design read response without an event and drops sup
 	await router.handle(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "design-read", method: "get_design_canvas", params: { includeUrl: true } }));
 	assert.deepEqual(lines.map((line) => JSON.parse(line).kind), ["response"]);
 	assert.deepEqual(JSON.parse(lines[0]!).data, { running: true, slug: "login", connectedClients: 0, designs: [], url: "http://127.0.0.1:4100/tok/d/login/" });
+});
+
+test("parseDesktopDesignEntries keeps a string group and refuses any other", () => {
+	assert.deepEqual(parseDesktopDesignEntries([{ slug: "a", title: "A", mtime: 1, group: "Admin", token: "x" }, { slug: "b", title: "B", mtime: 2 }]), [{ slug: "a", title: "A", mtime: 1, group: "Admin" }, { slug: "b", title: "B", mtime: 2 }]);
+	assert.equal(parseDesktopDesignEntries([{ slug: "a", title: "A", mtime: 1, group: 7 }]), undefined);
 });

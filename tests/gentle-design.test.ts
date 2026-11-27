@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import gentleDesign, { DESIGN_COMMAND_NAME } from "../extensions/gentle-design.ts";
 import { formatDesignComment, formatDesignCommentBatch, startDesignCanvasServer, type DesignCanvasServer, type DesignCanvasServerOptions, type DesignComment } from "../lib/design-canvas-server.ts";
-import { designImplementMessage, designImplementPartMessage, designVariantMessage } from "../lib/gentle-design.ts";
+import { designImplementMessage, designUsage, listDesigns, designImplementPartMessage, designVariantMessage } from "../lib/gentle-design.ts";
 import type { OpenInBrowserResult } from "../lib/design-open-browser.ts";
 import { __testing } from "../extensions/skill-registry.ts";
 
@@ -70,10 +70,10 @@ function scratchCwd(): string {
 	return dir;
 }
 
-function writeDesign(cwd: string, slug: string, title: string, mtimeSeconds?: number) {
+function writeDesign(cwd: string, slug: string, title: string, mtimeSeconds?: number, group?: string) {
 	mkdirSync(join(cwd, "design", slug), { recursive: true });
 	const manifest = join(cwd, "design", slug, "design.json");
-	writeFileSync(manifest, JSON.stringify({ title, brief: "b", artboards: [{ file: "01-a.html", title: "A", tradeoff: "t", width: 800, height: 600 }] }));
+	writeFileSync(manifest, JSON.stringify({ title, ...(group === undefined ? {} : { group }), brief: "b", artboards: [{ file: "01-a.html", title: "A", tradeoff: "t", width: 800, height: 600 }] }));
 	writeFileSync(join(cwd, "design", slug, "01-a.html"), "<h1>A</h1>");
 	if (mtimeSeconds !== undefined) utimesSync(manifest, mtimeSeconds, mtimeSeconds);
 }
@@ -658,6 +658,16 @@ function seedComments(cwd: string, slug: string, comments: Array<{ id: string; f
 	}));
 	writeFileSync(join(cwd, "design", slug, "comments.json"), JSON.stringify({ version: 1, comments: entries }));
 }
+
+test("listDesigns and the usage text carry a design's group", () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "admin-login", "Login", 2000, "Admin");
+	writeDesign(cwd, "pricing", "Pricing", 1000);
+	const designs = listDesigns(cwd);
+	assert.deepEqual(designs, [{ slug: "admin-login", title: "Login", mtime: 2000000, group: "Admin" }, { slug: "pricing", title: "Pricing", mtime: 1000000 }]);
+	assert.ok(designUsage(designs).includes("  Admin / Login (admin-login)"));
+	assert.ok(designUsage(designs).includes("  Pricing (pricing)"));
+});
 
 test("the gentle_design_comments tool lists open comments, by design and artboard", async () => {
 	const cwd = scratchCwd();
@@ -1734,4 +1744,24 @@ test("implement-part S6: gentle_design list names each design's parts with their
 test("skills/design/SKILL.md tells the sync to write tokens as the rows design/system.md is read with", () => {
 	const source = readFileSync(SKILL_PATH, "utf8");
 	assert.ok(source.includes("For each CSS custom property, use a table row under a `##` section, with the backticked token name in the first cell and its backticked value in the second cell."), "the sync names the token row format");
+});
+
+test("the gentle_design tool sets or clears a design's group in design.json, and refuses what the canvas refuses", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen", 1000);
+	const fake = fakePi();
+	gentleDesign(fake.pi, fakeCanvas());
+	const run = designTool(fake);
+	const { ctx } = fakeContext(cwd);
+	const manifest = join(cwd, "design", "login", "design.json");
+	const set = await run({ action: "group", slug: "login", group: "Admin" }, ctx);
+	assert.equal(toolText(set), 'Design "login" is in group "Admin".');
+	assert.deepEqual(set.details, { slug: "login", group: "Admin" });
+	assert.equal(JSON.parse(readFileSync(manifest, "utf8")).group, "Admin");
+	const cleared = await run({ action: "group", slug: "login", group: null }, ctx);
+	assert.equal(toolText(cleared), 'Design "login" has no group.');
+	assert.equal(JSON.parse(readFileSync(manifest, "utf8")).group, undefined);
+	await assert.rejects(run({ action: "group", group: "Admin" }, ctx), /slug/);
+	await assert.rejects(run({ action: "group", slug: "nope", group: "Admin" }, ctx), /No design "nope"/);
+	await assert.rejects(run({ action: "group", slug: "login", group: "x".repeat(41) }, ctx), /at most 40/);
 });

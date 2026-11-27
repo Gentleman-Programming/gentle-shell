@@ -38,8 +38,8 @@
 	</svg>
 	<header class="gd-bar" role="toolbar" aria-label="Design canvas controls" data-i18n-aria-label="toolbar">
 		<h1 class="gd-title" id="gd-title">Gentle Design</h1>
-		<label class="gd-field" id="gd-design-field">
-			<span class="gd-visually-hidden" data-i18n="design">Design</span>
+		<label class="gd-field gd-field-design" id="gd-design-field">
+			<span class="gd-field-name" data-i18n="design">Design</span>
 			<select id="gd-design" aria-label="Design" data-i18n-aria-label="design"></select>
 		</label>
 		<p id="gd-feature" class="gd-feature" hidden></p>
@@ -73,6 +73,19 @@
 			<button type="button" id="gd-rail-settings" class="gd-tool gd-bottom" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-menu" title="Settings: design system, keyboard shortcuts and technical details" data-i18n-title="settingsTitle"><svg class="gd-i" aria-hidden="true"><use href="#i-gear"/></svg><span class="gd-tool-label" data-i18n="settings">Settings</span></button>
 		</nav>
 		<main id="gd-viewport" class="gd-viewport" aria-label="Artboards" data-i18n-aria-label="artboards" tabindex="0">
+		<div class="gd-group-float" id="gd-group-float" hidden>
+			<button type="button" id="gd-group" class="gd-group-pill" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-group-menu" data-i18n="groupNone">No group</button>
+			<div class="gd-group-menu" id="gd-group-menu" role="menu" aria-label="Group" data-i18n-aria-label="groupTitle" hidden>
+				<div id="gd-group-items" class="gd-group-items"></div>
+				<button type="button" id="gd-group-new-toggle" class="gd-group-item gd-group-add" data-i18n="groupNew">New group</button>
+				<div id="gd-group-new-row" class="gd-group-new" hidden>
+					<input id="gd-group-input" type="text" maxlength="40" autocomplete="off" aria-label="New group" data-i18n-aria-label="groupNew">
+					<button type="button" id="gd-group-hint" class="gd-group-hint" hidden></button>
+					<button type="button" id="gd-group-create" data-i18n="create">Create</button>
+				</div>
+				<p id="gd-group-error" class="gd-group-error" role="alert" hidden></p>
+			</div>
+		</div>
 			<div id="gd-world" class="gd-world"></div>
 			<p id="gd-empty" class="gd-empty" hidden></p>
 			<button type="button" id="gd-back" class="gd-back" aria-keyshortcuts="Shift+Escape" title="Back to canvas (Shift+Esc)" data-i18n-title="backTitle" data-i18n="back" hidden>Back to canvas</button>

@@ -11,6 +11,7 @@ const TEXT = Object.freeze({
 	systemNote: "Comments apply to design artboards only. To change the system, update the project's design sources and run /gentle:design sync.",
 	systemOff: "Comments off on this board",
 	invalidDesign: (slug) => `${slug} (invalid design.json)`,
+	noGroup: "No group",
 	frameTitle: (title) => `${title} artboard`,
 	viewSystem: (title) => `View ${title} (read-only)`,
 	use: (title) => `Use ${title}`,
@@ -27,6 +28,9 @@ const TEXT = Object.freeze({
 	notSent: (reason) => `Not sent: ${reason}`,
 	error: "error",
 	feature: (feature) => `Feature: ${feature}`,
+	groupSuggest: (name) => `Did you mean "${name}"?`,
+	groupFailed: (reason) => `Not saved: ${reason}`,
+	groupRefreshFailed: (reason) => `Saved, but the list did not refresh: ${reason}`,
 	noDesigns: "No designs yet. Run /gentle:design with a brief to create one.",
 	cannotShow: (slug, reason) => `Design "${slug}" cannot be shown: ${reason}`,
 	invalidManifest: (slug) => `design.json for ${slug} is invalid`,
@@ -44,6 +48,11 @@ export function init(ctx) {
 	const labelers = new WeakMap();
 	let emptyText = null;
 	let invalidOptions = [];
+	// Design groups (design.json "group"): the design selector lists every design, grouped; the group pill and its popover are below.
+	let listed = [];
+	const groupOf = (design) => design.group || "";
+	// Named groups alphabetically, designs without one last; then by title.
+	const byGroup = (a, b) => Number(groupOf(a) === "") - Number(groupOf(b) === "") || groupOf(a).localeCompare(groupOf(b)) || a.title.localeCompare(b.title) || a.slug.localeCompare(b.slug);
 
 	/** text: the notice, as a function so a new language writes it again. */
 	function showEmpty(text) {
@@ -61,16 +70,28 @@ export function init(ctx) {
 
 	function renderDesignOptions(designs) {
 		invalidOptions = [];
-		const options = designs.map((design) => {
+		const hasGroups = designs.some((design) => design.group);
+		// With groups, the list is sorted by group, and each title shows its group in front.
+		let shown = designs;
+		if (hasGroups) {
+			shown = [...designs].sort(byGroup);
+		}
+		labelGroupButton(designs);
+		// The group button stays with any design open, so the first group can be made from the canvas.
+		// The pill stays with any design open, so the first group can be made from the canvas.
+		els.groupFloat.hidden = designs.length === 0;
+		const options = shown.map((design) => {
 			const option = doc.createElement("option");
 			option.value = design.slug;
-			option.textContent = design.valid ? design.title : T.invalidDesign(design.slug);
+			const title = design.valid ? design.title : T.invalidDesign(design.slug);
+			option.textContent = hasGroups && groupOf(design) ? `${groupOf(design)} / ${title}` : title;
 			if (!design.valid) invalidOptions.push([option, design.slug]);
 			return option;
 		});
 		els.design.replaceChildren(...options);
 		store.setDesign({ designCount: designs.length });
 		els.design.disabled = designs.length === 0 || Boolean(state.focus);
+		els.group.disabled = els.design.disabled;
 		els.designField.hidden = designs.length === 0;
 		if (state.slug) els.design.value = state.slug;
 	}
@@ -78,7 +99,9 @@ export function init(ctx) {
 	/** pickLatest: with no design selected, select the most recent one (not for the system-only view). */
 	async function refreshDesigns(pickLatest = true) {
 		const { designs } = await getJson("api/designs");
-		if (pickLatest && !state.slug && designs.length > 0) store.setDesign({ slug: designs[0].slug });
+		// The most recent design.json; the first one when the list carries no times.
+		if (pickLatest && !state.slug && designs.length > 0) store.setDesign({ slug: designs.reduce((best, design) => ((design.mtime ?? 0) > (best.mtime ?? 0) ? design : best)).slug });
+		listed = designs;
 		renderDesignOptions(designs);
 		return designs;
 	}
@@ -400,16 +423,127 @@ export function init(ctx) {
 		}
 	}
 
-	els.design.addEventListener("change", () => {
+	/** The group pill (top-left of the canvas) names the open design's group ("No group" when it has none). */
+	function labelGroupButton(designs) {
+		const design = designs.find((candidate) => candidate.slug === state.slug);
+		els.group.textContent = design && design.group ? design.group : T.noGroup;
+	}
+
+	/** The popover lists "No group" and the groups in use, the open design's group checked; "New group" reveals a name field. */
+	function openGroupMenu() {
+		const design = listed.find((candidate) => candidate.slug === state.slug);
+		if (!design) return;
+		const current = groupOf(design);
+		const names = [...new Set(listed.map(groupOf).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+		els.groupItems.replaceChildren(...["", ...names].map((name) => {
+			const item = doc.createElement("button");
+			item.type = "button";
+			item.className = "gd-group-item";
+			item.setAttribute("role", "menuitemradio");
+			item.setAttribute("aria-checked", String(name === current));
+			item.textContent = name === "" ? T.noGroup : name;
+			item.addEventListener("click", () => saveGroup(name));
+			return item;
+		}));
+		els.groupNewRow.hidden = true;
+		els.groupInput.value = "";
+		els.groupError.hidden = true;
+		checkGroupName();
+		setGroupMenu(true);
+	}
+
+	function setGroupMenu(open) {
+		els.groupMenu.hidden = !open;
+		els.group.setAttribute("aria-expanded", String(open));
+	}
+
+	function openNewGroup() {
+		els.groupNewRow.hidden = false;
+		els.groupInput.focus();
+	}
+
+	/** A name that differs from a group in use only in case is offered back, so "admin" never becomes a second group beside "Admin". */
+	function checkGroupName() {
+		const typed = els.groupInput.value.trim();
+		const match = typed ? listed.map(groupOf).find((name) => name && name !== typed && name.toLowerCase() === typed.toLowerCase()) : undefined;
+		els.groupHint.hidden = !match;
+		els.groupHint.textContent = match ? T.groupSuggest(match) : "";
+		els.groupHint.dataset.name = match || "";
+	}
+
+	/** Files the open design under a group, or takes it out of one (null, or an empty name). */
+	async function saveGroup(group) {
+		const value = group === null || group === "" ? null : group;
+		let reply;
+		try {
+			reply = await api.postJson(`api/designs/${encodeURIComponent(state.slug)}/group`, { group: value });
+		} catch (error) {
+			els.groupError.textContent = T.groupFailed(error.message);
+			els.groupError.hidden = false;
+			return;
+		}
+		if (!reply.ok) {
+			els.groupError.textContent = T.groupFailed(reply.body.reason || reply.body.error || `HTTP ${reply.status}`);
+			els.groupError.hidden = false;
+			return;
+		}
+		setGroupMenu(false);
+		// The file is saved at this point: a failed refresh only means the list is stale.
+		try {
+			await refreshDesigns(false);
+		} catch (error) {
+			setStatus(T.groupRefreshFailed(error.message), true);
+		}
+	}
+
+	function createGroup() {
+		const typed = els.groupInput.value.trim();
+		if (typed) saveGroup(typed);
+	}
+
+	// The popover starts closed whatever the markup says, so a press always opens it first.
+	setGroupMenu(false);
+	els.group.addEventListener("click", () => (els.groupMenu.hidden ? openGroupMenu() : setGroupMenu(false)));
+	// The pill sits over the canvas: its presses must not start a pan.
+	els.groupFloat.addEventListener("pointerdown", (event) => event.stopPropagation());
+	// A press anywhere else closes the popover.
+	doc.addEventListener("pointerdown", (event) => {
+		if (!els.groupMenu.hidden && !els.groupFloat.contains(event.target)) setGroupMenu(false);
+	});
+	els.groupNewToggle.addEventListener("click", openNewGroup);
+	els.groupInput.addEventListener("input", checkGroupName);
+	els.groupInput.addEventListener("keydown", (event) => {
+		if (event.key === "Enter") {
+			event.preventDefault();
+			createGroup();
+		}
+	});
+	els.groupHint.addEventListener("click", () => {
+		els.groupInput.value = els.groupHint.dataset.name;
+		checkGroupName();
+		els.groupInput.focus();
+	});
+	els.groupCreate.addEventListener("click", createGroup);
+	els.groupMenu.addEventListener("keydown", (event) => {
+		if (event.key === "Escape") {
+			setGroupMenu(false);
+			els.group.focus();
+		}
+	});
+
+	els.design.addEventListener("change", () => openPicked(els.design.value));
+
+	function openPicked(slug) {
 		actions.exitCompare(false);
-		store.setDesign({ slug: els.design.value });
+		store.setDesign({ slug });
+		labelGroupButton(listed);
 		actions.hideInspector();
 		// The old design's checks and ring go at once too.
 		actions.refreshChecks();
 		// The old design's parts go at once: loadManifest may never reach loadParts (a failed or empty design.json).
 		actions.clearParts();
 		loadManifest(state.slug, false);
-	});
+	}
 
 	/**
 	 * The server's show event (S14): `open` while this page is connected switches it to
@@ -424,6 +558,7 @@ export function init(ctx) {
 			actions.exitCompare(false);
 			actions.exitFocus();
 			store.setDesign({ slug });
+			labelGroupButton(listed);
 			actions.hideInspector();
 			actions.refreshChecks();
 			store.setComments({ comments: [], activeId: null });
@@ -470,6 +605,7 @@ export function init(ctx) {
 		showFeature(state.manifest);
 		if (emptyText && !els.empty.hidden) els.empty.textContent = emptyText();
 		for (const [option, slug] of invalidOptions) option.textContent = T.invalidDesign(slug);
+		labelGroupButton(listed);
 	}
 
 	return { refreshDesigns, sendMode, sendColors, boardUrl, loadManifest, reloadBoard, onSystemChange, showDesign, start, relabel };

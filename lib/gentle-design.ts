@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { designCommentBatchContent, designCommentContent, hasSystemTokens, listDesignEntries, readDesignManifest, resolveSystemBoard, startDesignCanvasServer, type DesignArtboard, type DesignCanvasServer, type DesignCanvasServerOptions, type DesignSessionContent } from "./design-canvas-server.ts";
+import { designCommentBatchContent, designCommentContent, hasSystemTokens, listDesignEntries, readDesignManifest, resolveSystemBoard, setDesignGroup, startDesignCanvasServer, type DesignArtboard, type DesignCanvasServer, type DesignCanvasServerOptions, type DesignSessionContent } from "./design-canvas-server.ts";
 import { createDesignCommentStore, DesignCommentsError, describeViewport, noteProblem, type StoredDesignComment } from "./design-comments.ts";
 import { createDesignHandoffStore, DesignHandoffsError, sendDesignHandoff, type DesignHandoff, type DesignHandoffDelivery, type DesignHandoffStatus } from "./design-handoffs.ts";
 import { openInBrowser, type OpenInBrowserResult } from "./design-open-browser.ts";
@@ -35,11 +35,13 @@ export interface DesignSummary {
 	title: string;
 	/** design.json modification time in milliseconds. */
 	mtime: number;
+	/** The area the design belongs to (design.json "group"); absent when it has none. */
+	group?: string;
 }
 
 /** Designs under <cwd>/design, through the listing the canvas server uses (same containment rule). */
 export function listDesigns(cwd: string): DesignSummary[] {
-	return listDesignEntries(join(cwd, "design")).map(({ slug, title, mtime }) => ({ slug, title, mtime }));
+	return listDesignEntries(join(cwd, "design")).map(({ slug, title, mtime, group }) => ({ slug, title, mtime, ...(group ? { group } : {}) }));
 }
 
 /** Whether design/system.html exists, so the canvas can open on the system board alone. */
@@ -58,7 +60,7 @@ export function designUsage(designs: readonly DesignSummary[]): string {
 	const lines = ["Usage: /gentle:design <brief>", "Describe the goal, layout, content, and audience. Directions are written to design/<slug>/."];
 	if (designs.length > 0) {
 		lines.push("", "Designs in this project:");
-		for (const design of designs) lines.push(`  ${design.title} (${design.slug})`);
+		for (const design of designs) lines.push(`  ${design.group ? `${design.group} / ` : ""}${design.title} (${design.slug})`);
 	}
 	return lines.join("\n");
 }
@@ -550,8 +552,10 @@ export const DESIGN_PROMPT_HINT = [
 ].join("\n");
 
 export type DesignToolParams = {
-	action: "list" | "open" | "stop" | "implement" | "handoff";
+	action: "list" | "open" | "stop" | "implement" | "handoff" | "group";
 	slug?: string;
+	/** group only: the area to file the design under, or null to remove its group. */
+	group?: string | null;
 	target?: string;
 	/** handoff only. */
 	status?: string;
@@ -576,7 +580,8 @@ export type DesignToolDetails =
 	| { stopped: boolean }
 	| { target: string; warnings: string[] }
 	| { target: string; chosen: string | null; handoff: DesignHandoff }
-	| { target: string; part: DesignPart };
+	| { target: string; part: DesignPart }
+	| { slug: string; group?: string };
 /** `texts` become the tool's content parts; a refusal throws, so Pi flags the result as an error. */
 export type DesignToolResult = { texts: string[]; details: DesignToolDetails };
 
@@ -599,6 +604,7 @@ type ListedDesign = {
 	/** Present only when the design has parts handed off on their own (canvas-implement-part). */
 	parts?: DesignPart[];
 	partsError?: string;
+	group?: string;
 };
 
 function partState(part: DesignPart): string {
@@ -606,18 +612,36 @@ function partState(part: DesignPart): string {
 	return `${part.id} ${part.file} ${part.selector} (${status}${part.status === "sent" && part.queued ? ", queued" : ""})`;
 }
 
+/** Files a design under a group (or removes it) through the same validation the canvas uses; the open canvas refreshes from design.json. */
+async function groupTool(cwd: string, params: DesignToolParams): Promise<DesignToolResult> {
+	if (!params.slug) throw new Error("group needs a slug: the design to file (see list).");
+	if (!("group" in params)) throw new Error("group needs a group: a name, or null to remove the design's group.");
+	const slug = params.slug;
+	if (!listDesigns(cwd).some((design) => design.slug === slug)) throw new Error(`No design "${slug}" in design/.`);
+	let change: Awaited<ReturnType<typeof setDesignGroup>>;
+	try {
+		change = await setDesignGroup(join(cwd, "design"), slug, params.group);
+	} catch (error) {
+		// The server's refusal reason (for example "group must be at most 40 characters") is what the person needs to read.
+		const reason = (error as { body?: { reason?: unknown } } | null)?.body?.reason;
+		throw new Error(typeof reason === "string" ? reason : error instanceof Error ? error.message : String(error));
+	}
+	const text = change.group === undefined ? `Design "${slug}" has no group.` : `Design "${slug}" is in group "${change.group}".`;
+	return { texts: [text], details: { slug, ...(change.group === undefined ? {} : { group: change.group }) } };
+}
+
 async function listDesignTool(cwd: string, canvas: DesignCanvas): Promise<DesignToolResult> {
 	const designRoot = join(cwd, "design");
 	const handoffStore = createDesignHandoffStore(designRoot);
 	const partStore = createDesignPartStore(designRoot);
 	const designs: ListedDesign[] = [];
-	for (const { slug, title } of listDesigns(cwd)) {
+	for (const { slug, title, group } of listDesigns(cwd)) {
 		let design: ListedDesign;
 		try {
 			const artboards = readDesignManifest(designRoot, slug).artboards.map(({ file, title }) => ({ file, title }));
-			design = { slug, title, artboards };
+			design = { slug, title, artboards, ...(group ? { group } : {}) };
 		} catch (error) {
-			design = { slug, title, artboards: [], error: error instanceof Error ? error.message : String(error) };
+			design = { slug, title, artboards: [], ...(group ? { group } : {}), error: error instanceof Error ? error.message : String(error) };
 		}
 		try {
 			const document = await handoffStore.read(slug);
@@ -640,7 +664,7 @@ async function listDesignTool(cwd: string, canvas: DesignCanvas): Promise<Design
 	const url = canvas.url();
 	const lines = designs.length === 0 ? ["No designs in design/ yet."] : [`Designs in design/ (${designs.length}):`];
 	for (const design of designs) {
-		lines.push(`- ${design.slug}: ${design.title}${design.error ? ` (design.json cannot be read: ${design.error})` : ""}`);
+		lines.push(`- ${design.slug}: ${design.group ? `[${design.group}] ` : ""}${design.title}${design.error ? ` (design.json cannot be read: ${design.error})` : ""}`);
 		if (design.chosen) lines.push(`  Chosen: ${design.chosen} (the other artboards are alternatives)`);
 		if (design.handoffsError) lines.push(`  handoffs.json cannot be read: ${design.handoffsError}`);
 		for (const artboard of design.artboards) {
@@ -696,6 +720,7 @@ async function handoffTool(cwd: string, params: DesignToolParams): Promise<Desig
 
 /** The gentle_design tool: the /gentle:design actions on the session's canvas, without sending a user message. */
 export async function runDesignTool(cwd: string, params: DesignToolParams, canvas: DesignCanvas): Promise<DesignToolResult> {
+	if (params.action === "group") return groupTool(cwd, params);
 	if (params.action === "handoff") return handoffTool(cwd, params);
 	if (params.action === "list") return listDesignTool(cwd, canvas);
 	if (params.action === "stop") {

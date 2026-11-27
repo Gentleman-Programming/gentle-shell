@@ -82,6 +82,16 @@ export function boot(win, doc) {
 	const $ = (id) => doc.getElementById(id);
 	const els = {
 		title: $("gd-title"),
+		group: $("gd-group"),
+		groupFloat: $("gd-group-float"),
+		groupMenu: $("gd-group-menu"),
+		groupItems: $("gd-group-items"),
+		groupNewToggle: $("gd-group-new-toggle"),
+		groupNewRow: $("gd-group-new-row"),
+		groupInput: $("gd-group-input"),
+		groupHint: $("gd-group-hint"),
+		groupError: $("gd-group-error"),
+		groupCreate: $("gd-group-create"),
 		design: $("gd-design"),
 		designField: $("gd-design-field"),
 		feature: $("gd-feature"),

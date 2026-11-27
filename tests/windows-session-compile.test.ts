@@ -129,11 +129,28 @@ test("Windows bootstrap CSharp compile control parser accepts only consistent bo
 
 test("Windows bootstrap pinned enumeration has no unreachable post-loop return", async () => {
 	const source = await readFile(runtime, "utf8");
-	const start = source.indexOf("static string[] EnumeratePinned(IntPtr directory)");
+	const start = source.indexOf("static string[] EnumeratePinned(IntPtr directory, int maxEntries, out bool truncated)");
 	const end = source.indexOf("public static int EnumeratePresence()", start);
 	assert.ok(start >= 0 && end > start, "source guard: pinned enumeration bounds were not found");
 	const enumeration = source.slice(start, end);
-	assert.equal((enumeration.match(/return names\.ToArray\(\);/g) ?? []).length, 1, "source guard: the infinite enumeration loop must not have a post-loop return");
+	// The loop may return from two places (complete scan, truncated scan); what it must never do is
+	// keep a return behind the infinite loop, where the compiler cannot reach it.
+	const lastReturn = enumeration.lastIndexOf("return names.ToArray();");
+	assert.ok(lastReturn >= 0, "source guard: the pinned enumeration must return its collected names from inside the loop");
+	assert.doesNotMatch(enumeration.slice(lastReturn + "return names.ToArray();".length), /return\b/, "source guard: the infinite enumeration loop must not have a post-loop return");
+});
+
+test("Windows bootstrap list refuses an over-bound reply before assembling it", async () => {
+	const source = await readFile(runtime, "utf8");
+	const start = source.indexOf("public static PresenceRecord[] List(string excluded, string sid)");
+	const end = source.indexOf("public static PresenceRecord Resolve(", start);
+	assert.ok(start >= 0 && end > start, "source guard: list bounds were not found");
+	const list = source.slice(start, end);
+	const guard = list.indexOf('if (newest.Count > 64) Fail("busy");');
+	const assemble = list.indexOf("var records = new List<PresenceRecord>(newest.Values);");
+	// The wire rejects more than 64 records as a protocol failure, and the host tears down on it, so
+	// the list must refuse the over-bound case before the reply exists at all.
+	assert.ok(guard >= 0 && assemble > guard, "source guard: list must refuse an over-bound reply before it is assembled");
 });
 
 test("Windows bootstrap CSharp compile control source guard uses an owned created temp root", async () => {

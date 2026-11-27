@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { Socket } from "node:net";
 import test from "node:test";
 import { FIXED_WINDOWS_POWERSHELL, WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, WindowsSessionTransportHost, parseWindowsHostFrame, parseWindowsHostNotification } from "../lib/windows-session-transport.ts";
-import type { PresenceRecord } from "../lib/agents-session-transport.ts";
+import { SessionPresenceError, type PresenceRecord } from "../lib/agents-session-transport.ts";
 
 class FakeTransportChild extends EventEmitter {
 	stdin = Object.assign(new EventEmitter(), { writable: true, endCalls: 0, write: (line: string, callback: (error?: Error) => void) => { this.lines.push(line); callback(); return true; }, end: () => { this.stdin.endCalls++; } });
@@ -489,6 +489,23 @@ function createListenerBridge() {
 	const emit = (line: string) => child.stdout.emit("data", Buffer.from(`${line}\n`));
 	return { child, host, registry, emit };
 }
+
+test("Windows registry keeps a busy helper list reply distinct from an unavailable host", async () => {
+	const bridge = createListenerBridge();
+	const ready = bridge.host.start();
+	bridge.emit('{"requestId":"start-1","ok":true,"result":{"state":"partial"}}');
+	await ready;
+	// Over its bound, the helper refuses the list; a list caller must tell that apart
+	// from a host that is simply gone, which stays the generic I/O failure.
+	const lastRequestId = () => (JSON.parse(bridge.child.lines.at(-1) ?? "{}") as { requestId?: string }).requestId;
+	const busy = bridge.registry.listActivations();
+	bridge.emit(`{"requestId":"${lastRequestId()}","ok":false,"error":"busy"}`);
+	await assert.rejects(busy, (error: unknown) => error instanceof SessionPresenceError && error.code === "busy");
+	const unavailable = bridge.registry.listActivations();
+	bridge.emit(`{"requestId":"${lastRequestId()}","ok":false,"error":"unavailable"}`);
+	await assert.rejects(unavailable, (error: unknown) => error instanceof SessionPresenceError && error.code === "io_error");
+	bridge.child.emit("exit", 1, null);
+});
 
 async function startBridgeListener(bridge: ReturnType<typeof createListenerBridge>, listener: WindowsActiveSessionListener, requestId: string, createdAt: number) {
 	const starting = listener.start();

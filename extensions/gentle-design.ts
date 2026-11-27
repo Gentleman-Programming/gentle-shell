@@ -37,8 +37,9 @@ const DesignCommentsParams = Type.Object({
 });
 
 const DesignParams = Type.Object({
-	action: Type.Union([Type.Literal("list"), Type.Literal("open"), Type.Literal("stop"), Type.Literal("implement"), Type.Literal("handoff")], { description: "list: designs, artboards, chosen artboards and handoff states, design sources, design/system.md state and canvas state; open: show a design on the canvas; stop: close the canvas; implement: get the handoff for one artboard; handoff: report progress on a handed-off artboard" }),
+	action: Type.Union([Type.Literal("list"), Type.Literal("open"), Type.Literal("stop"), Type.Literal("implement"), Type.Literal("handoff"), Type.Literal("group")], { description: "list: designs, artboards, chosen artboards and handoff states, design sources, design/system.md state and canvas state; open: show a design on the canvas; stop: close the canvas; implement: get the handoff for one artboard; handoff: report progress on a handed-off artboard; group: file a design under a group (design.json \"group\"), or remove it with null" }),
 	slug: Type.Optional(Type.String({ description: "Design slug for open (directory under design/); defaults to the most recent design" })),
+	group: Type.Optional(Type.Union([Type.String({ maxLength: 40 }), Type.Null()], { description: "group only: the area name (max 40 characters, reuse an existing one from list), or null to remove the design's group" })),
 	target: Type.Optional(Type.String({ description: "Artboard for implement or handoff, as <slug>/<artboard>, such as login/01-split.html" })),
 	status: Type.Optional(Type.Union([Type.Literal("in_progress"), Type.Literal("implemented")], { description: "handoff only: in_progress when you start implementing, implemented when it is done" })),
 	note: Type.Optional(Type.String({ maxLength: 1000, description: "handoff only: a short note shown on the canvas" })),

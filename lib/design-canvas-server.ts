@@ -3,10 +3,10 @@ import { watch, type FSWatcher } from "node:fs";
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, isAbsolute, join, sep } from "node:path";
+import { dirname, extname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DESIGN_CANVAS_ASSETS } from "./design-canvas-assets.ts";
-import { DESIGN_COMMENTS_FILE, DESIGN_COMMENT_LIMITS, DESIGN_SCREENSHOT_TYPES, DesignCommentsError, MAX_DESIGN_SCREENSHOT_BYTES, createDesignCommentStore, describeViewport, isDesignCommentId, truncateUtf16, viewportProblem, type DesignViewport, type StoredDesignComment } from "./design-comments.ts";
+import { DESIGN_COMMENTS_FILE, DESIGN_COMMENT_LIMITS, DESIGN_SCREENSHOT_TYPES, DesignCommentsError, MAX_DESIGN_SCREENSHOT_BYTES, createDesignCommentStore, describeViewport, isDesignCommentId, replaceDesignFile, serializeDesignWrite, truncateUtf16, viewportProblem, type DesignViewport, type StoredDesignComment } from "./design-comments.ts";
 import { DESIGN_FEATURE_PATH, DesignHandoffsError, createDesignHandoffStore, sendDesignHandoff, type DesignHandoffDelivery } from "./design-handoffs.ts";
 import { readSystemTokens } from "./design-system-tokens.ts";
 import { DesignLayoutError, createDesignLayoutStore } from "./design-layout.ts";
@@ -142,7 +142,7 @@ export type DesignCanvasServer = {
 
 export type DesignArtboard = { file: string; title: string; tradeoff: string; width: number; height: number };
 /** `feature` is present only when valid; `warnings` only when something in design.json was dropped. */
-export type DesignManifest = { slug: string; title: string; brief: string; artboards: DesignArtboard[]; feature?: string; warnings?: string[] };
+export type DesignManifest = { slug: string; title: string; brief: string; artboards: DesignArtboard[]; feature?: string; /** The area the design belongs to (design.json "group"); absent when it has none. */ group?: string; warnings?: string[] };
 export type DesignImplementRequest = { slug: string; file: string };
 /** `instruction` is trimmed, with LF line ends, 1 to `DESIGN_VARIANT_INSTRUCTION_MAX` characters. */
 export type DesignVariantRequest = { slug: string; file: string; instruction: string };
@@ -347,6 +347,7 @@ function normalizeManifest(slug: string, raw: string): DesignManifest {
 	const record = value as Record<string, unknown>;
 	if (record.title !== undefined && typeof record.title !== "string") throw new HttpError(422, "title must be a string");
 	if (record.brief !== undefined && typeof record.brief !== "string") throw new HttpError(422, "brief must be a string");
+	if (record.group !== undefined && typeof record.group !== "string") throw new HttpError(422, "group must be a string");
 	if (!Array.isArray(record.artboards)) throw new HttpError(422, "artboards must be an array");
 	if (record.artboards.length > LIMITS.artboards) throw new HttpError(422, `artboards must have at most ${LIMITS.artboards} entries`);
 	const artboards = record.artboards.map((entry: unknown, index: number): DesignArtboard => {
@@ -372,6 +373,7 @@ function normalizeManifest(slug: string, raw: string): DesignManifest {
 	});
 	const title = typeof record.title === "string" && record.title.trim() ? record.title.trim() : slug;
 	const manifest: DesignManifest = { slug, title, brief: typeof record.brief === "string" ? record.brief.trim() : "", artboards };
+	if (typeof record.group === "string" && record.group.trim()) manifest.group = record.group.trim();
 	if (record.feature !== undefined) {
 		// The regex refuses `..` segments too: a name may not start with a dot and has no slash.
 		if (typeof record.feature === "string" && DESIGN_FEATURE_PATH.test(record.feature)) manifest.feature = record.feature;
@@ -422,7 +424,7 @@ async function readBody(req: IncomingMessage, limit: number): Promise<string> {
 	return Buffer.concat(chunks).toString("utf8");
 }
 
-export type DesignListing = { slug: string; title: string; mtime: number; valid: boolean };
+export type DesignListing = { slug: string; title: string; mtime: number; valid: boolean; group?: string };
 
 /**
  * Designs under `designRoot`, most recent design.json first. The one listing the
@@ -459,15 +461,18 @@ export function listDesignEntries(designRoot: string): DesignListing[] {
 		if (!info.isFile()) continue;
 		let title = entry.name;
 		let valid = false;
+		let group: string | undefined;
 		try {
 			if (info.size <= LIMITS.manifestBytes) {
-				title = normalizeManifest(entry.name, readFileSync(path, "utf8")).title;
+				const manifest = normalizeManifest(entry.name, readFileSync(path, "utf8"));
+				title = manifest.title;
+				group = manifest.group;
 				valid = true;
 			}
 		} catch {
 			valid = false;
 		}
-		designs.push({ slug: entry.name, title, mtime: info.mtimeMs, valid });
+		designs.push({ slug: entry.name, title, mtime: info.mtimeMs, valid, ...(group ? { group } : {}) });
 	}
 	return designs.sort((a, b) => b.mtime - a.mtime || a.slug.localeCompare(b.slug));
 }
@@ -510,6 +515,50 @@ export function readDesignManifest(designRoot: string, slug: string): DesignMani
 	} catch (error) {
 		throw new Error(`design/${slug}/design.json is invalid: ${error instanceof Error ? error.message : String(error)}`);
 	}
+}
+
+/** Longest design group name, in UTF-16 code units; longer names are refused. */
+const DESIGN_GROUP_MAX_LENGTH = 40;
+
+export type DesignGroupChange = { slug: string; group?: string; changed: boolean };
+
+/**
+ * Sets (or, for null, an empty or blank name, clears) the `group` of design.json, the one field the canvas edits.
+ * The whole manifest must validate first, so a broken design.json is reported and never rewritten. Every other
+ * member keeps its value; the write is skipped when the group does not change, so the file's mtime stays.
+ */
+export async function setDesignGroup(designRoot: string, slug: string, value: unknown): Promise<DesignGroupChange> {
+	if (!SLUG.test(slug)) throw new HttpError(404, "not-found");
+	const next = normalizeGroupInput(value);
+	const path = join(designRoot, slug, "design.json");
+	return serializeDesignWrite(path, async () => {
+		const raw = await readFile(path, "utf8").catch(() => { throw new HttpError(404, "not-found"); });
+		try {
+			normalizeManifest(slug, raw);
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			throw new HttpError(422, "invalid-manifest", { error: "invalid-manifest", reason });
+		}
+		const manifest = JSON.parse(raw) as Record<string, unknown>;
+		const current = typeof manifest.group === "string" && manifest.group !== "" ? manifest.group : undefined;
+		const result = (changed: boolean): DesignGroupChange => ({ slug, ...(next === undefined ? {} : { group: next }), changed });
+		if (current === next) return result(false);
+		if (next === undefined) delete manifest.group;
+		else manifest.group = next;
+		await replaceDesignFile(dirname(path), path, "design.json", `${JSON.stringify(manifest, null, 2)}\n`);
+		return result(true);
+	});
+}
+
+function normalizeGroupInput(value: unknown): string | undefined {
+	if (value === null) return undefined;
+	const refuse = (reason: string): never => { throw new HttpError(422, "invalid-group", { error: "invalid-group", reason }); };
+	if (typeof value !== "string") refuse("group must be a string or null");
+	const name = (value as string).trim();
+	if (name === "") return undefined;
+	if (name.length > DESIGN_GROUP_MAX_LENGTH) refuse(`group must be at most ${DESIGN_GROUP_MAX_LENGTH} characters`);
+	if (/[\u0000-\u001f\u007f]/.test(name)) refuse("group must not contain control characters");
+	return name;
 }
 
 /** Whether `<designRoot>/system.md` is a contained file, so a handoff can name it as the token source. */
@@ -893,6 +942,14 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		reply(res, 200, { ok: true, id: removed.id });
 	}
 
+	/** The canvas (or the agent's gentle_design tool) sets a design's group in design.json; the canvas refreshes from the file watcher. */
+	async function saveGroup(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
+		const body = await readJsonObject(req);
+		if (!("group" in body)) throw new HttpError(422, "invalid-group", { error: "invalid-group", reason: "group is required (a name, or null to clear it)" });
+		const group = await setDesignGroup(designRoot, slug, body.group);
+		reply(res, 200, { ok: true, group });
+	}
+
 	/** canvas-layout S3: the canvas saves where its artboards sit, validated whole before layout.json is replaced. */
 	async function saveLayout(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
 		const body = await readJsonObject(req, false, LIMITS.layoutBodyBytes);
@@ -1043,6 +1100,10 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		if (rest.length === 5 && rest[0] === "api" && rest[1] === "designs" && rest[3] === "parts" && rest[4] === "remove") {
 			const slug = safeSegment(rest[2]);
 			return slug && SLUG.test(slug) ? (req, res) => removePart(req, res, slug) : undefined;
+		}
+		if (rest.length === 4 && rest[0] === "api" && rest[1] === "designs" && rest[3] === "group") {
+			const slug = safeSegment(rest[2]);
+			return slug && SLUG.test(slug) ? (req, res) => saveGroup(req, res, slug) : undefined;
 		}
 		if (rest.length === 4 && rest[0] === "api" && rest[1] === "designs" && rest[3] === "layout") {
 			const slug = safeSegment(rest[2]);

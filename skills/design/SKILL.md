@@ -58,6 +58,7 @@ Run this gate before every new brief: call the `gentle_design` tool with `action
 {
   "title": "Pricing page",
   "brief": "Pricing page for a note-taking app aimed at students",
+  "group": "Marketing",
   "feature": "odd/tasks/pricing-page.md",
   "artboards": [
     { "file": "01-comparison-table.html", "title": "Comparison table", "tradeoff": "Dense and scannable; weaker emotional pull", "width": 1440, "height": 900 },
@@ -66,7 +67,9 @@ Run this gate before every new brief: call the `gentle_design` tool with `action
 }
 ```
 
-7. Set `width`/`height` to the artboard's intended viewport in CSS pixels; keep the manifest in sync with the files on every change. Fields: `title`, `brief`, optional `feature`, and `artboards[]` with `file`, `title`, `tradeoff`, `width`, `height`.
+7. Set `width`/`height` to the artboard's intended viewport in CSS pixels; keep the manifest in sync with the files on every change. Fields: `title`, `brief`, optional `group`, optional `feature`, and `artboards[]` with `file`, `title`, `tradeoff`, `width`, `height`.
+   To file a design under a group, or to move it or take it out, call the `gentle_design` tool with `action: "group"`, its `slug`, and `group` (a name, or `null` to remove the group). The open canvas picks the change up on its own.
+   `group` names the area the design belongs to (for example `Admin`, `Customer`, `Business`); the canvas lists designs by group. Reuse the project's existing group names (read the other `design/*/design.json`), and omit it when the project has no areas.
 8. ODD link: when the design comes from a tracked ODD feature (an existing `odd/tasks/<feature>.md` for the current work), set `feature` to that path and append one entry to that document's `## Log` naming `design/<slug>/` and its artboards. When an artboard of that design is handed off to implement, the Log entry also names the chosen artboard (the one handed off; `list` reports it as `Chosen`) and that the others are alternatives. For small untracked work, omit `feature` and leave the design standalone; never create a feature document just to link it.
 9. UX self-check, for every artboard you finish: pass it against the `gentle-ui-design` composition-and-feedback (hierarchy, density, feedback) and adaptive-interfaces (narrow screens, input access, states) guidance, and fix every gap before you report.
 10. After writing or changing artboards, call the `gentle_design` tool with `action: "open"` and the slug, unless the user said not to. It refreshes an open canvas tab instead of opening another, so call it after every change. Report the URL it returns.

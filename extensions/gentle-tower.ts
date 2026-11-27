@@ -4,9 +4,10 @@
 // the desktop agents adapter; it owns no state of its own beyond the file.
 
 import { execFile } from "node:child_process";
+import { type NetworkInterfaceInfo } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TowerServer } from "../lib/tower-server.ts";
-import { openInBrowser, openTowerServer, TOWER_WEB_DIR, TowerNotBuiltError } from "../lib/tower-open.ts";
+import { openInBrowser, openTowerServer, TOWER_LAN_WARNING, TOWER_WEB_DIR, TowerNotBuiltError } from "../lib/tower-open.ts";
 import { discoverDesktopAgentsService } from "../lib/desktop-agents-service.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { collectSessionStats } from "../lib/shell-stats.ts";
@@ -24,6 +25,8 @@ export interface TowerPublisherOptions {
 	now?: () => number;
 	/** Built web app folder (defaults to the package's web/tower/dist). */
 	webDir?: string;
+	/** Network interfaces to enumerate the LAN addresses from (defaults to the OS's). */
+	interfaces?: NodeJS.Dict<readonly NetworkInterfaceInfo[]>;
 	/** Opens the tower URL; defaults to the system browser. */
 	openUrl?: (url: string) => void;
 	/** How often the session checks its action inbox. */
@@ -64,6 +67,8 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 	const webDir = options.webDir ?? TOWER_WEB_DIR;
 	const openUrl = options.openUrl ?? openInBrowser;
 	let server: Promise<TowerServer> | undefined;
+	/** The mode the current server promise runs in, so a mode change replaces it. */
+	let serverLan: boolean | undefined;
 	const debounceMs = options.debounceMs ?? 300;
 	const now = options.now ?? Date.now;
 	let ctx: ExtensionContext | undefined;
@@ -93,6 +98,10 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 			const stats = collectSessionStats(branch);
 			const usage = ctx.getContextUsage?.();
 			// The agents service keeps finished tasks as history; only live helpers are on the floor.
+			// SAFETY: the agents service's record shape is not exported, but every field the
+			// tower reads from it is an optional member of TowerAgentInput consumed defensively
+			// (String() coercion for status, optional chains elsewhere), so a field it lacks
+			// degrades to "unknown" instead of breaking the snapshot.
 			const listed = ((agents?.read().agents ?? []) as unknown as TowerAgentInput[]).filter((a) => LIVE_HELPER.has(String(a.status)));
 			writeTowerSnapshot(dir, { pid: process.pid, ...buildTowerSnapshot({
 				sessionId,
@@ -275,28 +284,58 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 		// The tower this session opened ends with it.
 		const opened = server;
 		server = undefined;
+		serverLan = undefined;
 		void opened?.then((s) => s.close()).catch(() => undefined);
 	});
 
+	// Same startup as `gentle-shell tower`: hub, web app, token, presence, new floors.
+	// The server is reused while the requested mode matches; a different mode
+	// closes the running one and starts its replacement.
+	const ensureTower = (lan: boolean): Promise<TowerServer> => {
+		if (server !== undefined && serverLan === lan) return server;
+		const previous = server;
+		serverLan = lan;
+		server = openTowerServer(env, { webDir, ...(lan ? { lan: true } : {}), ...(options.interfaces === undefined ? {} : { interfaces: options.interfaces }) });
+		if (previous !== undefined) void previous.then((s) => s.close()).catch(() => undefined);
+		return server;
+	};
+
+	const reportTower = async (lan: boolean, notify: (text: string, level: "info" | "warning" | "error") => void): Promise<void> => {
+		let pending: Promise<TowerServer> | undefined;
+		try {
+			pending = ensureTower(lan);
+			const s = await pending;
+			// The TUI notify box cannot carry QR art; the terminal command prints it.
+			const lines = [`Gentle Tower: ${s.url}`, ...s.urls.slice(1).map((u) => `  ${u}`), ...(s.lan ? [TOWER_LAN_WARNING] : [])];
+			notify(lines.join("\n"), "info");
+			openUrl(s.url);
+		} catch (error) {
+			// Clear only the startup this report owns; a newer command may have replaced it.
+			if (pending === undefined || server === pending) {
+				server = undefined;
+				serverLan = undefined;
+			}
+			if (error instanceof TowerNotBuiltError) return notify(error.message, "warning");
+			notify(`Gentle Tower could not start: ${error instanceof Error ? error.message : String(error)}`, "error");
+		}
+	};
+
 	pi.registerCommand("gentle:tower", {
 		description: "Open the Gentle Tower: every Gentle Shell session as a floor, in your browser",
+		handler: async (args, c) => {
+			// One flag only: --lan turns on the same-network mode.
+			await reportTower((args ?? "").trim() === "--lan", (text, level) => c.ui.notify(text, level));
+		},
+	});
+	pi.registerCommand("gentle:tower-mobile", {
+		description: "Open the Gentle Tower for your phone: the same view served on your network, with a URL to open from the phone",
 		handler: async (_args, c) => {
-			// Same startup as `gentle-shell tower`: hub, web app, token, presence, new floors.
-			server ??= openTowerServer(env, { webDir });
-			try {
-				const s = await server;
-				c.ui.notify(`Gentle Tower: ${s.url}`, "info");
-				openUrl(s.url);
-			} catch (error) {
-				server = undefined;
-				if (error instanceof TowerNotBuiltError) return c.ui.notify(error.message, "warning");
-				c.ui.notify(`Gentle Tower could not start: ${error instanceof Error ? error.message : String(error)}`, "error");
-			}
+			await reportTower(true, (text, level) => c.ui.notify(text, level));
 		},
 	});
 
 	return {
-		close: async () => { const s = server; server = undefined; if (s) await (await s).close(); },
+		close: async () => { const s = server; server = undefined; serverLan = undefined; if (s) await (await s).close(); },
 	};
 }
 

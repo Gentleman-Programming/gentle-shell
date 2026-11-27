@@ -5,11 +5,13 @@
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { type NetworkInterfaceInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { towerHubDir } from "./tower-hub.ts";
 import { launchInTerminal } from "./tower-launch.ts";
 import { defaultPresenceDirs } from "./tower-presence.ts";
+import { encodeQr, renderQrTerminal } from "./tower-qr.ts";
 import { startTowerServer, type TowerServer } from "./tower-server.ts";
 
 // lib/ and its generated runtime/ copy both sit one level under the package root.
@@ -31,7 +33,14 @@ export interface OpenTowerOptions {
 	port?: number;
 	/** Peer presence registries (defaults to the user's). */
 	presenceDirs?: readonly string[];
+	/** Opt-in LAN mode: bind every IPv4 interface and serve one URL per LAN address. */
+	lan?: boolean;
+	/** Network interfaces to enumerate the LAN addresses from (defaults to the OS's). */
+	interfaces?: NodeJS.Dict<readonly NetworkInterfaceInfo[]>;
 }
+
+/** The warning every LAN-mode report prints, exactly. */
+export const TOWER_LAN_WARNING = "LAN mode: anyone on this network who opens the URL can read and drive your sessions; traffic is not encrypted. Use it only on a trusted home network.";
 
 export function openTowerServer(env: NodeJS.ProcessEnv, options: OpenTowerOptions = {}): Promise<TowerServer> {
 	const webDir = options.webDir ?? TOWER_WEB_DIR;
@@ -43,6 +52,8 @@ export function openTowerServer(env: NodeJS.ProcessEnv, options: OpenTowerOption
 		engramUrl: env.ENGRAM_URL || "http://127.0.0.1:7437",
 		presenceDirs: options.presenceDirs ?? defaultPresenceDirs(),
 		...(options.port === undefined ? {} : { port: options.port }),
+		...(options.lan ? { lan: true } : {}),
+		...(options.interfaces === undefined ? {} : { interfaces: options.interfaces }),
 		onNewFloor: (cwd, prompt) => launchInTerminal({ cwd, node: process.execPath, launcher: LAUNCHER, ...(prompt ? { prompt } : {}) }),
 	});
 }
@@ -94,9 +105,19 @@ export async function runTower(options: RunTowerOptions): Promise<number> {
 		return 1;
 	}
 	try {
-		options.stdout(options.json
-			? `${JSON.stringify({ schema: TOWER_JSON_SCHEMA, url: server.url, host: server.host, port: server.port })}\n`
-			: `Gentle Tower: ${server.url}\nPress Ctrl+C to stop.\n`);
+		if (options.json) {
+			// One line, no QR art; LAN mode adds its own fields at the end.
+			options.stdout(`${JSON.stringify({ schema: TOWER_JSON_SCHEMA, url: server.url, host: server.host, port: server.port,
+				...(server.lan ? { lan: server.lan, urls: server.urls, warning: TOWER_LAN_WARNING } : {}) })}\n`);
+		} else if (server.lan) {
+			const lines = [`Gentle Tower: ${server.url}`, ...server.urls.slice(1).map((u) => `  ${u}`)];
+			// The QR carries the first LAN address: the phone's way in.
+			if (server.urls.length > 1) for (const line of renderQrTerminal(encodeQr(server.urls[1]))) lines.push(`  ${line}`);
+			lines.push(TOWER_LAN_WARNING, "Press Ctrl+C to stop.");
+			options.stdout(`${lines.join("\n")}\n`);
+		} else {
+			options.stdout(`Gentle Tower: ${server.url}\nPress Ctrl+C to stop.\n`);
+		}
 		if (options.open) (options.openUrl ?? openInBrowser)(server.url);
 		await (options.untilStopped ?? untilSignal)(server);
 	} finally {

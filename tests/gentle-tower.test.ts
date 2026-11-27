@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { type NetworkInterfaceInfo, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -121,6 +121,11 @@ function uiCtx(messages: string[]): ExtensionContext {
 	return { ...fakeCtx([]), ui: { notify: (m: string) => messages.push(m) } } as unknown as ExtensionContext;
 }
 
+// A fixed interface list for the LAN reports: the assertions must name exactly
+// these addresses, whatever the OS says by the time they run.
+const TUI_LAN_NIC: NetworkInterfaceInfo = { address: "192.168.0.2", netmask: "255.255.255.0", mac: "00:00:00:00:00:00", internal: false, cidr: null, family: "IPv4" };
+const TUI_LAN_INTERFACES: NodeJS.Dict<readonly NetworkInterfaceInfo[]> = { en0: [TUI_LAN_NIC] };
+
 test("/gentle:tower opens the local tower once and reuses it", async () => {
 	const dir = hub();
 	const web = join(dir, "..", "web");
@@ -139,6 +144,9 @@ test("/gentle:tower opens the local tower once and reuses it", async () => {
 	assert.equal(opened[0], opened[1]);
 	assert.match(opened[0], /^http:\/\/127\.0\.0\.1:\d+\/[A-Za-z0-9_-]{32,}\/$/);
 	assert.match(messages[0], /Gentle Tower: http:\/\/127\.0\.0\.1/);
+	// Without the flag the report stays byte-identical: one line, the loopback URL.
+	assert.equal(messages[0], `Gentle Tower: ${opened[0]}`);
+	assert.equal(messages[1], messages[0]);
 	await tower?.close();
 });
 
@@ -151,6 +159,83 @@ test("/gentle:tower explains when the web app is not built", async () => {
 	await commands.get("gentle:tower")!.handler("", uiCtx(messages));
 	assert.deepEqual(opened, []);
 	assert.match(messages[0], /web app is not built/);
+});
+
+test("/gentle:tower --lan reports the LAN URLs and the warning, without QR art", async () => {
+	const dir = hub();
+	const web = join(dir, "..", "web");
+	(await import("node:fs")).mkdirSync(web, { recursive: true });
+	(await import("node:fs")).writeFileSync(join(web, "index.html"), "<title>Gentle Tower</title>");
+	const { pi, commands } = commandPi();
+	const opened: string[] = [];
+	// A fixed interface list, given before the tower starts: the report must
+	// name exactly these addresses, whatever the OS says by now.
+	const tower = createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, webDir: web, interfaces: TUI_LAN_INTERFACES, openUrl: (u) => opened.push(u) });
+	const messages: string[] = [];
+	await commands.get("gentle:tower")!.handler("--lan", uiCtx(messages));
+	const lines = messages[0].split("\n");
+	assert.match(lines[0], /^Gentle Tower: http:\/\/127\.0\.0\.1:\d+\/[A-Za-z0-9_-]{32,}\/$/);
+	// The browser still opens the loopback URL, and the report carries every LAN URL.
+	assert.deepEqual(opened, [lines[0].slice("Gentle Tower: ".length)]);
+	assert.deepEqual(lines.slice(1, 2), [`  http://192.168.0.2:${new URL(lines[0].slice("Gentle Tower: ".length)).port}/${new URL(lines[0].slice("Gentle Tower: ".length)).pathname.replaceAll("/", "")}/`]);
+	// One loopback line, one per LAN address, the warning last; the TUI notify box cannot carry QR art.
+	assert.equal(lines.length, 3);
+	assert.equal(lines[lines.length - 1], "LAN mode: anyone on this network who opens the URL can read and drive your sessions; traffic is not encrypted. Use it only on a trusted home network.");
+	assert.ok(!/[\u2580\u2584\u2588]/.test(messages[0]), "no QR blocks in the TUI notify");
+	await tower?.close();
+});
+
+test("/gentle:tower replaces the tower when the mode changes, in both orders", async () => {
+	const dir = hub();
+	const web = join(dir, "..", "web");
+	(await import("node:fs")).mkdirSync(web, { recursive: true });
+	(await import("node:fs")).writeFileSync(join(web, "index.html"), "<title>Gentle Tower</title>");
+	const { pi, commands } = commandPi();
+	const opened: string[] = [];
+	const tower = createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, webDir: web, interfaces: TUI_LAN_INTERFACES, openUrl: (u) => opened.push(u) });
+	const messages: string[] = [];
+	// Loopback first: one line, the loopback URL.
+	await commands.get("gentle:tower")!.handler("", uiCtx(messages));
+	assert.equal(messages[0], `Gentle Tower: ${opened[0]}`);
+	// Same mode reuses the server: the same URL, the same one-line report.
+	await commands.get("gentle:tower")!.handler("", uiCtx(messages));
+	assert.equal(messages[1], messages[0]);
+	assert.equal(opened.length, 2);
+	// Asking for the network mode replaces the tower: a new URL, LAN lines and the warning.
+	await commands.get("gentle:tower")!.handler("--lan", uiCtx(messages));
+	assert.notEqual(opened[2], opened[0], "a mode change starts a new server");
+	assert.equal(messages[2].split("\n").length, 3);
+	assert.match(messages[2], /http:\/\/192\.168\.0\.2:/);
+	assert.match(messages[2], /LAN mode: anyone on this network/);
+	// And back to loopback: replaced again, one line, no LAN, no warning.
+	await commands.get("gentle:tower")!.handler("", uiCtx(messages));
+	assert.notEqual(opened[3], opened[2], "a mode change starts a new server");
+	assert.equal(messages[3], `Gentle Tower: ${opened[3]}`);
+	await tower?.close();
+});
+
+test("/gentle:tower-mobile serves the network mode and reuses it on repeat", async () => {
+	const dir = hub();
+	const web = join(dir, "..", "web");
+	(await import("node:fs")).mkdirSync(web, { recursive: true });
+	(await import("node:fs")).writeFileSync(join(web, "index.html"), "<title>Gentle Tower</title>");
+	const { pi, commands } = commandPi();
+	const opened: string[] = [];
+	const tower = createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, webDir: web, interfaces: TUI_LAN_INTERFACES, openUrl: (u) => opened.push(u) });
+	const mobile = commands.get("gentle:tower-mobile");
+	assert.ok(mobile, "command registered");
+	assert.match(mobile.description ?? "", /phone/i);
+	const messages: string[] = [];
+	await mobile.handler("", uiCtx(messages));
+	assert.equal(messages[0].split("\n").length, 3);
+	assert.match(messages[0], /http:\/\/192\.168\.0\.2:/);
+	assert.match(messages[0], /LAN mode: anyone on this network/);
+	// Same mode as /gentle:tower --lan: the same server is reused (the browser still opens it again).
+	await commands.get("gentle:tower")!.handler("--lan", uiCtx(messages));
+	assert.equal(messages[1], messages[0]);
+	assert.equal(opened.length, 2);
+	assert.equal(opened[1], opened[0], "the same server is reused");
+	await tower?.close();
 });
 
 // ---------- T5: actions requested from the web view ----------

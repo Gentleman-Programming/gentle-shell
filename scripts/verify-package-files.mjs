@@ -163,6 +163,7 @@ export const requiredPaths = [
 	"runtime/review-relay-contract.mjs",
 	"runtime/telemetry-trigger.mjs",
 	"runtime/tower-open.mjs",
+	"runtime/tower-qr.mjs",
 	"runtime/sensitive-paths.mjs",
 	"runtime/tower-server.mjs",
 	"runtime/tower-hub.mjs",

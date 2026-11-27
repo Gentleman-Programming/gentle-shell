@@ -27,6 +27,7 @@ const sources = [
 	"design-canvas-assets",
 	// `gentle-shell tower` runs the Gentle Tower server without Pi.
 	"tower-snapshot",
+	"tower-qr",
 	"tower-hub",
 	"tower-presence",
 	"tower-actions",

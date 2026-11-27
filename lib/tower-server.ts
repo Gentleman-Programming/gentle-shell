@@ -1,10 +1,13 @@
 // Gentle Tower web server: serves the built web app and the hub's floors.
 // Closed by default: 127.0.0.1 only, a random port, a per-launch token on every
-// request, and any Origin other than its own is refused. Read-only for now:
-// actions come later and reuse Gentle Shell's own authority.
+// request, and any Origin other than its own is refused. The opt-in lan mode
+// additionally serves the machine's LAN addresses, accepting only the origins
+// of the hosts it launched with. Read-only for now: actions come later and
+// reuse Gentle Shell's own authority.
 
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { type NetworkInterfaceInfo, networkInterfaces } from "node:os";
 import { basename, dirname, extname, resolve, sep } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { readLiveTowerSnapshots as readTowerSnapshots } from "./tower-hub.ts";
@@ -25,6 +28,10 @@ export interface TowerServerOptions {
 	now?: () => number;
 	/** Opens a new Gentle Shell session (a floor) in a project already in the tower. */
 	onNewFloor?: (cwd: string, prompt?: string) => Promise<void>;
+	/** Opt-in LAN mode: bind every IPv4 interface and serve one URL per LAN address. */
+	lan?: boolean;
+	/** Network interfaces to enumerate the LAN addresses from (defaults to the OS's). */
+	interfaces?: NodeJS.Dict<readonly NetworkInterfaceInfo[]>;
 }
 
 const ARTIFACT_TYPES: Record<string, string> = { ".md": "text/plain; charset=utf-8", ".markdown": "text/plain; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".mmd": "text/plain; charset=utf-8", ".mermaid": "text/plain; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
@@ -32,9 +39,16 @@ const ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
 const MEMORY_MAX_BYTES = 512 * 1024;
 
 export interface TowerServer {
-	host: "127.0.0.1";
+	/** The bind address: "127.0.0.1", or "0.0.0.0" in lan mode. */
+	host: string;
 	port: number;
 	url: string;
+	/** Whether the server also serves the machine's LAN addresses. */
+	lan: boolean;
+	/** Every launch URL: the loopback one first, then one per LAN address. */
+	urls: string[];
+	/** The LAN addresses lan mode serves (empty otherwise). */
+	lanIps: string[];
 	close(): Promise<void>;
 }
 
@@ -55,11 +69,48 @@ function sameToken(given: string | null | undefined, token: string): boolean {
 	return a.length === b.length && timingSafeEqual(a, b);
 }
 
+function isPrivateIpv4(ip: string): boolean {
+	const o = ip.split(".").map(Number);
+	return o.length === 4 && (o[0] === 10 || (o[0] === 192 && o[1] === 168) || (o[0] === 172 && o[1] >= 16 && o[1] <= 31));
+}
+
+/** Private ranges first, then numeric order, so the first URL is the most likely home LAN address. */
+function compareLanIpv4(a: string, b: string): number {
+	const rank = (ip: string) => (isPrivateIpv4(ip) ? 0 : 1);
+	if (rank(a) !== rank(b)) return rank(a) - rank(b);
+	const as = a.split(".").map(Number), bs = b.split(".").map(Number);
+	for (let i = 0; i < 4; i += 1) if (as[i] !== bs[i]) return (as[i] ?? 0) - (bs[i] ?? 0);
+	return a.localeCompare(b);
+}
+
+/** The machine's non-internal IPv4 addresses, link-local 169.254.0.0/16 aside, private ranges first. */
+export function lanIpv4Addresses(interfaces: NodeJS.Dict<readonly NetworkInterfaceInfo[]>): string[] {
+	const ips = new Set<string>();
+	for (const nics of Object.values(interfaces))
+		for (const nic of nics ?? [])
+			if (nic.family === "IPv4" && !nic.internal && !nic.address.startsWith("169.254.")) ips.add(nic.address);
+	return [...ips].sort(compareLanIpv4);
+}
+
+/** The `host` or `host:port` authorities a lan launch answers to, canonical for HTTP: on port 80 both the bare host and the explicit `:80` are approved (WHATWG URL serialization drops the default port); on any other port the authority always carries it. */
+export function lanAllowedHosts(lanIps: readonly string[], port: number): Set<string> {
+	const hosts = new Set<string>();
+	for (const host of ["127.0.0.1", "localhost", ...lanIps]) {
+		if (port === 80) { hosts.add(host); hosts.add(`${host}:80`); }
+		else hosts.add(`${host}:${port}`);
+	}
+	return hosts;
+}
+
 export function startTowerServer(options: TowerServerOptions): Promise<TowerServer> {
 	const webRoot = realpathSync(options.webDir);
 	const clients = new Set<ServerResponse>();
 	let lastBody = "";
 	const now = options.now ?? Date.now;
+	const lan = options.lan === true;
+	const lanIps = lan ? lanIpv4Addresses(options.interfaces ?? networkInterfaces()) : [];
+	/** The `host:port` values an Origin may name in lan mode; filled once the port is known. */
+	let allowedHosts = new Set<string>();
 	// Detailed floors (tower extension) win; every other live session joins as a basic floor.
 	const LIVE = new Set(["queued", "running", "waiting"]);
 	/** A snapshot this much older than the heartbeat has stopped updating. */
@@ -166,7 +217,15 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 	const handler = (req: IncomingMessage, res: ServerResponse) => {
 		if (req.method !== "GET" && req.method !== "POST") return deny(res, 405);
 		const origin = req.headers.origin;
-		if (origin && origin !== `http://127.0.0.1:${port}`) return deny(res);
+		if (lan) {
+			// Every request names the host it wants, even a navigation GET without an
+			// Origin: it must be one this launch answers to, so a rebinding Host is
+			// refused before the token or the page is even considered. The Origin,
+			// when a browser sends one, must name that same host.
+			const host = req.headers.host ?? "";
+			if (!allowedHosts.has(host)) return deny(res);
+			if (origin && origin !== `http://${host}`) return deny(res);
+		} else if (origin && origin !== `http://127.0.0.1:${port}`) return deny(res);
 		// A browser always sends Origin on POST; a missing one is not our page.
 		if (req.method === "POST" && !origin) return deny(res);
 		// The token is the first path segment, so every relative request the app
@@ -212,14 +271,19 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 
 	return new Promise((resolveStart, reject) => {
 		server.once("error", reject);
-		server.listen(options.port ?? 0, "127.0.0.1", () => {
+		server.listen(options.port ?? 0, lan ? "0.0.0.0" : "127.0.0.1", () => {
 			const addr = server.address();
 			port = typeof addr === "object" && addr ? addr.port : 0;
+			if (lan) allowedHosts = lanAllowedHosts(lanIps, port);
+			const url = `http://127.0.0.1:${port}/${options.token}/`;
 			lastBody = sessionsBody();
 			resolveStart({
-				host: "127.0.0.1",
+				host: lan ? "0.0.0.0" : "127.0.0.1",
 				port,
-				url: `http://127.0.0.1:${port}/${options.token}/`,
+				url,
+				lan,
+				urls: [url, ...lanIps.map((ip) => `http://${ip}:${port}/${options.token}/`)],
+				lanIps,
 				close: () => new Promise<void>((done) => {
 					clearInterval(poll);
 					for (const c of clients) c.end();

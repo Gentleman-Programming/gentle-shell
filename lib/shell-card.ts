@@ -4,14 +4,71 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from 
 // and above the editor. The same rounded frame as the prompt and the
 // overlays, with the title in the card's tone. Pure: strings in, lines out.
 
+// Event families (DESIGN.md §C2): one box per event in the transcript, with a
+// one-cell border whose colour IS the family code. The border is information,
+// never decoration: the family reads from the frame alone, and the state still
+// rides a glyph and a word on every row (running…, ✓, ✕), so nothing is coded
+// by colour only.
+export const CARD_FAMILY = {
+	AGENT: "agent",
+	SUBAGENT: "subagent",
+	BASH: "bash",
+	TODO: "todo",
+} as const;
+
+export type CardFamily = (typeof CARD_FAMILY)[keyof typeof CARD_FAMILY];
+
+/** The suffix a family tone wears when the event failed. */
+const FAMILY_ERROR_SUFFIX = "-error";
+
+/** The glyph each family bites next to its title, as in the reference transcript. */
+export const CARD_FAMILY_GLYPH: Record<CardFamily, string> = {
+	[CARD_FAMILY.AGENT]: "▶",
+	[CARD_FAMILY.SUBAGENT]: "▪",
+	[CARD_FAMILY.BASH]: ">_",
+	[CARD_FAMILY.TODO]: "▪",
+};
+
+// The tones a card can wear. The four families join the four states: pi themes
+// expose a fixed token set, so a family borrows the token that already carries
+// its colour instead of adding a role to the theme file.
 export const CARD_TONE = {
 	INFO: "info",
 	SUCCESS: "success",
 	WARNING: "warning",
 	ERROR: "error",
+	AGENT: CARD_FAMILY.AGENT,
+	SUBAGENT: CARD_FAMILY.SUBAGENT,
+	BASH: CARD_FAMILY.BASH,
+	TODO: CARD_FAMILY.TODO,
+	// A failed event keeps its family box and only changes colour: the shape is
+	// the family, so a command that fails must not turn into another shape.
+	AGENT_ERROR: "agent-error",
+	SUBAGENT_ERROR: "subagent-error",
+	BASH_ERROR: "bash-error",
+	TODO_ERROR: "todo-error",
 } as const;
 
 export type CardTone = (typeof CARD_TONE)[keyof typeof CARD_TONE];
+
+/** The error tone each family wears, keeping its own box. */
+const FAMILY_ERROR_TONE: Record<CardFamily, CardTone> = {
+	[CARD_FAMILY.AGENT]: CARD_TONE.AGENT_ERROR,
+	[CARD_FAMILY.SUBAGENT]: CARD_TONE.SUBAGENT_ERROR,
+	[CARD_FAMILY.BASH]: CARD_TONE.BASH_ERROR,
+	[CARD_FAMILY.TODO]: CARD_TONE.TODO_ERROR,
+};
+
+/** The family a tone paints, or undefined for a plain state tone. */
+export function cardFamily(tone: CardTone): CardFamily | undefined {
+	const name = tone.endsWith(FAMILY_ERROR_SUFFIX) ? tone.slice(0, -FAMILY_ERROR_SUFFIX.length) : tone;
+	return (Object.values(CARD_FAMILY) as string[]).includes(name) ? (name as CardFamily) : undefined;
+}
+
+/** The tone an event family wears; a failed event takes the error family instead. */
+export function familyTone(family: CardFamily, failed = false): CardTone {
+	return failed ? FAMILY_ERROR_TONE[family] : (family as CardTone);
+}
 
 export interface Card {
 	title: string;
@@ -95,17 +152,37 @@ export const CARD_GLYPH = "✿";
 // rounded frame stays in the theme's plain border role while its title
 // carries the accent role — the rose look every informational card (sidebar,
 // review preflight, a quiet Agents widget, ...) uses.
+// The rose of the agent families. The Dracula theme this shell ships reaches
+// it through its rose token (`syntaxKeyword`, #FF79C6); another theme keeps its
+// own keyword colour, and the family still differs from every other border.
+const ROSE_ROLE = "syntaxKeyword";
 const FRAME_ROLE: Record<CardTone, string> = {
 	[CARD_TONE.INFO]: "border",
 	[CARD_TONE.SUCCESS]: "success",
 	[CARD_TONE.WARNING]: "warning",
 	[CARD_TONE.ERROR]: "error",
+	[CARD_TONE.AGENT]: ROSE_ROLE,
+	[CARD_TONE.SUBAGENT]: ROSE_ROLE,
+	[CARD_TONE.BASH]: "success",
+	[CARD_TONE.TODO]: "accent",
+	[CARD_TONE.AGENT_ERROR]: "error",
+	[CARD_TONE.SUBAGENT_ERROR]: "error",
+	[CARD_TONE.BASH_ERROR]: "error",
+	[CARD_TONE.TODO_ERROR]: "error",
 };
 const TITLE_ROLE: Record<CardTone, string> = {
 	[CARD_TONE.INFO]: "accent",
 	[CARD_TONE.SUCCESS]: "success",
 	[CARD_TONE.WARNING]: "warning",
 	[CARD_TONE.ERROR]: "error",
+	[CARD_TONE.AGENT]: ROSE_ROLE,
+	[CARD_TONE.SUBAGENT]: ROSE_ROLE,
+	[CARD_TONE.BASH]: "success",
+	[CARD_TONE.TODO]: "accent",
+	[CARD_TONE.AGENT_ERROR]: "error",
+	[CARD_TONE.SUBAGENT_ERROR]: "error",
+	[CARD_TONE.BASH_ERROR]: "error",
+	[CARD_TONE.TODO_ERROR]: "error",
 };
 const HINT_ROLE = "dim";
 const SUBTITLE_ROLE = "muted";
@@ -129,6 +206,9 @@ interface CardChrome {
 }
 
 const OUTLINE_CHROME: CardChrome = { topLeft: "╭", topLead: "─ ", topRight: "╮", rule: "─", side: "│", rail: "│", bottomLeft: "╰", bottomRight: "╯" };
+// An event box has square corners (DESIGN.md §C2). Every conversation card keeps
+// the rounded frame; only the event families below paint with these.
+const EVENT_CHROME: CardChrome = { topLeft: "┌", topLead: "─ ", topRight: "┐", rule: "─", side: "│", rail: "│", bottomLeft: "└", bottomRight: "┘" };
 // `▎ ` is one cell narrower than `╭─ `: the spare cell moves to the right end
 // so the heading glyph starts in the same column as the body text.
 const FLOAT_CHROME: CardChrome = { topLeft: "▎", topLead: " ", topRight: "  ", rule: " ", side: "▎", rail: " ", bottomLeft: "▎", bottomRight: " " };
@@ -305,6 +385,14 @@ const FLOAT_BG_ROLE: Record<CardTone, string> = {
 	[CARD_TONE.SUCCESS]: "toolSuccessBg",
 	[CARD_TONE.WARNING]: "toolPendingBg",
 	[CARD_TONE.ERROR]: "toolErrorBg",
+	[CARD_TONE.AGENT]: "toolPendingBg",
+	[CARD_TONE.SUBAGENT]: "toolPendingBg",
+	[CARD_TONE.BASH]: "toolSuccessBg",
+	[CARD_TONE.TODO]: "toolPendingBg",
+	[CARD_TONE.AGENT_ERROR]: "toolErrorBg",
+	[CARD_TONE.SUBAGENT_ERROR]: "toolErrorBg",
+	[CARD_TONE.BASH_ERROR]: "toolErrorBg",
+	[CARD_TONE.TODO_ERROR]: "toolErrorBg",
 };
 const BG_RESET = "\x1b[49m";
 // Full resets (pi-tui truncation inserts one) and background resets.
@@ -339,11 +427,11 @@ function panelOpener(theme: CardTheme, tone: CardTone): string {
  */
 export function floatRows(tone: CardTone, theme: CardTheme, width: number, render: (width: number) => CardParts): string[] {
 	const target = Math.max(0, Math.floor(width));
+	// An event family always draws its box, whatever the conversation card style
+	// is: the border carries the family, so it cannot depend on a preference.
+	if (cardFamily(tone) !== undefined) return withChrome(EVENT_CHROME, () => rowsAt(target, render));
 	const open = floatOpener(theme, tone, target);
-	if (!open) {
-		const { head = [], body = [], bottom } = render(width);
-		return [...head, ...body, ...(bottom === undefined ? [] : [bottom])];
-	}
+	if (!open) return rowsAt(target, render);
 	const inner = target - FLOAT_MARGIN * 2;
 	const rows = withChrome(FLOAT_CHROME, () => {
 		const { head = [], body = [], bottom, afterHeading = false } = render(inner);
@@ -358,8 +446,16 @@ export function floatRows(tone: CardTone, theme: CardTheme, width: number, rende
 	return paintFloat(rows, open);
 }
 
+/** The rows one card component draws, in the chrome it is called with. */
+function rowsAt(width: number, render: (width: number) => CardParts): string[] {
+	const { head = [], body = [], bottom } = render(width);
+	return [...head, ...body, ...(bottom === undefined ? [] : [bottom])];
+}
+
 /** The tone background opener when the float style applies at this width, or "" for the outlined card. */
 function floatOpener(theme: CardTheme, tone: CardTone, width: number): string {
+	// Event families never take the float surface: their box is the signal.
+	if (cardFamily(tone) !== undefined) return "";
 	return cardStyle() === CARD_STYLE.FLOAT && Math.floor(width) >= FLOAT_MIN_WIDTH ? panelOpener(theme, tone) : "";
 }
 
@@ -407,6 +503,7 @@ export function renderCard(card: Card, theme: CardTheme, width: number, options:
 		bottom: cardBottom(card.tone, theme, inner),
 	}));
 	// Without the panel opt-in, legacy cards always keep the outlined frame.
+	if (cardFamily(card.tone) !== undefined && chrome !== EVENT_CHROME) return withChrome(EVENT_CHROME, () => renderCard(card, theme, width, options));
 	if (chrome !== OUTLINE_CHROME) return withChrome(OUTLINE_CHROME, () => renderCard(card, theme, width, options));
 	const open = options.panel ? floatOpener(theme, card.tone, width) : "";
 	if (open) return paintFloat(withChrome(FLOAT_CHROME, () => floatPanel(card, theme, Math.floor(width) - FLOAT_MARGIN * 2, options)), open);

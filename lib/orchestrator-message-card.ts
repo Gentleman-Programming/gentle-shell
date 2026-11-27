@@ -1,8 +1,8 @@
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { readableDataRows } from "./orchestrator-tool-card.ts";
 import {
-	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardRunningLine, cardTop,
-	floatRows, markCardResult, renderCard, type CardRowContext, type CardTheme,
+	CARD_FAMILY, CARD_FAMILY_GLYPH, CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardRunningLine, cardTop,
+	familyTone, floatRows, markCardResult, renderCard, type CardRowContext, type CardTheme,
 } from "./shell-card.ts";
 
 export interface OrchestratorMessageDetails {
@@ -44,7 +44,10 @@ export function incomingMessageCard(data: OrchestratorMessageDetails, content: s
 	const body = clean(data.message ?? (content.startsWith(prefix) ? content.slice(prefix.length) : content)).split("\n");
 	return {
 		render(width: number) {
-			return renderCard({ title: "Message received", subtitle: route(data, true), body: expanded ? [...body, "", ...technicalRows(data)] : body, tone: CARD_TONE.INFO, glyph: "↙" }, theme, width, { expanded, previewRows: 3, hint });
+			// Agent messages are one event family (DESIGN.md §C2): a rose box with
+			// the title bitten into the top rule. The two directions keep their own
+			// glyph — ▶ sent, ↙ received — so the family never reads by colour only.
+			return renderCard({ title: "Message received", subtitle: route(data, true), body: expanded ? [...body, "", ...technicalRows(data)] : body, tone: CARD_TONE.AGENT, glyph: "↙" }, theme, width, { expanded, previewRows: 3, hint });
 		},
 		invalidate() {},
 	};
@@ -56,11 +59,11 @@ export function outgoingMessageCall(args: { message?: unknown }, theme: CardThem
 			if (width <= 0) return [];
 			const data = context.state?.orchestratorMessage ?? {};
 			const pending = cardAwaitingResult(context);
-			const tone = context.state?.messageError ? CARD_TONE.ERROR : CARD_TONE.INFO;
+			const tone = familyTone(CARD_FAMILY.AGENT, context.state?.messageError === true);
 			const title = pending ? "Sending message" : context.state?.messageError ? "Message not sent" : data.state === "accepted" ? "Message queued" : "Orchestrator message";
 			return floatRows(tone, theme, width, (inner) => ({
 				// Fixed status titles stay on one row; long routes are clipped, not wrapped.
-				head: [cardTop({ title, subtitle: route(data), body: [], tone, glyph: "↗" }, theme, inner, hint)],
+				head: [cardTop({ title, subtitle: route(data), body: [], tone, glyph: CARD_FAMILY_GLYPH[CARD_FAMILY.AGENT] }, theme, inner, hint)],
 				...(pending ? {
 					body: [...cardBodyRows(clean(args.message).split("\n"), tone, theme, inner, { expanded: !!context.expanded, previewRows: 3 }), cardRunningLine(tone, theme, inner)],
 					bottom: cardBottom(tone, theme, inner),
@@ -81,7 +84,7 @@ export function outgoingMessageResult(result: { content: Array<{ type: string; t
 		context.state.orchestratorMessage = data;
 		context.state.messageError = failed;
 	}
-	const tone = failed ? CARD_TONE.ERROR : CARD_TONE.INFO;
+	const tone = familyTone(CARD_FAMILY.AGENT, failed);
 	const text = result.content.filter(part => part.type === "text").map(part => part.text ?? "").join("\n");
 	const body = accepted ? clean(data.message ?? context.args?.message).split("\n") : clean(text).split("\n");
 	if (expanded && accepted) {

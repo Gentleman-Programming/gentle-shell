@@ -231,8 +231,9 @@ test("the todo tool writes the list, shows the card after the call, and carries 
 	const bad = await tool.execute("c2", { action: "update", id: 9, status: "done" }, undefined, undefined, ctx);
 	assert.match(bad.content[0].text, /Error: no task #9/);
 	assert.equal(bad.details.error, "no task #9");
-	assert.match(tool.renderCall({ action: "write" }, plainTheme).render(40).join(""), /❀ todo · write/);
-	assert.equal(tool.renderResult({ content: [{ type: "text", text: "a\nb" }] }, { expanded: false }, plainTheme).render(40).join("|").trimEnd(), "a");
+	assert.match(tool.renderCall({ action: "write" }, plainTheme).render(40).join(""), /^┌─ ▪ todo · write ─+┐$/);
+	assert.equal(tool.renderResult({ content: [{ type: "text", text: "a\nb" }] }, { expanded: false }, plainTheme).render(40).join("|"), "│ a                                    │|└──────────────────────────────────────┘");
+	assert.equal(tool.renderResult({ content: [{ type: "text", text: "a\nb" }] }, { expanded: true }, plainTheme).render(40).join("|"), "│ a                                    │|│ b                                    │|└──────────────────────────────────────┘");
 });
 
 test("the Todo header is a fullscreen left-click control while non-click pointer events stay inert", async () => {
@@ -300,7 +301,7 @@ test("the rail draws Todos as a panel section whose header row 0 is the collapse
 		const rail = sidebarState(tui as never).parts.get("todo")!;
 		assert.equal((rail as { surface?: string }).surface, "panel", "the rail paints this section on the panel surface");
 		const rows = rail.render(48).map((row) => stripAnsi(row).trimEnd());
-		assert.deepEqual(rows, ["▾ TODOS                        ctrl+shift+t  1/3", "  ✓ 1 done", "  ◐ B", "    └ job-1", "  ○ C"]);
+		assert.deepEqual(rows, ["▾ TODOS                        ctrl+shift+t  1/3", "  ◐ B", "    └ job-1", "  ○ C", "  ✓ 1 done"]);
 		assert.doesNotMatch(rows.join("\n"), /[╭╮╰╯│▎]/u, "no card chrome in the rail");
 		const pointer = (type: "move" | "click", y: number) => ({
 			type, button: type === "move" ? "none" as const : "left" as const, x: 1, y, screenX: 1, screenY: y, width: 48, height: rows.length, shift: false, alt: false, ctrl: false,

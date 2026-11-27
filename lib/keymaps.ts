@@ -37,6 +37,7 @@ export const KEYMAP_ACTIONS: readonly KeymapAction[] = [
 	{ id: "agents.collapse", label: "Collapse the agents card", env: "GENTLE_PI_AGENTS_KEY", defaultKey: "ctrl+shift+a" },
 	{ id: "jobs.collapse", label: "Collapse the jobs card", env: "GENTLE_PI_JOBS_KEY", defaultKey: "ctrl+shift+j" },
 	{ id: "todo.collapse", label: "Collapse the todo list", env: "GENTLE_PI_TODO_KEY", defaultKey: "ctrl+shift+t" },
+	{ id: "console.collapse", label: "Collapse the console column", env: "GENTLE_PI_CONSOLE_KEY", defaultKey: "alt+r" },
 	{ id: "stats.view", label: "Usage stats", env: "GENTLE_PI_STATS_VIEW_KEY", command: "gentle:stats" },
 ];
 

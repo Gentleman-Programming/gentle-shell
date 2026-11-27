@@ -64,9 +64,13 @@ function routineRenderContext(overrides: Record<string, unknown> = {}) {
 // tool identity is asserted separately against the actual unmodified frame.
 // A pending call's `running…` row is frame chrome too, asserted separately.
 const TAG = "(?:</?[a-zA-Z]+>)*";
-const CARD_TOP = new RegExp(`^${TAG}╭─ ${TAG}[✿≡$⌕⌖☷✎+]${TAG} (.*?) ${TAG}─+${TAG}(?: .*? )?${TAG}╮${TAG}$`);
+// Conversation cards keep the rounded frame; an event family (`>_ bash`) draws
+// the square one, and its two-cell glyph, so both shapes are read as the same
+// chrome here and the content assertions stay literal.
+const GLYPH = "(?:✿|≡|>_|\\$|⌕|⌖|☷|✎|\\+)";
+const CARD_TOP = new RegExp(`^${TAG}[╭┌]─ ${TAG}${GLYPH}${TAG} (.*?) ${TAG}─+${TAG}(?: .*? )?${TAG}[╮┐]${TAG}$`);
 const CARD_SIDE = new RegExp(`^${TAG}│${TAG} (.*) ${TAG}│${TAG}$`);
-const CARD_BOTTOM = new RegExp(`^${TAG}╰${TAG}─*${TAG}╯${TAG}$`);
+const CARD_BOTTOM = new RegExp(`^${TAG}[╰└]${TAG}─*${TAG}[╯┘]${TAG}$`);
 
 function frameLines(component: { render(width: number): string[] }, width = 120): string[] {
 	return component.render(width).map((line) => line.trimEnd());
@@ -1447,10 +1451,10 @@ test("long finished quiet headings retain the applicable expansion hint and comp
 		const ctx = routineRenderContext({ args, executionStarted: true, isPartial: false, expanded });
 		for (const width of [80, 120]) {
 			const rows = frameLines(tool.renderCall(args, passthroughTheme, ctx), width);
-			assert.ok(rows[0].endsWith(` ${hint} ╮`), `width ${width}: applicable hint must survive heading wrapping`);
+			assert.ok(rows[0].endsWith(` ${hint} ┐`), `width ${width}: applicable hint must survive heading wrapping`);
 			assert.ok(rows.length > 1);
 			assert.ok(rows.every((row) => visibleWidth(row) <= width));
-			const first = rows[0].slice("╭─ $ ".length).split(" ─")[0];
+			const first = rows[0].slice("┌─ >_ ".length).split(" ─")[0];
 			const rest = rows.slice(1).map((row) => row.replace(/^│ /, "").replace(/ +│$/, ""));
 			assert.equal([first, ...rest].join(" ").replace(/\s+/g, " ").trim(), `bash $ ${command}`);
 		}
@@ -1479,12 +1483,14 @@ test("quiet components repaint after theme invalidation and retain transparent e
 
 test("six quiet cards and standalone Bash fixture retain distinct identity and bounded results", () => {
 	const tools = registeredQuietTools();
-	for (const [name, glyph] of [["read", "≡"], ["bash", "$"], ["grep", "⌕"], ["find", "⌖"], ["ls", "☷"], ["edit", "✎"], ["write", "+"]] as const) {
+	for (const [name, glyph] of [["read", "≡"], ["bash", ">_"], ["grep", "⌕"], ["find", "⌖"], ["ls", "☷"], ["edit", "✎"], ["write", "+"]] as const) {
 		const tool = tools.get(name);
 		const args = { command: "printf hello", path: "src/example.ts", pattern: "needle" };
 		const ctx = routineRenderContext({ args, isPartial: false, executionStarted: true });
 		const header = frameLines(tool.renderCall(args, passthroughTheme, ctx), 120).join("\n");
-		assert.ok(header.startsWith(`╭─ ${glyph} ${name} `), `${name} retains its distinct icon and actual identity`);
+		// bash is an event family: square corners and the `>_` family glyph. The rest keep the rounded frame.
+		const opener = name === "bash" ? "┌─" : "╭─";
+		assert.ok(header.startsWith(`${opener} ${glyph} ${name} `), `${name} retains its distinct icon and actual identity`);
 		assert.match(header, /to expand/);
 		const value = textResult("useful row\nsecond row", name === "edit" ? { diff: "-before\n+after" } : undefined);
 		const body = frameLines(tool.renderResult(value, { expanded: false, isPartial: false }, passthroughTheme, ctx), 120).join("\n");
@@ -1493,31 +1499,34 @@ test("six quiet cards and standalone Bash fixture retain distinct identity and b
 			const rows = frameLines(tool.renderResult(textResult("界e\u0301🌹".repeat(80)), { expanded: false, isPartial: false }, passthroughTheme, ctx), width);
 			assert.ok(rows.length <= 4);
 			assert.ok(rows.every((row) => visibleWidth(row) <= width));
-			assert.equal(rows.filter((row) => row.startsWith("╰")).length, width ? 1 : 0);
+			// The event family closes its box with a square corner; the other cards keep the rounded one.
+			const closer = name === "bash" ? "└" : "╰";
+			assert.equal(rows.filter((row) => row.startsWith(closer)).length, width ? 1 : 0);
 		}
 	}
 });
 
-test("quiet tool calls draw a rounded petal card in the lifecycle tone", () => {
+test("quiet tool calls draw an event box in the family tone", () => {
 	const tools = registeredQuietTools();
 	const bash = tools.get("bash");
 	const args = { command: "printf output" };
 	const width = 30;
 
 	const header = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false })).render(width);
-	assert.deepEqual(header, [`╭─ $ bash $ printf output ${"─".repeat(3)}╮`]);
+	assert.deepEqual(header, [`┌─ >_ bash $ printf output ${"─".repeat(2)}┐`]);
 	const running = bash.renderCall(args, statusTheme, routineRenderContext({ args, executionStarted: true, isPartial: true })).render(width);
-	assert.match(running[0] ?? "", /^<warning>╭<\/warning><warning>─ <\/warning><warning>\$ (?:<toolTitle>)?bash/);
-	assert.match(bash.renderCall(args, statusTheme, routineRenderContext({ args, isPartial: false, isError: true })).render(width)[0] ?? "", /^<error>╭<\/error>/);
+	// The bash box keeps the family tone (green) while the command runs: the running state rides the body line.
+	assert.match(running[0] ?? "", /^<success>┌<\/success><success>─ <\/success><success>>_ (?:<toolTitle>)?bash/);
+	assert.match(bash.renderCall(args, statusTheme, routineRenderContext({ args, isPartial: false, isError: true })).render(width)[0] ?? "", /^<error>┌<\/error>/);
 
 	const expanded = bash.renderResult(textResult("alpha\nbeta"), { expanded: true, isPartial: false }, passthroughTheme, { args }).render(width);
 	assert.deepEqual(expanded, [
 		`│ alpha${" ".repeat(21)} │`,
 		`│ beta${" ".repeat(22)} │`,
-		`╰${"─".repeat(28)}╯`,
+		`└${"─".repeat(28)}┘`,
 	]);
 	const failed = bash.renderResult(textResult("boom"), { expanded: true, isPartial: false, isError: true }, statusTheme, { args, isError: true }).render(width);
-	assert.match(failed.at(-1) ?? "", /^<error>╰<\/error><error>─+╯<\/error>$/);
+	assert.match(failed.at(-1) ?? "", /^<error>└<\/error><error>─+┘<\/error>$/);
 	assert.ok(failed.slice(0, -1).every((line) => line.startsWith("<error>│</error> ")), failed.join("\n"));
 
 	const empty = tools.get("grep").renderResult(textResult("No matches found"), { expanded: false, isPartial: false }, passthroughTheme, {}).render(width);
@@ -1527,9 +1536,9 @@ test("quiet tool calls draw a rounded petal card in the lifecycle tone", () => {
 	const wide = 80;
 	const expandKey = keyHint("app.tools.expand", "to expand").replace(/\x1b\[[0-9;]*m/g, "");
 	const finishedTop = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, executionStarted: true, isPartial: false })).render(wide)[0] ?? "";
-	assert.ok(finishedTop.endsWith(` ${expandKey} ╮`), finishedTop);
+	assert.ok(finishedTop.endsWith(` ${expandKey} ┐`), finishedTop);
 	const expandedTop = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, executionStarted: true, isPartial: false, expanded: true })).render(wide)[0] ?? "";
-	assert.match(expandedTop, /to collapse ╮$/);
+	assert.match(expandedTop, /to collapse ┐$/);
 	const runningTop = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, executionStarted: true, isPartial: true })).render(wide)[0] ?? "";
 	assert.ok(!runningTop.includes("to expand"), runningTop);
 	const collapsedBody = bash.renderResult(textResult("alpha\nbeta"), { expanded: false, isPartial: false }, passthroughTheme, { args }).render(wide);
@@ -1575,12 +1584,13 @@ test("a running quiet card closes its own frame with one running row until a res
 	}
 
 	// A partial result below the call closes the frame instead: one bottom rule, no running row.
+	// bash is an event family: square corners, one top rule and one bottom rule.
 	const bash = tools.get("bash");
 	const bashArgs = { command: "printf output" };
 	const partial = piToolRow(bash, bashArgs, textResult("out"), routineRenderContext({ args: bashArgs, executionStarted: true, isPartial: true, state: {} }), 40);
-	assert.equal(partial.filter((row) => row.startsWith("╭")).length, 1);
-	assert.equal(partial.filter((row) => row.startsWith("╰")).length, 1);
-	assert.match(partial.at(-1)!, /^╰─+╯$/);
+	assert.equal(partial.filter((row) => row.startsWith("┌")).length, 1);
+	assert.equal(partial.filter((row) => row.startsWith("└")).length, 1);
+	assert.match(partial.at(-1)!, /^└─+┘$/);
 	assert.doesNotMatch(partial.join("\n"), /running…/);
 
 	// A finished call keeps its open top rule; the result closes the card.

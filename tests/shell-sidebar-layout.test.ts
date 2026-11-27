@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CURSOR_MARKER, Container, ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { getScrollViewsAt, renderLayoutFrame, type LayoutBox } from "@earendil-works/pi-tui/dist/layout.js";
-import { installSidebar, invalidateSidebar, narrowStatusOwner } from "../lib/shell-sidebar-layout.ts";
+import { CONSOLE_BORDER, consoleWidth, installSidebar, invalidateSidebar, narrowStatusOwner } from "../lib/shell-sidebar-layout.ts";
 import { setSidebarHover, sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar } from "../lib/shell-sidebar.ts";
 import { renderShellSidebarBar, renderShellStatusBar } from "../lib/shell-bar.ts";
 import { chromeSurface, setChromeSurface } from "../lib/shell-panel.ts";
@@ -116,13 +116,13 @@ test("root hover fallback never re-renders the transcript for wheel or move even
 	assert.equal(root.handleMouse, Container.prototype.handleMouse);
 });
 
-test("only fullscreen at 140 columns activates; shrinking restores bottom paint", (t) => {
-	for (const [mode, width, active] of [["regular", 140, false], ["fullscreen", 139, false], ["fullscreen", 140, true]] as const) {
+test("only fullscreen at 120 columns activates; shrinking restores bottom paint", (t) => {
+	for (const [mode, width, active] of [["regular", 120, false], ["fullscreen", 119, false], ["fullscreen", 120, true]] as const) {
 		const f = fixture(mode, width);
 		t.after(installSidebar(f.tui, theme));
 		assert.equal(f.root[NODE]().type, active ? "hstack" : "vstack");
 		assert.deepEqual(f.bottom.render(80), active ? [] : ["Status"]);
-		f.host.terminal.columns = 139;
+		f.host.terminal.columns = 119;
 		assert.equal(f.root[NODE]().type, "vstack");
 		assert.deepEqual(f.bottom.render(80), ["Status"]);
 	}
@@ -141,7 +141,7 @@ test("bottom paint follows placement and resize before the next layout pass", (t
 	assert.equal(f.root[NODE]().type, "vstack");
 	placement = "right";
 	assert.equal(f.root[NODE]().type, "hstack");
-	f.host.terminal.columns = 139;
+	f.host.terminal.columns = 119;
 	assert.deepEqual(f.bottom.render(80), ["Status"]);
 	assert.equal(f.root[NODE]().type, "vstack");
 	placement = "hidden";
@@ -163,7 +163,7 @@ test("hidden status suppresses bottom paint and placement resizes responsively",
 	assert.deepEqual(f.bottom.render(80), []);
 	placement = "right";
 	assert.equal(f.root[NODE]().type, "hstack");
-	f.host.terminal.columns = 139;
+	f.host.terminal.columns = 119;
 	assert.equal(f.root[NODE]().type, "vstack");
 	placement = "bottom";
 	f.host.terminal.columns = 180;
@@ -172,7 +172,7 @@ test("hidden status suppresses bottom paint and placement resizes responsively",
 
 test("narrow status owner prefers a configured top header, otherwise the bottom bar, and leaves wide/regular untouched", () => {
 	for (const statusPlacement of ["auto", "right", "bottom", "hidden"] as const) {
-		for (const columns of [40, 100, 139]) {
+		for (const columns of [40, 100, 119]) {
 			assert.equal(narrowStatusOwner({ mode: "fullscreen", columns, statusPlacement, headerPlacement: "top" }), "header", `${columns}/${statusPlacement}/top`);
 			assert.equal(narrowStatusOwner({ mode: "fullscreen", columns, statusPlacement, headerPlacement: "below-input" }), statusPlacement === "hidden" ? "header" : "bottom", `${columns}/${statusPlacement}/below-input`);
 		}
@@ -248,7 +248,7 @@ test("hidden status suppresses bottom paint in regular, narrow and wide fullscre
 		for (const other of ["auto", "right", "bottom"] as const) {
 			placement = other;
 			f.root[NODE]();
-			const railOwns = mode === "fullscreen" && width >= 140 && other !== "bottom";
+			const railOwns = mode === "fullscreen" && width >= 120 && other !== "bottom";
 			assert.deepEqual(f.bottom.render(width), railOwns ? [] : ["Status"], `${mode}/${width}/${other}`);
 		}
 		placement = "hidden";
@@ -292,7 +292,7 @@ test("hidden status reclaims the reserved footer row in narrow and wide fullscre
 			assert.doesNotMatch(lines.join("\n"), /Status/);
 			placement = "bottom";
 			lines = f.frame();
-			if (withHeader && width < 140) {
+			if (withHeader && width < 120) {
 				// The narrow top header owns Status, so its reserved row is reclaimed too.
 				assert.match(lines[lines.length - 1] ?? "", /Editor/, `${width} narrow top header leaves no blank footer row`);
 				assert.doesNotMatch(lines.join("\n"), /Status/);
@@ -320,10 +320,10 @@ test("TODO visibility hides both rail and bottom without mutating the registered
 	const f = fixture();
 	const todo = sidebarPart(f.tui, "todo", { render: (_width: number) => ["todo"], invalidate() {} });
 	t.after(installSidebar(f.tui, theme));
-	assert.match(rail(f).render(50).join("\n"), /todo/);
+	assert.match(rail(f).render(45).join("\n"), /todo/);
 	sidebarState(f.tui).visibility = { todo: false };
 	invalidateSidebar(f.tui);
-	assert.doesNotMatch(rail(f).render(50).join("\n"), /todo/);
+	assert.doesNotMatch(rail(f).render(45).join("\n"), /todo/);
 	f.host.terminal.columns = 100;
 	assert.equal(f.root[NODE]().type, "vstack");
 	assert.deepEqual(todo.render(100), []);
@@ -337,21 +337,21 @@ test("rail orders live work first, then Status, without standalone changes", (t)
 		sidebarPart(f.tui, key, { render: () => [key, ""], invalidate() {} });
 	}
 	t.after(installSidebar(f.tui, theme));
-	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle Shell ✿", "", "todo", "", "agents", "", "Status"]);
+	assert.deepEqual(rail(f).render(45).map((line) => line.trim()), ["✿ Gentle Shell ✿", "", "todo", "", "agents", "", "Status"]);
 });
 
 test("branding belongs to scroll content before Status, never transcript or narrow bottom", (t) => {
 	const f = fixture();
 	t.after(installSidebar(f.tui, theme));
 	const scroll = rail(f);
-	const lines = scroll.render(50);
+	const lines = scroll.render(45);
 	const brandIndex = lines.findIndex((line) => line.includes("✿ Gentle Shell ✿"));
 	assert.ok(brandIndex >= 0 && brandIndex < lines.findIndex((line) => line.includes("Status")));
 	assert.doesNotMatch(lines.join("\n"), /[\u2800-\u28ff]/);
 	const heading = lines[brandIndex];
-	const usableWidth = scroll.getContentWidth(50) - 2;
+	const usableWidth = scroll.getContentWidth(45) - 2;
 	const spare = usableWidth - visibleWidth("✿ Gentle Shell ✿");
-	const scrollbarWidth = 50 - scroll.getContentWidth(50);
+	const scrollbarWidth = 45 - scroll.getContentWidth(45);
 	assert.equal(heading, " ".repeat(1 + Math.floor(spare / 2)) + "✿ Gentle Shell ✿" + " ".repeat(1 + Math.ceil(spare / 2) + scrollbarWidth));
 	assert.deepEqual(f.root.render(), ["transcript"]);
 	scroll.updateLayout(lines.length, 2, () => {});
@@ -368,35 +368,37 @@ test("wheel scrolls the rail and is consumed at both boundaries and blank space"
 	const scroll = rail(f);
 	scroll.updateLayout(20, 5, () => {});
 	for (const [delta, expected] of [[-1, 0], [3, 3], [100, 15], [1, 15], [-100, 0]]) {
-		const result = scroll.handleMouse({ type: "wheel", wheelDelta: delta, x: 3, y: 4, screenX: 93, screenY: 6, width: 50, height: 5 } as Parameters<typeof scroll.handleMouse>[0]);
+		const result = scroll.handleMouse({ type: "wheel", wheelDelta: delta, x: 3, y: 4, screenX: 93, screenY: 6, width: 45, height: 5 } as Parameters<typeof scroll.handleMouse>[0]);
 		assert.equal(result?.handled, true);
 		assert.equal(scroll.scrollTop, expected);
 		assert.equal(result?.target?.component, scroll);
 	}
-	f.host.terminal.columns = 139;
+	f.host.terminal.columns = 119;
 	assert.equal(f.root[NODE]().type, "vstack");
 	assert.deepEqual(f.bottom.render(80), ["Status"]);
 	f.host.terminal.columns = 160;
 	const restored = rail(f);
 	assert.deepEqual(f.bottom.render(80), []);
 	const layout = f.root[NODE]() as unknown as { gap: number; entries: { basis: number | string; grow: number; shrink: number; minSize: number }[] };
-	assert.equal(layout.gap, 3);
+	// The console's border cell IS the gap (design §C2): 160 columns spend 53 on
+	// the console (52 + 1 border) and keep 107 for the conversation.
+	assert.equal(layout.gap, 0);
 	assert.deepEqual(layout.entries.map(({ basis, grow, shrink, minSize }) => ({ basis, grow, shrink, minSize })), [
 		{ basis: 0, grow: 1, shrink: 1, minSize: 1 },
-		{ basis: 50, grow: 0, shrink: 0, minSize: 50 },
+		{ basis: 53, grow: 0, shrink: 0, minSize: 53 },
 	]);
-	const restoredLines = restored.render(50);
+	const restoredLines = restored.render(53);
 	// Native ScrollView.render only appends the scrollbar gutter; short rows need not fill the layout allocation.
-	for (const line of restoredLines) assert.ok(visibleWidth(line) <= 50);
+	for (const line of restoredLines) assert.ok(visibleWidth(line) <= 53);
 	assert.ok(restoredLines.some((line) => line.startsWith(" Status ")));
 	assert.deepEqual(f.root.render(), ["transcript"]);
 	restored.updateLayout(20, 5, () => {});
 	const before = restored.scrollTop;
-	const result = restored.handleMouse({ type: "wheel", wheelDelta: 2, x: 3, y: 4, screenX: 113, screenY: 6, width: 50, height: 5 } as Parameters<typeof restored.handleMouse>[0]);
+	const result = restored.handleMouse({ type: "wheel", wheelDelta: 2, x: 3, y: 4, screenX: 113, screenY: 6, width: 45, height: 5 } as Parameters<typeof restored.handleMouse>[0]);
 	assert.equal(result?.handled, true);
 	assert.equal(result?.target?.component, restored);
 	assert.equal(restored.scrollTop, Math.min(15, before + 2));
-	for (const line of restored.render(50)) assert.ok(visibleWidth(line) <= 50);
+	for (const line of restored.render(53)) assert.ok(visibleWidth(line) <= 53);
 	assert.deepEqual(f.root.render(), ["transcript"]);
 	scroll.updateLayout(1, 5, () => {});
 	assert.equal(scroll.handleMouse({ type: "wheel", wheelDelta: 1 } as Parameters<typeof scroll.handleMouse>[0])?.handled, true);
@@ -416,10 +418,10 @@ test("wheel over a bounded Todo viewport scrolls the section before the surround
 	});
 	t.after(installSidebar(f.tui, theme));
 	const scroll = rail(f);
-	const content = scroll.render(50);
+	const content = scroll.render(45);
 	scroll.updateLayout(content.length + 20, content.length, () => {});
 	const y = content.findIndex((line) => line.includes("Todo body"));
-	const event: TuiMouseEvent = { type: "wheel", button: "none", wheelDelta: 2, x: 3, y, screenX: 93, screenY: y, width: 50, height: content.length, shift: false, alt: false, ctrl: false };
+	const event: TuiMouseEvent = { type: "wheel", button: "none", wheelDelta: 2, x: 3, y, screenX: 93, screenY: y, width: 45, height: content.length, shift: false, alt: false, ctrl: false };
 	assert.equal(scroll.handleMouse(event)?.handled, true);
 	assert.equal(scroll.scrollTop, 0, "inner viewport consumes wheel without moving the rail");
 	assert.equal(received.at(-1)?.y, 1, "section coordinates are local");
@@ -446,13 +448,13 @@ test("rail dispatches a clipped, scroll-translated left click to only the matchi
 	const dispose = installSidebar(f.tui, theme);
 	t.after(dispose);
 	const scroll = rail(f);
-	const content = scroll.render(50);
+	const content = scroll.render(45);
 	scroll.updateLayout(content.length, 5, () => {});
 	scroll.scrollBy(1);
 	const headerY = content.findIndex((line) => line.includes("Todo header")) - scroll.scrollTop;
 	assert.ok(headerY >= 0);
 	const mouse = (type: TuiMouseEvent["type"], button: TuiMouseEvent["button"], y: number): TuiMouseEvent => ({
-		type, button, x: 2, y, screenX: 92, screenY: 30 + y, width: 50, height: 5, shift: false, alt: false, ctrl: false,
+		type, button, x: 2, y, screenX: 92, screenY: 30 + y, width: 45, height: 5, shift: false, alt: false, ctrl: false,
 	});
 
 	assert.equal(scroll.handleMouse(mouse("press", "left", headerY)), undefined);
@@ -462,16 +464,17 @@ test("rail dispatches a clipped, scroll-translated left click to only the matchi
 	const hit = scroll.handleMouse(mouse("click", "left", headerY));
 	assert.equal(hit?.handled, true);
 	assert.equal(clicks, 1);
-		// With a transient scrollbar the rail no longer reserves a column, so
-	// clipped parts are one column wider than in the always-on geometry.
-	assert.deepEqual(received.at(-1) && { x: received.at(-1)!.x, y: received.at(-1)!.y, width: received.at(-1)!.width, height: received.at(-1)!.height }, { x: 1, y: 0, width: 48, height: 2 });
+	// With a transient scrollbar the rail no longer reserves a column, so
+	// clipped parts are one column wider than in the always-on geometry. The
+	// console spends its two frame cells: 45 - 2 = 43.
+	assert.deepEqual(received.at(-1) && { x: received.at(-1)!.x, y: received.at(-1)!.y, width: received.at(-1)!.width, height: received.at(-1)!.height }, { x: 1, y: 0, width: 43, height: 2 });
 
 	const gapY = headerY - 1;
 	assert.equal(scroll.handleMouse(mouse("click", "left", gapY)), undefined, "section gaps do not hit a neighbor");
 	assert.equal(scroll.handleMouse({ ...mouse("click", "left", headerY), x: 49 }), undefined, "padding outside the clipped part is inert");
 	invalidateSidebar(f.tui);
 	assert.equal(scroll.handleMouse(mouse("click", "left", headerY)), undefined, "stale geometry is inert");
-	f.host.terminal.columns = 139;
+	f.host.terminal.columns = 119;
 	assert.equal(scroll.handleMouse(mouse("click", "left", headerY)), undefined, "resized-away rails are inert");
 	dispose();
 	assert.equal(scroll.handleMouse(mouse("click", "left", headerY)), undefined, "disposed rails are inert");
@@ -494,10 +497,10 @@ test("rail rejects removed or replaced parts before cached geometry is prepared 
 	const dispose = installSidebar(f.tui, theme);
 	t.after(dispose);
 	const scroll = rail(f);
-	const content = scroll.render(50);
+	const content = scroll.render(45);
 	scroll.updateLayout(content.length, 5, () => {});
 	const headerY = content.findIndex((line) => line.includes("Todo header"));
-	const click = (): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y: headerY, screenX: 92, screenY: 30 + headerY, width: 50, height: 5, shift: false, alt: false, ctrl: false });
+	const click = (): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y: headerY, screenX: 92, screenY: 30 + headerY, width: 45, height: 5, shift: false, alt: false, ctrl: false });
 	assert.equal(scroll.handleMouse(click())?.handled, true, "healthy cached geometry still dispatches");
 	assert.equal(originalClicks, 1);
 
@@ -551,7 +554,7 @@ test("real layout frames reuse unchanged sidebar output and invalidate at state 
 	assert.match(changed.lines.join("\n"), /Todo two/);
 	assert.deepEqual(counts, { footer: 2, changes: 0, agents: 2, todo: 2 });
 
-	f.host.terminal.columns = 139;
+	f.host.terminal.columns = 119;
 	renderLayoutFrame(f.root, 139, 20, () => {});
 	assert.deepEqual(f.bottom.render(80), ["Status"]);
 	f.host.terminal.columns = 140;
@@ -627,7 +630,7 @@ test("a rail digest refreshes live state that no invalidation announces", (t) =>
 	assert.equal(todoRenders, 2, "explicit invalidation still reaches a rail without a digest");
 });
 
-test("the rail paints Todos, Jobs and Agents before Status", (t) => {
+test("the rail paints Todos, Agents, Jobs and then Status", (t) => {
 	const f = fixture();
 	sidebarPart(f.tui, "jobs", { render: () => ["jobs"], invalidate() {} }, { digest: () => "jobs", render: () => ["Jobs card"], invalidate() {} });
 	sidebarPart(f.tui, "agents", { render: () => ["agents"], invalidate() {} }, { digest: () => "agents", render: () => ["Agents card"], invalidate() {} });
@@ -641,7 +644,9 @@ test("the rail paints Todos, Jobs and Agents before Status", (t) => {
 	for (const [name, index] of [["Status", footer], ["Jobs card", jobs], ["Agents card", agents], ["Todo card", todo]] as const) {
 		assert.ok(index >= 0, `${name} paints in the rail`);
 	}
-	assert.ok(todo < jobs && jobs < agents && agents < footer, `sections paint in order, got: ${text}`);
+	// Live work reads top-down: the current task, then who is working on it, then
+	// the jobs it runs; Status (the session) closes the rail.
+	assert.ok(todo < agents && agents < jobs && jobs < footer, `sections paint in order, got: ${text}`);
 });
 
 test("panel sections paint on the rail surface, joined by a tinted gap, while card sections stay unpainted", (t) => {
@@ -652,7 +657,7 @@ test("panel sections paint on the rail surface, joined by a tinted gap, while ca
 	sidebarPart(f.tui, "jobs", { render: () => ["jobs"], invalidate() {} }, { surface: "panel", digest: () => "jobs", render: (width: number) => ["JOBS".padEnd(width)], invalidate() {} });
 	sidebarPart(f.tui, "todo", { render: () => ["todo"], invalidate() {} }, { surface: "panel", digest: () => "todo", render: (width: number) => ["TODOS".padEnd(width)], invalidate() {} });
 	t.after(installSidebar(f.tui, painting));
-	const lines = rail(f).render(50);
+	const lines = rail(f).render(45);
 	const status = lines.find((line) => line.includes("Status"))!;
 	const jobs = lines.findIndex((line) => line.includes("JOBS"));
 	const todo = lines.findIndex((line) => line.includes("TODOS"));
@@ -721,7 +726,7 @@ test("reuses final sidebar presentation until a relevant invalidation", (t) => {
 	const first = f.root[NODE]();
 	assert.equal(f.root[NODE](), first);
 	const scroll = (first as { entries: { component: ScrollView }[] }).entries[1].component;
-	scroll.updateLayout(scroll.render(50).length, 1, () => {});
+	scroll.updateLayout(scroll.render(45).length, 1, () => {});
 	scroll.scrollBy(1);
 	const scrolled = f.root[NODE]();
 	assert.notEqual(scrolled, first);
@@ -866,12 +871,12 @@ test("native transcript and sidebar keep separate scroll routing across resize, 
 	assert.equal(fixture.primary.scrollTop, transcriptTop - 7);
 	assert.equal(rail.scrollTop, 5);
 	assert.equal(result.transcriptRenders, 1);
-	for (const [mode, width] of [["fullscreen", 139], ["fullscreen", 140], ["regular", 180], ["fullscreen", 180]] as const) {
+	for (const [mode, width] of [["fullscreen", 119], ["fullscreen", 120], ["regular", 180], ["fullscreen", 180]] as const) {
 		fixture.host.mode = mode;
 		result = fixture.frame(width);
 		assert.equal(result.transcriptRenders, 1);
 		assert.equal(result.frame.primaryScrollView, fixture.primary);
-		assert.equal(result.frame.root.children.some(box => box.component === rail), mode === "fullscreen" && width >= 140);
+		assert.equal(result.frame.root.children.some(box => box.component === rail), mode === "fullscreen" && width >= 120);
 	}
 });
 
@@ -897,23 +902,23 @@ test("a footer digest change does not re-render Agents or TODO", (t) => {
 	}
 	t.after(installSidebar(f.tui, theme));
 
-	assert.match(rail(f).render(50).join("\n"), /Footer one/);
+	assert.match(rail(f).render(45).join("\n"), /Footer one/);
 	assert.deepEqual(counts, { footer: 1, agents: 1, todo: 1 });
 
 	// Re-render with nothing changed at all: the outer unchanged fast path
 	// must not call any section's render either.
-	assert.match(rail(f).render(50).join("\n"), /Footer one/);
+	assert.match(rail(f).render(45).join("\n"), /Footer one/);
 	assert.deepEqual(counts, { footer: 1, agents: 1, todo: 1 });
 
 	footerLabel = "two";
-	assert.match(rail(f).render(50).join("\n"), /Footer two/);
+	assert.match(rail(f).render(45).join("\n"), /Footer two/);
 	assert.deepEqual(counts, { footer: 2, agents: 1, todo: 1 }, "only the section whose digest changed re-renders");
 
 	// invalidateSidebar bumps the global revision, which is only what a
 	// no-digest section keys its cache on: footer's own unchanged digest
 	// still protects it from re-rendering.
 	invalidateSidebar(f.tui);
-	assert.match(rail(f).render(50).join("\n"), /Footer two/);
+	assert.match(rail(f).render(45).join("\n"), /Footer two/);
 	assert.deepEqual(counts, { footer: 2, agents: 2, todo: 2 }, "revision invalidation reaches only the sections with no digest of their own");
 });
 
@@ -930,16 +935,16 @@ test("a card style change re-renders sections whose digest is unchanged", (t) =>
 	});
 	t.after(installSidebar(f.tui, theme));
 
-	assert.match(rail(f).render(50).join("\n"), /Todos float/);
+	assert.match(rail(f).render(45).join("\n"), /Todos float/);
 	assert.equal(renders, 1);
 
 	setCardStyle(CARD_STYLE.NEON);
-	const output = rail(f).render(50).join("\n");
+	const output = rail(f).render(45).join("\n");
 	assert.match(output, /Todos neon/, "the cached float lines must not survive a switch to neon");
 	assert.doesNotMatch(output, /Todos float/);
 	assert.equal(renders, 2);
 
-	assert.match(rail(f).render(50).join("\n"), /Todos neon/);
+	assert.match(rail(f).render(45).join("\n"), /Todos neon/);
 	assert.equal(renders, 2, "an unchanged style keeps the section cache");
 });
 
@@ -953,13 +958,13 @@ test("a throwing digest still degrades to invalidation-only under the per-sectio
 	});
 	t.after(installSidebar(f.tui, theme));
 
-	assert.match(rail(f).render(50).join("\n"), /Todo card/);
+	assert.match(rail(f).render(45).join("\n"), /Todo card/);
 	assert.equal(todoRenders, 1);
-	assert.match(rail(f).render(50).join("\n"), /Todo card/);
+	assert.match(rail(f).render(45).join("\n"), /Todo card/);
 	assert.equal(todoRenders, 1, "an unchanged frame reuses the cached section even without a digest");
 
 	invalidateSidebar(f.tui);
-	assert.match(rail(f).render(50).join("\n"), /Todo card/);
+	assert.match(rail(f).render(45).join("\n"), /Todo card/);
 	assert.equal(todoRenders, 2, "explicit invalidation still reaches a rail without a digest");
 });
 
@@ -971,7 +976,7 @@ test("a part replaced under the same key never reuses the previous part's cached
 		invalidate() {},
 	});
 	t.after(installSidebar(f.tui, theme));
-	assert.match(rail(f).render(50).join("\n"), /first/);
+	assert.match(rail(f).render(45).join("\n"), /first/);
 	assert.equal(firstRenders, 1);
 
 	let secondRenders = 0;
@@ -979,7 +984,7 @@ test("a part replaced under the same key never reuses the previous part's cached
 		render: () => { secondRenders++; return ["second"]; },
 		invalidate() {},
 	});
-	const text = rail(f).render(50).join("\n");
+	const text = rail(f).render(45).join("\n");
 	assert.match(text, /second/);
 	assert.doesNotMatch(text, /first/);
 	assert.equal(secondRenders, 1);
@@ -1014,7 +1019,7 @@ test("an active header wraps the hstack in a vstack and removes the banner from 
 	const hstack = hstackOf(f);
 	assert.equal(hstack.type, "hstack");
 	const scroll = railWithHeader(f);
-	const rail = scroll.render(50);
+	const rail = scroll.render(45);
 	assert.doesNotMatch(rail.join("\n"), /✿ Gentle Shell ✿/, "the header carries the brand now, not the banner");
 	assert.equal(rail[0]?.trim(), "", "the rail starts with a spacer below the full-width title");
 	assert.match(rail[1]!, /Status/, "the first section follows the spacer");
@@ -1032,7 +1037,7 @@ test("upper headers add one rail-local inset without moving the conversation or 
 			cwd: "/project", branch: "main", dirty: 0, sessionName: undefined,
 			modelId: "model", effort: "high", contextPercent: 45, contextWindow: 1000,
 			costTotal: 1, subscription: false, usage: undefined, statuses: ["one", "two", "three", "four", "five"],
-		}, painted, 48);
+		}, painted, 34);
 		sidebarPart(f.tui, "footer", {
 			surface: "panel",
 			render: () => status,
@@ -1052,10 +1057,10 @@ test("upper headers add one rail-local inset without moving the conversation or 
 		assert.match(frame.lines[bodyY + inset], /\x1b\[48;5;22m/);
 		for (const line of frame.lines.slice(bodyY)) assert.equal(visibleWidth(line), 140);
 		const scroll = railWithHeader(f);
-		const content = scroll.render(50);
-		assert.deepEqual(content, [...(inset ? [`\x1b[48;5;22m${" ".repeat(scroll.getContentWidth(50))}\x1b[49m`] : []), ...status.map((line) => `\x1b[48;5;22m ${line} \x1b[49m`)]);
+		const content = scroll.render(45);
+		assert.deepEqual(content, [...(inset ? [`\x1b[48;5;22m${" ".repeat(scroll.getContentWidth(45))}\x1b[49m`] : []), ...status.map((line) => `\x1b[48;5;22m ${line} \x1b[49m`)]);
 		const height = 8 - bodyY;
-		const click = (y: number): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 92, screenY: bodyY + y, width: 50, height, shift: false, alt: false, ctrl: false });
+		const click = (y: number): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 92, screenY: bodyY + y, width: 45, height, shift: false, alt: false, ctrl: false });
 		if (inset) assert.equal(scroll.handleMouse(click(0)), undefined, "inset is not a hit target");
 		assert.equal(scroll.handleMouse(click(inset))?.handled, true);
 		assert.equal(received.at(-1)?.y, 0, "first section row keeps its local hit offset");
@@ -1080,13 +1085,13 @@ test("float rail alignment preserves fallback banners and neon bytes across live
 		if (header !== undefined) sidebarHeader(f.tui, { render: () => [header], invalidate() {} });
 		sidebarPart(f.tui, "todo", { render: () => ["TODO"], invalidate() {} });
 		t.after(installSidebar(f.tui, theme));
-		const baseline = railWithHeader(f).render(50);
-		if (header) assert.deepEqual(baseline, [" ".repeat(50), " TODO ", "", " Status "], "the rail keeps its own spacer under the split title");
+		const baseline = railWithHeader(f).render(45);
+		if (header) assert.deepEqual(baseline, [" ".repeat(45), " TODO ", "", " Status "], "the rail keeps its own spacer under the split title");
 		else assert.match(baseline.join("\n"), /✿ Gentle Shell ✿/);
 		setCardStyle(CARD_STYLE.FLOAT);
-		assert.deepEqual(railWithHeader(f).render(50), baseline, "the active split header keeps the same rail in both styles");
+		assert.deepEqual(railWithHeader(f).render(45), baseline, "the active split header keeps the same rail in both styles");
 		setCardStyle(CARD_STYLE.NEON);
-		assert.deepEqual(railWithHeader(f).render(50), baseline, "neon is byte-identical after switching back");
+		assert.deepEqual(railWithHeader(f).render(45), baseline, "neon is byte-identical after switching back");
 	}
 });
 
@@ -1121,7 +1126,7 @@ test("without a registered header the rail keeps the banner and the plain hstack
 	const node = f.root[NODE]() as unknown as { type: string };
 	assert.equal(node.type, "hstack");
 	const scroll = rail(f);
-	assert.match(scroll.render(50).join("\n"), /✿ Gentle Shell ✿/);
+	assert.match(scroll.render(45).join("\n"), /✿ Gentle Shell ✿/);
 });
 
 test("a header too narrow to show anything falls back to the plain hstack and the banner", (t) => {
@@ -1131,7 +1136,7 @@ test("a header too narrow to show anything falls back to the plain hstack and th
 	const node = f.root[NODE]() as unknown as { type: string };
 	assert.equal(node.type, "hstack", "a blank header line does not earn its own row");
 	const scroll = rail(f);
-	assert.match(scroll.render(50).join("\n"), /✿ Gentle Shell ✿/);
+	assert.match(scroll.render(45).join("\n"), /✿ Gentle Shell ✿/);
 });
 
 test("header content changes reach the header row while an unrelated part is untouched", (t) => {
@@ -1163,7 +1168,7 @@ test("rail mouse dispatch still maps clicks correctly with the header row above 
 	const dispose = installSidebar(f.tui, theme);
 	t.after(dispose);
 	const scroll = railWithHeader(f);
-	const content = scroll.render(50);
+	const content = scroll.render(45);
 	scroll.updateLayout(content.length, 5, () => {});
 	const headerY = content.findIndex((line) => line.includes("Todo header"));
 	assert.ok(headerY >= 0);
@@ -1171,7 +1176,7 @@ test("rail mouse dispatch still maps clicks correctly with the header row above 
 	// (pi-tui's layout tree translates screen coordinates before dispatch), so
 	// nesting the hstack one level deeper under the header row does not shift
 	// what the rail receives.
-	const hit = scroll.handleMouse({ type: "click", button: "left", x: 2, y: headerY, screenX: 92, screenY: 31 + headerY, width: 50, height: 5, shift: false, alt: false, ctrl: false });
+	const hit = scroll.handleMouse({ type: "click", button: "left", x: 2, y: headerY, screenX: 92, screenY: 31 + headerY, width: 45, height: 5, shift: false, alt: false, ctrl: false });
 	assert.equal(hit?.handled, true);
 	assert.equal(clicks, 1);
 });
@@ -1258,13 +1263,13 @@ test("a status bar part paints one full-width row below the transcript and the r
 });
 
 test("below the rail breakpoint the status bar row stays only while its part paints one (mobile)", (t) => {
-	const f = fixture("fullscreen", 139);
+	const f = fixture("fullscreen", 119);
 	let paints = true;
 	sidebarStatusBar(f.tui, { render: () => paints ? ["STATUS BAR"] : [], invalidate() {} });
 	t.after(installSidebar(f.tui, theme));
-	assert.match(renderLayoutFrame(f.root, 139, 6, () => {}).lines.at(-1)!, /^STATUS BAR/, "the mobile status bar is the last row");
+	assert.match(renderLayoutFrame(f.root, 119, 6, () => {}).lines.at(-1)!, /^STATUS BAR/, "the mobile status bar is the last row");
 	paints = false;
-	assert.doesNotMatch(renderLayoutFrame(f.root, 139, 6, () => {}).lines.join("\n"), /STATUS BAR/, "a part with nothing to show leaves the native layout");
+	assert.doesNotMatch(renderLayoutFrame(f.root, 119, 6, () => {}).lines.join("\n"), /STATUS BAR/, "a part with nothing to show leaves the native layout");
 });
 
 test("the rail panel surface reaches the bottom of the viewport, not just the last section", (t) => {
@@ -1303,16 +1308,16 @@ test("a top header spans both columns above the rail while the editor and its cl
 		assert.equal(node.type, "vstack", `${density}: the full-width header is above the hstack`);
 		const lines = renderLayoutFrame(f.root, 160, 6, () => {}).lines.map((line) => line.replace(/\x1b\[[0-9;]*m|\x1b\]8;;\x07/g, ""));
 		assert.match(lines[5]!, /^EDITORe{101}/, `${density}: the editor stays in the conversation column`);
-		assert.equal(lines[5]!.slice(107, 110), "   ", `${density}: the editor keeps the 3-column gap from the rail`);
+		assert.equal(lines[5]!.slice(123, 124), " ", `${density}: the editor keeps the 1-column gap from the rail`);
 		assert.match(lines[0]!, /^HEADER 160(?: |$)/, `${density}: the header spans both columns`);
 		assert.doesNotMatch(lines[0]!, /Status/, `${density}: the rail starts below the header`);
-		assert.equal(lines[1]!.slice(107, 110), "   ", `${density}: the conversation keeps its 3-column gap from the rail`);
+		assert.equal(lines[1]!.slice(123, 124), " ", `${density}: the conversation keeps its 3-column gap from the rail`);
 		assert.match(lines[1]!, /^CONVERSATION/, `${density}: the conversation follows the header`);
 		assert.match(lines[2]!, /Status/, `${density}: one blank rail row precedes the first section`);
 		const click: TuiMouseEvent = { type: "click", button: "left", x: 3, y: 0, screenX: 3, screenY: 0, width: 160, height: 1, shift: false, alt: false, ctrl: false };
 		node.entries[0]!.component.handleMouse?.(click);
 		assert.equal(received.at(-1)?.x, 3, `${density}: the header leaf still routes its clicks`);
-		assert.deepEqual(railWithHeader(f).render(50), [" ".repeat(50), " Status "], `${density}: the rail has exactly one leading spacer`);
+		assert.deepEqual(railWithHeader(f).render(53), [" ".repeat(53), " Status "], `${density}: the rail has exactly one leading spacer`);
 		assert.equal(sidebarState(f.tui).active, true);
 	}
 });
@@ -1341,13 +1346,13 @@ test("every upper-header placement leaves one surface-aware rail spacer in every
 			assert.doesNotMatch(frame.lines.slice(0, 4).join("\n"), /Status|\x1b\[48;5;22m/, `${label}: the rail starts after the entire header`);
 			assert.match(frame.lines[4]!, /CONVERSATION/, label);
 			const scroll = railWithHeader(f);
-			const rows = scroll.render(50);
+			const rows = scroll.render(53);
 			assert.equal(rows[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim(), "", `${label}: one leading spacer`);
 			if (surface === "tinted") assert.match(rows[0]!, /\x1b\[48;5;22m/, `${label}: the spacer carries the panel`);
 			else assert.doesNotMatch(rows[0]!, /\x1b\[48;5;/, `${label}: the spacer is unpainted`);
 			const statusRow = rows.findIndex((row) => row.includes("Status"));
 			assert.equal(statusRow, surface === "transparent" && style === CARD_STYLE.FLOAT ? 2 : 1, `${label}: only the float card's own padding follows the spacer`);
-			const click = (y: number): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 112, screenY: 4 + y, width: 50, height: 8, shift: false, alt: false, ctrl: false });
+			const click = (y: number): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 112, screenY: 4 + y, width: 53, height: 8, shift: false, alt: false, ctrl: false });
 			assert.equal(scroll.handleMouse(click(0)), undefined, `${label}: the spacer has no hit target`);
 			assert.equal(scroll.handleMouse(click(statusRow))?.handled, true, `${label}: the section title remains clickable`);
 			assert.equal(clicks, 1, label);
@@ -1388,7 +1393,7 @@ test("a transparent chrome drops the rail, title row and status bar backgrounds 
 		sidebarPart(f.tui, "footer", { surface: "panel", render: () => ["Status"], invalidate() {} });
 		sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
 		t.after(installSidebar(f.tui, painted, () => "auto", () => "split", () => density));
-		const rows = railWithHeader(f).render(50);
+		const rows = railWithHeader(f).render(45);
 		assert.doesNotMatch(rows.join("\n"), tinted, `${density}: no panel background`);
 		// A transparent rail draws each section as a card (neon here): a one-row
 		// section is its title in the top rule, then the bottom edge.
@@ -1396,7 +1401,7 @@ test("a transparent chrome drops the rail, title row and status bar backgrounds 
 		const between = text.findIndex((row) => row.includes("Status")) - text.findIndex((row) => row.includes("TODO"));
 		assert.equal(between, 2, `${density}: TODO's card closes and Status's card opens with no gap row: the surface never changes the density`);
 		setChromeSurface("tinted");
-		assert.match(railWithHeader(f).render(50).join("\n"), tinted, "switching back repaints the panel");
+		assert.match(railWithHeader(f).render(45).join("\n"), tinted, "switching back repaints the panel");
 	}
 	setChromeSurface("transparent");
 	const model = { cwd: "/project", branch: "main", dirty: 0, sessionName: undefined, modelId: "model", effort: "high", contextPercent: 45, contextWindow: 1000, costTotal: 1, subscription: false, usage: undefined, statuses: [] };
@@ -1418,7 +1423,7 @@ test("below a centered comfortable top bar the rail spacer follows the chosen su
 		sidebarPart(f.tui, "footer", { surface: "panel", render: () => ["Status"], invalidate() {} });
 		sidebarHeader(f.tui, { render: () => ["PAD", "HEADER", "PAD"], invalidate() {} });
 		t.after(installSidebar(f.tui, painted, () => "auto", () => "top"));
-		const rows = railWithHeader(f).render(50);
+		const rows = railWithHeader(f).render(45);
 		const top = rows[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim();
 		assert.equal(top, "", `${surface}: the spacer is below all header rows`);
 		assert.match(rows[1]!, /Status/, `${surface}: the first section follows the spacer`);
@@ -1433,7 +1438,7 @@ test("a split title row is followed by one rail spacer", (t) => {
 	sidebarPart(f.tui, "footer", { surface: "panel", render: () => ["Status"], invalidate() {} });
 	sidebarHeader(f.tui, { render: (width: number) => [`TITLE ${width}`, "PAD"], invalidate() {} });
 	t.after(installSidebar(f.tui, painted, () => "auto", () => "split"));
-	const rows = railWithHeader(f).render(50);
+	const rows = railWithHeader(f).render(45);
 	assert.equal(rows[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim(), "");
 	assert.match(rows[0]!, /\x1b\[48;5;22m/, "the spacer is painted");
 	assert.match(rows[1]!, /Status/, "the first section follows it");
@@ -1447,8 +1452,8 @@ test("beside the rail a below-input layout keeps the transcript and the dock in 
 	f.root[NODE] = () => ({ type: "vstack", gap: 0, entries: [{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 }, { component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 }] });
 	t.after(installSidebar(f.tui, theme, () => "auto", () => "below-input"));
 	const lines = renderLayoutFrame(f.root, 160, 4, () => {}).lines.map((line) => line.replace(/\x1b\[[0-9;]*m|\x1b\]8;;\x07/g, ""));
-	assert.match(lines[0]!, /^T{107} {3}/, "the transcript keeps its 3-column gap from the rail");
-	assert.match(lines[3]!, /^D{107} {3}/, "so does the dock with the editor");
+	assert.match(lines[0]!, /^T{107} /, "the transcript keeps its border column from the console");
+	assert.match(lines[3]!, /^D{107} /, "so does the dock with the editor");
 });
 
 test("a compact or minimal split title row has no margin row, so the rail keeps its own top gap", (t) => {
@@ -1458,7 +1463,7 @@ test("a compact or minimal split title row has no margin row, so the rail keeps 
 		sidebarPart(f.tui, "footer", { surface: "panel", render: () => ["Status"], invalidate() {} });
 		sidebarHeader(f.tui, { render: (width: number) => [`TITLE ${width}`], invalidate() {} });
 		t.after(installSidebar(f.tui, painted, () => "auto", () => "split", () => density));
-		const rail = railWithHeader(f).render(50);
+		const rail = railWithHeader(f).render(45);
 		assert.equal(rail[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim(), "", `${density}: a blank rail row under the title`);
 		assert.match(rail[1]!, /Status/, `${density}: the first section follows it`);
 	}
@@ -1493,9 +1498,9 @@ test("a transparent rail draws every section as its own card in the transcript's
 		sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
 		t.after(installSidebar(f.tui, painted, () => "auto", () => "split", () => "compact"));
 		const scroll = railWithHeader(f);
-		const rows = scroll.render(50);
+		const rows = scroll.render(53);
 		const text = rows.map(strip);
-		const content = scroll.getContentWidth(50);
+		const content = scroll.getContentWidth(53);
 		for (const row of rows) assert.ok(visibleWidth(row) <= content, `${style}: no row overflows the rail`);
 		const changes = text.findIndex((row) => row.includes("CHANGES"));
 		const integrations = text.findIndex((row) => row.includes("INTEGRATIONS"));
@@ -1514,7 +1519,7 @@ test("a transparent rail draws every section as its own card in the transcript's
 		}
 		assert.doesNotMatch(rows[hints]!, /\x1b\[48;5;/, `${style}: the hints sit outside the cards`);
 		assert.doesNotMatch(text[hints]!, /[│╭╰▎]/, `${style}: no card chrome on the hints`);
-		const click = (x: number, y: number): TuiMouseEvent => ({ type: "click", button: "left", x, y, screenX: 110 + x, screenY: y, width: 50, height: 30, shift: false, alt: false, ctrl: false });
+		const click = (x: number, y: number): TuiMouseEvent => ({ type: "click", button: "left", x, y, screenX: 110 + x, screenY: y, width: 53, height: 30, shift: false, alt: false, ctrl: false });
 		assert.equal(scroll.handleMouse(click(6, changes))?.handled, true, `${style}: the title row folds the section`);
 		assert.equal(received.at(-1)?.y, 0, `${style}: the title row maps to the section header`);
 		const body = text.findIndex((row) => row.includes("no changes"));
@@ -1544,7 +1549,7 @@ test("float rail cards never fuse: an unpainted row separates them in every dens
 			});
 			sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
 			t.after(installSidebar(f.tui, painted, () => "auto", () => "split", () => density));
-			const rows = railWithHeader(f).render(50);
+			const rows = railWithHeader(f).render(45);
 			const text = rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""));
 			for (const title of ["CHANGES", "INTEGRATIONS"]) {
 				const at = text.findIndex((row) => row.includes(title));
@@ -1560,4 +1565,158 @@ test("float rail cards never fuse: an unpainted row separates them in every dens
 			}
 		}
 	}
+});
+
+test("the console draws the identity row, the numbered tab row and the bitten panels", (t) => {
+	const f = fixture("fullscreen", 140);
+	sidebarState(f.tui).agenticTabsEnabled = () => true;
+	sidebarState(f.tui).projectName = () => "gentle-dots-tui";
+	sidebarPart(f.tui, "todo", { render: () => ["TODO"], invalidate() {} }, { digest: () => "todo", render: () => ["▾ TODOS   1/2", "  ◐ Run the suite"], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	const rows = rail(f).render(45).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+	assert.equal(rows.every((line) => visibleWidth(line) === 45), true, `every console row is exactly 45 cells: ${JSON.stringify(rows)}`);
+	// Border cell, then the centered identity row of this session.
+	assert.match(rows[0]!, /^│ +◆ GENTLE-DOTS-TUI · GENTLE-SHELL ◆ +$/);
+	// The numbered row, centered; the active workspace is bracketed (tight form
+	// at 44 console columns: 50 cells would not fit).
+	assert.match(rows[1]!, /\[1:MAIN\] 2:GIT 3:PROF 4:MEM 5:TREE 0:WT/);
+	// A blank row, then the panel: title bitten into the top rule, count at the
+	// right of that same rule, body under it, plain bottom rule when it fits.
+	assert.equal(rows[2]!.trim(), "│");
+	assert.match(rows[3]!, /^│╭─ ◆ Trabajo en curso ─+ 1\/2 ─╮$/);
+	assert.match(rows[4]!, /^││  ◐ Run the suite +│$/);
+	assert.match(rows[5]!, /^│╰─+╯$/);
+	assert.equal(sidebarState(f.tui).active, true);
+});
+
+test("a click on a numbered tab switches workspace without repainting the transcript", (t) => {
+	const f = fixture("fullscreen", 140);
+	const state = sidebarState(f.tui);
+	state.agenticTabsEnabled = () => true;
+	sidebarPart(f.tui, "todo", { render: () => ["TODO"], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	const before = rail(f).render(45);
+	assert.match(before[1]!, /\[1:MAIN\]/);
+	assert.match(before.join("\n"), /Trabajo en curso/);
+	const tabX = (label: string) => before[1]!.indexOf(label) + 1;
+	const click = (x: number) => ({ type: "click", button: "left", x, y: 1, screenX: x, screenY: 1, width: 45, height: 10, shift: false, alt: false, ctrl: false }) as TuiMouseEvent;
+	rail(f).updateLayout(before.length, 10, () => {});
+	assert.equal(rail(f).handleMouse(click(tabX("2:GIT")))?.handled, true);
+	assert.equal(state.agenticTab, "git");
+	const next = rail(f).render(45).join("\n");
+	assert.match(next, /\[2:GIT\]/);
+	assert.doesNotMatch(next, /Trabajo en curso/, "GIT drops the session panels");
+	assert.match(next, /Cambios|Status/);
+	for (const [label, expected] of [["3:PROF", "prof"], ["4:MEM", "mem"], ["5:TREE", "tree"], ["0:WT", "wt"], ["1:MAIN", "main"]] as const) {
+		const active = rail(f);
+		active.render(45);
+		assert.equal(active.handleMouse(click(tabX(label)))?.handled, true, label);
+		assert.equal(state.agenticTab, expected);
+	}
+	assert.match(rail(f).render(45).join("\n"), /Trabajo en curso/);
+});
+
+test("the active tab is violet and bold while the rest stay in the readable comment role", (t) => {
+	const f = fixture("fullscreen", 140);
+	sidebarState(f.tui).agenticTabsEnabled = () => true;
+	const colored = {
+		fg: (role: string, text: string) => (role === "accent" ? `\x1b[35m${text}\x1b[39m` : role === "muted" ? `\x1b[90m${text}\x1b[39m` : text),
+		bold: (text: string) => `\x1b[1m${text}\x1b[22m`,
+	};
+	t.after(installSidebar(f.tui, colored));
+	const rows = rail(f).render(45);
+	const tabs = rows.find((line) => line.includes("1:MAIN"))!;
+	assert.match(tabs, /\x1b\[35m\[\x1b\[39m\x1b\[35m\x1b\[1m1:MAIN\x1b\[22m\x1b\[39m\x1b\[35m\]\x1b\[39m/, "the active tab is bracketed, bold and in the accent role");
+	assert.match(tabs, /\x1b\[90m2:GIT\x1b\[39m/, "the other tabs stay in the readable comment role");
+	assert.ok(rows.every((line) => visibleWidth(line) === 45));
+	assert.equal(sidebarState(f.tui).active, true);
+});
+
+test("hidden tabs leave the row and the hit testing while their numbers stay fixed", (t) => {
+	const f = fixture("fullscreen", 140);
+	const state = sidebarState(f.tui);
+	state.agenticTabsEnabled = () => true;
+	let visible: Array<"main" | "git" | "prof" | "mem" | "tree" | "wt"> = ["main", "prof", "wt"];
+	state.agenticVisibleTabs = () => visible;
+	t.after(installSidebar(f.tui, theme));
+	let scroll = rail(f);
+	let rows = scroll.render(45);
+	assert.match(rows[1]!, /\[ ?1:MAIN ?\]/);
+	assert.match(rows[1]!, /3:PROF/);
+	assert.match(rows[1]!, /0:WT/);
+	assert.doesNotMatch(rows[1]!, /2:GIT|4:MEM|5:TREE/);
+	state.setAgenticTab?.("git");
+	assert.notEqual(state.agenticTab, "git", "a hidden workspace cannot be selected programmatically");
+	scroll.updateLayout(rows.length, 10, () => {});
+	const click = (x: number) => ({ type: "click", button: "left", x, y: 1, screenX: x, screenY: 1, width: 45, height: 10, shift: false, alt: false, ctrl: false }) as TuiMouseEvent;
+	assert.equal(scroll.handleMouse(click(rows[1]!.indexOf("3:PROF") + 1))?.handled, true);
+	assert.equal(state.agenticTab, "prof");
+	visible = ["main", "git", "prof", "mem", "tree", "wt"];
+	invalidateSidebar(f.tui);
+	scroll = rail(f);
+	rows = scroll.render(45);
+	assert.match(rows[1]!, /2:GIT/);
+	assert.match(rows[1]!, /5:TREE/);
+});
+
+test("a panel longer than its viewport reports the visible slice in its bottom rule", (t) => {
+	const f = fixture("fullscreen", 180);
+	sidebarState(f.tui).agenticTabsEnabled = () => true;
+	const body = Array.from({ length: 12 }, (_, index) => `  file-${index}`);
+	sidebarPart(f.tui, "tree", { render: () => ["TREE"], invalidate() {} }, {
+		digest: () => "tree",
+		render: (width: number) => ["▾ Árbol de archivos   12", ...body],
+		invalidate() {},
+	});
+	t.after(installSidebar(f.tui, theme));
+	sidebarState(f.tui).agenticTab = "tree";
+	invalidateSidebar(f.tui);
+	const rows = rail(f).render(63).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+	const top = rows.findIndex((row) => row.includes("◆ Árbol de archivos"));
+	assert.ok(top > 0, `the TREE panel paints: ${rows.join("\n")}`);
+	assert.match(rows[top]!, /12 ─╮$/, "the count sits at the right of the top rule");
+	assert.equal(rows[top + 1]!.includes("file-0"), true);
+	assert.equal(rows[top + 8]!.includes("file-7"), true, "eight body rows are shown");
+	assert.equal(rows[top + 9]!.includes("file-8"), false, "the rest waits behind the range");
+	assert.match(rows[top + 9]!, /\[ 1\.\.8\/12 ▼ \]/, "the bottom rule reports the slice");
+	// Clicking the bottom rule advances the panel page and wraps back to the top.
+	const scroll = rail(f);
+	scroll.updateLayout(rows.length, 20, () => {});
+	const clickBottom = (y: number) => ({ type: "click", button: "left", x: 10, y, screenX: 10, screenY: y, width: 63, height: 20, shift: false, alt: false, ctrl: false }) as TuiMouseEvent;
+	assert.equal(scroll.handleMouse(clickBottom(top + 9))?.handled, true);
+	f.root[NODE]();
+	const page2 = rail(f).render(63).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+	assert.equal(page2[top + 1]!.includes("file-8"), true, "second page starts at file-8");
+	assert.match(page2[top + 5]!, /\[ 9\.\.12\/12 ▼ \]/, "bottom rule updates to 9..12/12");
+	assert.equal(rail(f).handleMouse(clickBottom(top + 5))?.handled, true);
+	f.root[NODE]();
+	const wrapped = rail(f).render(63).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+	assert.match(wrapped[top + 9]!, /\[ 1\.\.8\/12 ▼ \]/, "wraps back to 1..8/12");
+});
+
+test("the console resizes 62, 52 and 44 columns and disappears below 120", (t) => {
+	assert.equal(consoleWidth(180), 62);
+	assert.equal(consoleWidth(170), 62);
+	assert.equal(consoleWidth(169), 52);
+	assert.equal(consoleWidth(150), 52);
+	assert.equal(consoleWidth(149), 44);
+	assert.equal(consoleWidth(120), 44);
+	assert.equal(consoleWidth(119), 0);
+	const reserve = (columns: number) => consoleWidth(columns) + CONSOLE_BORDER;
+	assert.equal(reserve(180), 63, "117 conversation columns + 1 border + 62 console");
+	const f = fixture("fullscreen", 180);
+	sidebarState(f.tui).agenticTabsEnabled = () => true;
+	t.after(installSidebar(f.tui, theme));
+	const hstack = hstackOf(f);
+	assert.deepEqual([hstack.gap, hstack.entries[1]!.basis], [0, 63]);
+	const rows = rail(f).render(63);
+	assert.match(rows[1]!, /\[ 1:MAIN \]  2:GIT  3:PROF  4:MEM  5:TREE  0:WT/, "62 columns fit the spaced form");
+	assert.ok(rows.every((line) => visibleWidth(line) === 63));
+	f.host.terminal.columns = 149;
+	invalidateSidebar(f.tui);
+	f.root[NODE]();
+	assert.equal(hstackOf(f).entries[1]!.basis, 45, "44 console columns plus the border");
+	f.host.terminal.columns = 119;
+	f.root[NODE]();
+	assert.equal(f.root[NODE]().type, "vstack", "below 120 the console leaves the screen and the conversation takes the width");
 });

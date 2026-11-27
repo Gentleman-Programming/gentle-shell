@@ -17,20 +17,27 @@ Run these in a terminal outside Shell:
 brew list --versions gentleman-programming/tap/engram
 readlink -f "$(brew --prefix gentleman-programming/tap/engram)/bin/engram"
 curl --noproxy '*' --fail --silent --show-error --max-time 3 http://127.0.0.1:7437/health
+curl --noproxy '*' --fail --silent --show-error --max-time 3 http://127.0.0.1:7437/compatibility
 ```
 
-The first two show the Homebrew version and the path of its executable. The `version` in the `/health` answer is the version of the server actually running, which is the one Shell uses.
+The first two show the Homebrew version and the path of its executable. The `version` in the `/health` answer is the version of the server actually running. Shell reuses that server only when `/compatibility` answers `"status":"ready"` with `"active_reuse_authorized":true`; any other answer, or an error, means Shell disables memory for that launch.
 
-To see which executable that server runs from:
+To see which executable that server runs from, find the process listening on the port:
 
 ```bash
-pid=$(ss -ltnpH 'sport = :7437' | grep -o 'pid=[0-9]*' | head -n1 | cut -d= -f2)
-readlink -f "/proc/$pid/exe"
+ss -ltnpH 'sport = :7437'
 ```
+
+- No output: nothing is listening.
+- A line with `pid=<number>`: run `readlink /proc/<number>/exe` to print its executable.
+- A line without `pid=`: the server belongs to another user, so its PID is hidden from you. Run `sudo ss -ltnpH 'sport = :7437'` and `sudo readlink /proc/<number>/exe` instead.
+
+Use `readlink` without `-f`: if the upgrade removed the old executable, `-f` fails instead of printing the path with `(deleted)`.
 
 | Server executable | Meaning |
 |---|---|
-| The Homebrew path from above | Shell uses your upgraded Homebrew Engram. |
+| The Homebrew path from above, and `/compatibility` is ready | Shell uses your upgraded Homebrew Engram. |
+| The Homebrew path from above, but `/compatibility` is not ready | The upgraded server runs, but Shell does not reuse it and memory stays disabled ([Compatible reuse](bundled-install.md#compatible-reuse-and-authorization)). |
 | A different Homebrew `Cellar/engram/<version>` path, or a path ending in `(deleted)` | The server started before the upgrade is still running the old version. |
 | `~/.gentle-shell/runtime/engram-<version>/engram` | Shell started its bundled core. The Homebrew upgrade does not affect it. |
 | Nothing listening | Shell starts its bundled core on the next launch. |

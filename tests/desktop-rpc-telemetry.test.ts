@@ -247,6 +247,13 @@ test("a failed write does not re-read or answer a policy", async () => {
 	assert.deepEqual(fake.verbs(), ["telemetry enable --json"]);
 });
 
+test("a lock source differing only in case or whitespace is telemetry_output_invalid", async () => {
+	for (const source of ["ci", "DO_NOT_TRACK "]) {
+		const app = harness(fakeGentleAi({ noticeShown: false }, () => result({ stdout: JSON.stringify({ enabled: false, source, reason: "disabled" }) })).exec);
+		expectError(await app.call("get_telemetry"), TELEMETRY_OUTPUT_INVALID);
+	}
+});
+
 test("unparseable policy output is telemetry_output_invalid, never a fabricated policy", async () => {
 	const outputs = [
 		"not json",

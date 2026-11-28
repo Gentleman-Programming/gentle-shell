@@ -8,7 +8,6 @@
 // Gentleman-Programming/gentle-shell#3586. It never fabricates a policy.
 
 export const DESKTOP_TELEMETRY_METHODS = ["get_telemetry", "set_telemetry"] as const;
-/** `telemetry_changed` is not wired yet, so this slice advertises no event. */
 /** Advertised only while the state-directory watcher is wired. */
 export const DESKTOP_TELEMETRY_EVENT = "telemetry_changed";
 export const DESKTOP_TELEMETRY_EVENTS = [DESKTOP_TELEMETRY_EVENT] as const;

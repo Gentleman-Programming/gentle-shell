@@ -2026,7 +2026,7 @@ Emitted when the telemetry policy changes outside this channel: `gentle-ai telem
 ```
 
 - It comes from a debounced (250 ms) watcher on gentle-ai's state directory, `GENTLE_AI_HOME` or `~/.gentle-ai` (the bundled install's own prefix, as for every gentle-ai run here), filtered to `telemetry.json`. After each window the watcher re-reads `telemetry policy --json` only, never `status`.
-- It fires only when the re-read payload differs from the last one this channel gave the Desktop (a `get_telemetry`, a `set_telemetry`, or an earlier event). So the Desktop's own `set_telemetry` is never echoed, and gentle-ai's own rewrites that leave the policy unchanged (a heartbeat timestamp) emit nothing.
+- It fires only when the re-read payload differs from the last one this channel gave the Desktop (a `get_telemetry`, a `set_telemetry`, or an earlier event). So the Desktop's own `set_telemetry` is never echoed, and gentle-ai's own rewrites that leave the policy unchanged (a heartbeat timestamp) emit nothing. Until the Desktop has called `get_telemetry` or `set_telemetry` in this session there is no baseline, so a first event may carry an unchanged payload: treat `telemetry_changed` as "re-render from this payload", not as proof of a change.
 - A fresh install with no state directory yet is watched through its nearest existing parent, and the event fires once gentle-ai creates it. A failed re-read emits nothing; no policy is invented.
 - The watcher is torn down at session shutdown, reload, or switch, with its pending window. A change to an environment lock (`DO_NOT_TRACK`, `GENTLE_AI_TELEMETRY`, `CI`) is not a file change and is seen on the next read.
 - If the directory cannot be watched, the event is not advertised in `capabilities`.

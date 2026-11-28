@@ -11,6 +11,7 @@ const references = [
 	"references/browse-and-compare.md",
 	"references/composition-and-feedback.md",
 	"references/adaptive-interfaces.md",
+	"references/motion-and-spatial.md",
 ];
 const read = (path: string) => readFileSync(join(skillDir, path), "utf8");
 
@@ -39,7 +40,7 @@ test("the skill loads its bundled guidance through local links", () => {
 	}
 });
 
-test("the package contains only the skill and its four guidance documents", () => {
+test("the package contains only the skill and its five guidance documents", () => {
 	const files = readdirSync(skillDir, { recursive: true, withFileTypes: true })
 		.filter((entry) => entry.isFile())
 		.map((entry) => join(entry.parentPath, entry.name).slice(skillDir.length + 1));

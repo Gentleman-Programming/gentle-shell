@@ -37,9 +37,52 @@ test("S1: the real design/system.md yields the wizard's colors, fonts, radius, s
 	assert.equal(tokens.get("--glow-hover")?.value, "0 14px 36px #f095c86b");
 	assert.equal(tokens.get("--shadow-panel")?.group, "shadow");
 	assert.equal(tokens.get("--ease")?.value, "cubic-bezier(.4, 0, .2, 1)");
+	assert.equal(tokens.get("--ease")?.group, "motion");
+	assert.equal(tokens.get("--glow")?.group, "shadow");
 	// Prose and non-token rows are not tokens.
 	for (const name of tokens.keys()) assert.match(name, /^--[A-Za-z0-9_-]+$/);
 	assert.equal(tokens.size, 27, [...tokens.keys()].join(" "));
+});
+
+test("motion tokens get their own group: motion sections yield motion, shadow sections stay shadow, mixed sections split by value", () => {
+	const text = [
+		"## Motion",
+		"| `--duration-fast` | `120ms` | Hover |",
+		"| `--ease-out` | `cubic-bezier(0, 0, .2, 1)` | Enter |",
+		"## Animation and transitions",
+		"| `--stagger` | `40ms` | Lists |",
+		"## Shadows",
+		"| `--shadow-sm` | `0 1px 2px #0003` | Cards |",
+		"## Elevation",
+		"| `--elevation-2` | `0 4px 8px #0004` | Menus |",
+		"## Shadows and motion",
+		"| `--shadow-lg` | `0 24px 60px #00000073` | Panel |",
+		"| `--ease` | `ease-in-out` | Transitions |",
+		"| `--rise` | `.3s` | Panel rise |",
+		"| `--steps` | `steps(4, end)` | Loader |",
+	].join("\n");
+	const groups = Object.fromEntries(parseSystemTokens(text).map((token) => [token.name, token.group]));
+	assert.deepEqual(groups, {
+		"--duration-fast": "motion",
+		"--ease-out": "motion",
+		"--stagger": "motion",
+		"--shadow-sm": "shadow",
+		"--elevation-2": "shadow",
+		"--shadow-lg": "shadow",
+		"--ease": "motion",
+		"--rise": "motion",
+		"--steps": "motion",
+	});
+});
+
+test("mixed sections keep non-motion values as shadows, and section names keep their precedence", () => {
+	const row = (name: string, value: string) => `| \`${name}\` | \`${value}\` | x |`;
+	const text = ["## Shadows and motion", row("--a", "linear-gradient(red, blue)"), row("--b", "none"), row("--c", "10px"), row("--d", "-.5s"), row("--e", "Cubic-Bezier(0,0,.2,1)"), row("--f", "linear(0, .5, 1)"), row("--g", "step-end"),
+		"## Colors and motion", row("--h", "120ms"), "## Layout motion", row("--i", "100ms"), "## Elevation and transitions", row("--j", "0 1px 2px #000"), row("--k", "300ms"), "## Breakpoints", row("--l", "640px")].join("\n");
+	assert.deepEqual(Object.fromEntries(parseSystemTokens(text).map((token) => [token.name, token.group])), {
+		"--a": "shadow", "--b": "shadow", "--c": "shadow", "--d": "motion", "--e": "motion", "--f": "motion", "--g": "motion",
+		"--h": "color", "--i": "motion", "--j": "shadow", "--k": "motion", "--l": "other",
+	});
 });
 
 // Every documented token row names the file it comes from in its Source cell, and that file must

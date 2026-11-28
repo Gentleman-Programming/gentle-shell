@@ -32,6 +32,7 @@ The `/gentle:design` commands are optional shortcuts: every action also works fr
 | User wants to tune values (spacing, color, type scale) | Add sliders or controls in the artboard plus a "Copy as prompt" button that copies the chosen values as a prompt |
 | `design/<slug>/` already exists for a new brief | Pick a new slug; never overwrite another design |
 | A message carries design comments, or the user asks to apply them | Follow "Canvas comments" below |
+| The brief asks for 3D, WebGL, a camera journey, or timeline animation | Say plainly that artboards cannot host 3D or animation libraries, model files, or WebAssembly: their strict CSP blocks external modules, network loads, and WebAssembly. Offer a static or CSS-motion direction with a designed poster instead, following `gentle-ui-design`'s `motion-and-spatial.md`; never improvise WebGL |
 | `/gentle:design sync`, or the user asks to capture the project's design system | Follow "Design system sync" below |
 | The user asks to show, stop, or list designs, or to implement an artboard | Call the `gentle_design` tool (`open`, `stop`, `list`, or `implement` with `<slug>/<artboard>`); follow the handoff text `implement` returns, and report progress with `action "handoff"`: `status: "in_progress"` when you start, `status: "implemented"` when done, with `previewUrl` set to the running app's loopback URL when one is running |
 
@@ -74,8 +75,8 @@ Run this gate before every new brief: call the `gentle_design` tool with `action
 ## Design system sync
 
 1. Read only, and never edit project source. Sources: CSS custom properties (`:root`, `@theme`, `[data-theme]`), the Tailwind config or v4 `@theme`, component library folders, existing token files, and the fonts they declare.
-2. Write `design/system.md`: colors (token name, value, usage), typography, spacing, radius, shadows, and component rules. For each CSS custom property, use a table row under a `##` section, with the backticked token name in the first cell and its backticked value in the second cell. Each entry names its source `path`. Record only values found in the sources.
-3. Write `design/system.html`: one self-contained artboard, 1440 px wide, that renders those tokens (swatches, type scale, spacing, radius, shadows) and the core components, under the same no-external-URL rules. The canvas shows it as the first board of every design.
+2. Write `design/system.md`: colors (token name, value, usage), typography, spacing, radius, shadows, motion (durations, easing curves, stagger, and reduced-motion behavior), and component rules. Keep shadows and motion in separate `##` sections. For each CSS custom property, use a table row under a `##` section, with the backticked token name in the first cell and its backticked value in the second cell. Each entry names its source `path`. Record only values found in the sources.
+3. Write `design/system.html`: one self-contained artboard, 1440 px wide, that renders those tokens (swatches, type scale, spacing, radius, shadows, motion) and the core components, under the same no-external-URL rules. The canvas shows it as the first board of every design.
 4. When no design sources exist, say so and propose a minimal starter system for the user to accept; never present invented values as project tokens.
 5. Self-check, for every artboard you finish while `design/system.md` exists: list the colors and font families the artboard uses, compare them with the system tokens, and fix every deviation before you report.
 

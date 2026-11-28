@@ -145,7 +145,9 @@ function interactiveHost(t: test.TestContext): void {
 async function rpcHarness(t: test.TestContext, withFeed: boolean) {
 	interactiveHost(t);
 	const harness = fakePi();
-	desktopRpc(harness.pi);
+	const telemetryRoot = mkdtempSync(join(tmpdir(), "gs-telemetry-state-"));
+	t.after(() => rmSync(telemetryRoot, { recursive: true, force: true }));
+	desktopRpc(harness.pi, { telemetryStateDirectory: () => telemetryRoot, watch: () => () => {} });
 	const agentDir = mkdtempSync(join(tmpdir(), "desktop-rpc-session-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	const clock = fakeTimers();

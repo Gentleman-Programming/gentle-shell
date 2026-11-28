@@ -45,9 +45,18 @@ export interface DesktopTelemetryWatchOptions {
 
 export type DesktopTelemetryEmit = (event: string, data: Record<string, unknown>) => void;
 
+/** One start()..stop() lifetime: read state is per generation so an obsolete read cannot swallow the current one's change. */
+interface Generation {
+	readonly watcher: DesktopDirectoryWatcher;
+	reading: boolean;
+	dirty: boolean;
+	/** A window closed during an own write: read once the last write bracket closes. */
+	pending: boolean;
+}
+
 export class DesktopTelemetryWatcher {
 	private readonly options: DesktopTelemetryWatchOptions;
-	private watcher: DesktopDirectoryWatcher | undefined;
+	private generation: Generation | undefined;
 	private emit: DesktopTelemetryEmit | undefined;
 	private read: (() => Promise<DesktopRpcOutcome>) | undefined;
 	/** The last payload the Desktop was given, by a read, a set, or an event. */
@@ -55,8 +64,6 @@ export class DesktopTelemetryWatcher {
 	private writes = 0;
 	/** Bumped whenever the baseline moves, so a read that overlapped the move is retried. */
 	private version = 0;
-	private reading = false;
-	private dirty = false;
 
 	constructor(options: DesktopTelemetryWatchOptions = {}) {
 		this.options = options;
@@ -64,19 +71,25 @@ export class DesktopTelemetryWatcher {
 
 	/** Whether an open watcher backs the event; only then is it advertised. */
 	get wired(): boolean {
-		return this.watcher !== undefined;
+		return this.generation?.watcher.active === true;
 	}
 
 	/** Starts watching; a directory that cannot be watched leaves the event unwired. */
 	start(read: () => Promise<DesktopRpcOutcome>, emit: DesktopTelemetryEmit): void {
 		this.stop();
 		try {
-			const watcher = new DesktopDirectoryWatcher(() => void this.recompute(watcher), {
-				...(this.options.watch === undefined ? {} : { watch: this.options.watch }),
-				...(this.options.timers === undefined ? {} : { timers: this.options.timers }),
-				...(this.options.exists === undefined ? {} : { exists: this.options.exists }),
-				...(this.options.debounceMs === undefined ? {} : { debounceMs: this.options.debounceMs }),
-			});
+			const generation: Generation = {
+				watcher: new DesktopDirectoryWatcher(() => void this.recompute(generation), {
+					...(this.options.watch === undefined ? {} : { watch: this.options.watch }),
+					...(this.options.timers === undefined ? {} : { timers: this.options.timers }),
+					...(this.options.exists === undefined ? {} : { exists: this.options.exists }),
+					...(this.options.debounceMs === undefined ? {} : { debounceMs: this.options.debounceMs }),
+				}),
+				reading: false,
+				dirty: false,
+				pending: false,
+			};
+			const watcher = generation.watcher;
 			const dir = (this.options.stateDirectory ?? (() => telemetryStateDirectory()))();
 			// A missing directory (fresh install) is watched through its nearest
 			// existing ancestor until gentle-ai creates it.
@@ -84,7 +97,7 @@ export class DesktopTelemetryWatcher {
 				watcher.dispose();
 				return;
 			}
-			this.watcher = watcher;
+			this.generation = generation;
 			this.read = read;
 			this.emit = emit;
 		} catch {
@@ -94,14 +107,13 @@ export class DesktopTelemetryWatcher {
 
 	/** Session start/shutdown: the watcher, its timer and the baseline are torn down. */
 	stop(): void {
-		const watcher = this.watcher;
-		this.watcher = undefined;
+		const watcher = this.generation?.watcher;
+		this.generation = undefined;
 		this.emit = undefined;
 		this.read = undefined;
 		this.known = undefined;
 		this.writes = 0;
 		this.version += 1;
-		this.dirty = false;
 		watcher?.dispose();
 	}
 
@@ -119,28 +131,37 @@ export class DesktopTelemetryWatcher {
 			return await run();
 		} finally {
 			this.writes -= 1;
+			// A window that closed during the write left its read pending: do it once now.
+			const generation = this.generation;
+			if (this.writes === 0 && generation?.pending) {
+				generation.pending = false;
+				void this.recompute(generation);
+			}
 		}
 	}
 
-	private async recompute(watcher: DesktopDirectoryWatcher): Promise<void> {
-		if (watcher !== this.watcher) return;
-		if (this.writes > 0) return;
-		if (this.reading) {
-			this.dirty = true;
+	private async recompute(generation: Generation): Promise<void> {
+		if (generation !== this.generation) return;
+		if (this.writes > 0) {
+			generation.pending = true;
 			return;
 		}
-		this.reading = true;
+		if (generation.reading) {
+			generation.dirty = true;
+			return;
+		}
+		generation.reading = true;
 		try {
 			do {
-				this.dirty = false;
-				await this.report(watcher);
-			} while (this.dirty && watcher === this.watcher);
+				generation.dirty = false;
+				await this.report(generation);
+			} while (generation.dirty && generation === this.generation);
 		} finally {
-			this.reading = false;
+			generation.reading = false;
 		}
 	}
 
-	private async report(watcher: DesktopDirectoryWatcher): Promise<void> {
+	private async report(generation: Generation): Promise<void> {
 		const read = this.read;
 		if (!read) return;
 		const version = this.version;
@@ -151,12 +172,16 @@ export class DesktopTelemetryWatcher {
 			return;
 		}
 		// Torn down, or an own write settled while this read ran: not an event.
-		if (watcher !== this.watcher || !outcome.ok) return;
-		// A write in flight owns this read (its answer becomes the baseline).
-		if (this.writes > 0) return;
+		if (generation !== this.generation || !outcome.ok) return;
+		// A write in flight owns this read (its answer becomes the baseline);
+		// read again once its bracket closes.
+		if (this.writes > 0) {
+			generation.pending = true;
+			return;
+		}
 		if (version !== this.version) {
 			// A Desktop answer landed while this read ran: read again against it.
-			this.dirty = true;
+			generation.dirty = true;
 			return;
 		}
 		const payload = JSON.stringify(outcome.data);

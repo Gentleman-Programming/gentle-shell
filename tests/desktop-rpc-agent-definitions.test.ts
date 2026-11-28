@@ -61,7 +61,9 @@ function harness(t: test.TestContext, location: AgentDefinitionsLocationFactory)
 		on(name: string, handler: any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
 		events: { on() { return () => {}; }, emit() {} },
 	} as unknown as ExtensionAPI;
-	desktopRpc(pi, { agentDefinitionsLocation: location });
+	const telemetryRoot = mkdtempSync(join(tmpdir(), "gs-telemetry-state-"));
+	t.after(() => rmSync(telemetryRoot, { recursive: true, force: true }));
+	desktopRpc(pi, { agentDefinitionsLocation: location, telemetryStateDirectory: () => telemetryRoot, watch: () => () => {} });
 	const widgets: string[] = [];
 	const ctx = {
 		mode: "rpc",

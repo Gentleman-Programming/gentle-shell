@@ -39,6 +39,8 @@ function probeEnvironment(root: string): Record<string, string> {
 		NO_COLOR: "1",
 		GENTLE_SHELL_INTERACTIVE_HOST: "1",
 		GENTLE_PI_CONFIG_HOME: join(root, "config"),
+		// A test-owned gentle-ai home keeps telemetry_changed independent of the host.
+		GENTLE_AI_HOME: join(root, "gentle-ai"),
 		GENTLE_PI_AGENT_HOME: join(home, "agent"),
 		PI_CODING_AGENT_DIR: join(home, "agent"),
 		GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",

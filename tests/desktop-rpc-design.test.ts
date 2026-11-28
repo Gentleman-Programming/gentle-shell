@@ -607,7 +607,9 @@ test("the Desktop transport advertises the design method and event", async (t) =
 		registerCommand(name: string, command: any) { commands.set(name, command); },
 		on(name: string, handler: any) { events.set(name, handler); },
 	} as unknown as ExtensionAPI;
-	desktopRpc(pi);
+	const telemetryRoot = mkdtempSync(join(tmpdir(), "gs-telemetry-state-"));
+	t.after(() => rmSync(telemetryRoot, { recursive: true, force: true }));
+	desktopRpc(pi, { telemetryStateDirectory: () => telemetryRoot, watch: () => () => {} });
 	const widgets: Array<{ key: string; lines: string[] }> = [];
 	const ctx = { mode: "rpc", ui: { setWidget(key: string, lines: string[]) { widgets.push({ key, lines }); } } };
 	events.get("session_start")?.({}, ctx);

@@ -199,6 +199,47 @@ test("dispose closes every watcher and cancels a pending recompute", () => {
 	assert.equal(watcher.start([{ dir: "/a", names: ["x.json"] }]), 0, "a disposed watcher never restarts");
 });
 
+test("active reflects an open directory or ancestor watcher, and drops when the last one closes", () => {
+	const clock = fakeClock();
+	const closedHooks: Array<() => void> = [];
+	const present = new Set(["/", "/owner"]);
+	let failOpen = false;
+	const watches = fakeWatches();
+	const factory = (dir: string, onChange: (filename: string | undefined, removed?: boolean) => void, onClosed?: () => void) => {
+		if (failOpen) throw new Error("ENOSPC: watcher limit");
+		if (onClosed) closedHooks.push(onClosed);
+		return watches.factory(dir, onChange);
+	};
+	const watcher = new DesktopDirectoryWatcher(() => {}, { watch: factory, timers: clock, exists: (path) => present.has(path) });
+	assert.equal(watcher.active, false, "nothing started yet");
+	watcher.start([{ dir: "/owner", names: ["x.json"] }]);
+	assert.equal(watcher.active, true);
+	// A runtime error closes the watcher by itself and reports it.
+	closedHooks[0]!();
+	assert.equal(watcher.active, false);
+	watcher.dispose();
+
+	// The directory vanishes and its ancestor cannot be watched: not active.
+	const second = new DesktopDirectoryWatcher(() => {}, { watch: factory, timers: clock, exists: (path) => present.has(path) });
+	second.start([{ dir: "/owner", names: ["x.json"] }]);
+	present.delete("/owner");
+	failOpen = true;
+	watches.remove("/owner");
+	assert.equal(second.active, false);
+	second.dispose();
+
+	// A successful re-arm on the ancestor keeps it active; dispose ends it.
+	failOpen = false;
+	present.add("/owner");
+	const third = new DesktopDirectoryWatcher(() => {}, { watch: factory, timers: clock, exists: (path) => present.has(path) });
+	third.start([{ dir: "/owner", names: ["x.json"] }]);
+	present.delete("/owner");
+	watches.remove("/owner");
+	assert.equal(third.active, true, "an ancestor watcher counts");
+	third.dispose();
+	assert.equal(third.active, false);
+});
+
 // ---- Through the channel ----
 
 function profilesFile(active: string): Record<string, unknown> {

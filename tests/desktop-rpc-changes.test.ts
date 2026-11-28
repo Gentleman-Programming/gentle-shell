@@ -224,7 +224,7 @@ function app(t: test.TestContext, root: string, options: Pick<Partial<ShellDeps>
 			gitRunner: (cwd, maxBuffer) => { const run = runner(cwd, maxBuffer); return (args) => { gitCalls += 1; return run(args); }; },
 		});
 	}
-	desktopRpc(pi as ExtensionAPI);
+	desktopRpc(pi as ExtensionAPI, { telemetryStateDirectory: () => join(root, "gentle-ai"), watch: () => () => {} });
 	const lines: string[] = [];
 	const ctx: any = {
 		mode: "rpc", hasUI: true, cwd: root,

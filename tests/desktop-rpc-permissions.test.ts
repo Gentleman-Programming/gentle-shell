@@ -58,7 +58,7 @@ function desktopHost(t: test.TestContext, options: { owner?: boolean } = {}) {
 	const owner = options.owner === false
 		? undefined
 		: registerYoloSessionPolicy(pi, process.env, { resolveIdentity: async () => "workspace:test" });
-	desktopRpc(pi);
+	desktopRpc(pi, { telemetryStateDirectory: () => join(dirs.root, "gentle-ai"), watch: () => () => {} });
 	const widgets: WidgetCall[] = [];
 	const notices: string[] = [];
 	const statuses = new Map<string, string | undefined>();

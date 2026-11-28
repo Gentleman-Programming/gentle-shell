@@ -19,6 +19,7 @@ import {
 	deriveTelemetryToggle,
 } from "../lib/desktop-rpc-telemetry.ts";
 import { DesktopTelemetryBridge } from "../lib/desktop-telemetry-service.ts";
+import { DesktopTelemetryWatcher } from "../lib/desktop-telemetry-watcher.ts";
 import type { ExecFileRequest, ExecFileResult } from "../lib/native-review-cli.ts";
 
 // get_telemetry / set_telemetry (gentle-shell#3586). The tests drive the real
@@ -562,3 +563,108 @@ test("shutdown closes the watcher, cancels the pending window and emits nothing 
 	assert.equal(app.timers.open(), 0);
 });
 
+
+// ---- the watcher on its own (CodeRabbit follow-ups on #3597) ----
+
+const OK_A = { ok: true as const, data: { enabled: true, toggle: "on" } };
+const OK_B = { ok: true as const, data: { enabled: false, toggle: "off" } };
+
+function directWatcher() {
+	const timers = manualTimers();
+	const fs = fakeWatch(false);
+	const watcher = new DesktopTelemetryWatcher({ stateDirectory: () => "/state", exists: () => true, watch: fs.watch, timers: timers.timers });
+	const events: unknown[] = [];
+	return { watcher, timers, fs, events, emit: (_event: string, data: Record<string, unknown>) => { events.push(data); } };
+}
+
+test("a window that closes during an own write is read once when the write ends, and a changed payload is an event", async () => {
+	const app = directWatcher();
+	let reads = 0;
+	let current = OK_A;
+	app.watcher.start(async () => { reads += 1; return current; }, app.emit);
+	await app.watcher.own(async () => {
+		app.watcher.observe(OK_A); // the set's answer is the baseline
+		current = OK_B; // an external disable lands after that read
+		app.fs.fire("/state");
+		await app.timers.advance(250); // its window closes before the bracket does
+		assert.equal(reads, 0, "no read mid-write");
+	});
+	for (let i = 0; i < 20; i += 1) await Promise.resolve();
+	assert.equal(reads, 1, "exactly one recompute once the last bracket closed");
+	assert.deepEqual(app.events, [OK_B.data]);
+});
+
+test("the read pending after an own write still never echoes the write's own payload", async () => {
+	const app = directWatcher();
+	let reads = 0;
+	app.watcher.start(async () => { reads += 1; return OK_A; }, app.emit);
+	await app.watcher.own(async () => {
+		app.watcher.observe(OK_A);
+		app.fs.fire("/state");
+		await app.timers.advance(250);
+	});
+	for (let i = 0; i < 20; i += 1) await Promise.resolve();
+	assert.equal(reads, 1);
+	assert.deepEqual(app.events, []);
+});
+
+test("a read still pending from a stopped generation neither swallows the new generation's change nor emits", async () => {
+	const app = directWatcher();
+	let release1!: (outcome: typeof OK_A) => void;
+	const read1 = () => new Promise<typeof OK_A>((resolve) => { release1 = resolve; });
+	app.watcher.start(read1, app.emit);
+	app.fs.fire("/state");
+	await app.timers.advance(250); // generation 1 is now reading, unresolved
+	app.watcher.stop();
+	let reads2 = 0;
+	app.watcher.start(async () => { reads2 += 1; return OK_B; }, app.emit);
+	app.watcher.observe(OK_A);
+	app.fs.fire("/state");
+	await app.timers.advance(250);
+	assert.equal(reads2, 1, "the current generation reads while the obsolete read is pending");
+	assert.deepEqual(app.events, [OK_B.data]);
+	// The obsolete read finally settles with a payload that would be an event: it is dropped.
+	release1({ ok: true, data: { enabled: true, toggle: "on", obsolete: true } as any });
+	for (let i = 0; i < 20; i += 1) await Promise.resolve();
+	assert.deepEqual(app.events, [OK_B.data]);
+});
+
+test("wired follows an actually open watcher: a failed re-arm after the directory vanished unwires it", () => {
+	const timers = manualTimers();
+	const present = new Set(["/", "/state"]);
+	const opened: Array<{ dir: string; onChange: (f: string | undefined, removed?: boolean) => void }> = [];
+	let failNext = false;
+	const watcher = new DesktopTelemetryWatcher({
+		stateDirectory: () => "/state",
+		exists: (path) => present.has(path),
+		timers: timers.timers,
+		watch: (dir, onChange) => {
+			if (failNext) throw new Error("cannot watch");
+			opened.push({ dir, onChange });
+			return () => {};
+		},
+	});
+	watcher.start(async () => OK_A, () => {});
+	assert.equal(watcher.wired, true);
+	present.delete("/state");
+	failNext = true;
+	opened[0]!.onChange(undefined, true); // the directory is gone and the ancestor cannot be watched
+	assert.equal(watcher.wired, false);
+});
+
+test("wired stays true when the removed directory is re-armed on an ancestor", () => {
+	const timers = manualTimers();
+	const present = new Set(["/", "/state"]);
+	const opened: Array<{ dir: string; onChange: (f: string | undefined, removed?: boolean) => void }> = [];
+	const watcher = new DesktopTelemetryWatcher({
+		stateDirectory: () => "/state",
+		exists: (path) => present.has(path),
+		timers: timers.timers,
+		watch: (dir, onChange) => { opened.push({ dir, onChange }); return () => {}; },
+	});
+	watcher.start(async () => OK_A, () => {});
+	present.delete("/state");
+	opened[0]!.onChange(undefined, true);
+	assert.equal(watcher.wired, true);
+	assert.equal(opened[1]!.dir, "/");
+});

@@ -103,7 +103,9 @@ function harness(t: test.TestContext, factory?: UpdateSourcesFactory, timeoutMs?
 		on(name: string, handler: any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
 		events: { on() { return () => {}; }, emit() {} },
 	} as unknown as ExtensionAPI;
-	desktopRpc(pi, { ...(factory ? { updateSources: factory } : {}), ...(timeoutMs === undefined ? {} : { updateTimeoutMs: timeoutMs }) });
+	const telemetryRoot = mkdtempSync(join(tmpdir(), "gs-telemetry-state-"));
+	t.after(() => rmSync(telemetryRoot, { recursive: true, force: true }));
+	desktopRpc(pi, { telemetryStateDirectory: () => telemetryRoot, watch: () => () => {}, ...(factory ? { updateSources: factory } : {}), ...(timeoutMs === undefined ? {} : { updateTimeoutMs: timeoutMs }) });
 	const widgets: string[] = [];
 	const ctx = {
 		mode: "rpc",

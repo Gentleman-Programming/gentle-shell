@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
 import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET, DesktopRpcRouter, type DesktopRpcDomain, type DesktopRpcOutcome } from "../lib/desktop-rpc.ts";
@@ -29,7 +32,9 @@ function harness(t: test.TestContext) {
 		registerCommand(name: string, command: any) { commands.set(name, command); },
 		on(name: string, handler: any) { events.set(name, handler); },
 	};
-	desktopRpc(pi as any);
+	const telemetryRoot = mkdtempSync(join(tmpdir(), "gs-telemetry-state-"));
+	t.after(() => rmSync(telemetryRoot, { recursive: true, force: true }));
+	desktopRpc(pi as any, { telemetryStateDirectory: () => telemetryRoot, watch: () => () => {} });
 	const widgets: WidgetCall[] = [];
 	const ctx = {
 		mode: "rpc",

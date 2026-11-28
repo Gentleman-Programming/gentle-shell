@@ -1289,7 +1289,9 @@ function isolatedTransport(t: test.TestContext) {
 		registerCommand(name: string, command: any) { commands.set(name, command); },
 		on(name: string, handler: any) { events.set(name, handler); },
 	} as unknown as ExtensionAPI;
-	desktopRpc(pi);
+	const telemetryRoot = mkdtempSync(join(tmpdir(), "gs-telemetry-state-"));
+	t.after(() => rmSync(telemetryRoot, { recursive: true, force: true }));
+	desktopRpc(pi, { telemetryStateDirectory: () => telemetryRoot, watch: () => () => {} });
 	const widgets: WidgetCall[] = [];
 	const ctx = {
 		mode: "rpc",

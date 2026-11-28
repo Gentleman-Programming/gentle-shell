@@ -128,7 +128,9 @@ function harness(t: test.TestContext, options: { roots?: readonly string[]; owne
 			emit(name: string, value: unknown) { for (const handler of [...(listeners.get(name) ?? [])]) handler(value); },
 		},
 	} as unknown as ExtensionAPI;
-	desktopRpc(pi);
+	const telemetryRoot = mkdtempSync(join(tmpdir(), "gs-telemetry-state-"));
+	t.after(() => rmSync(telemetryRoot, { recursive: true, force: true }));
+	desktopRpc(pi, { telemetryStateDirectory: () => telemetryRoot, watch: () => () => {} });
 	if (options.owner !== false) {
 		gentleStats(pi, { env: isolatedConfigEnv({}), now: () => NOW, sessionsRoots: () => options.roots ?? [], loader: options.loader });
 	}

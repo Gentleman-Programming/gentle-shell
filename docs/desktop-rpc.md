@@ -64,7 +64,7 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials"],
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials", "get_telemetry", "set_telemetry"],
   "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "session_snapshot"]
 }
 ```
@@ -1595,6 +1595,60 @@ Makes this session pick up credentials added or removed elsewhere (another termi
 
 `failedProviders` lists the ids whose refresh reported an error; the error text never crosses. Errors: `invalid_request`, `auth_unavailable` (no registry in this session, or the session was replaced during the reload), and `reload_failed` (the refresh itself failed).
 
+### `get_telemetry`
+
+Reads the anonymous-usage-telemetry preference from gentle-ai, the owner of telemetry. It runs `gentle-ai telemetry policy --json` and nothing else: never `telemetry status`, which creates the state file as a side effect. Params must be an empty object. It emits no event.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-110",
+  "ok": true,
+  "data": { "enabled": false, "source": "default", "reason": "enrollment_pending", "toggle": "on", "locked": false }
+}
+```
+
+The policy fields (`enabled`, `source`, `reason`, and any other field gentle-ai prints) pass through unchanged. The RPC adds two derived fields, `toggle` and `locked`, computed in one place from the table below, so a client follows `toggle` and `locked` and never interprets `source` or `reason` itself:
+
+| Policy | `toggle` | `locked` | Suggested UI |
+| --- | --- | --- | --- |
+| `reason: "enabled"` | `"on"` | `false` | (none) |
+| `reason: "enrollment_pending"` | `"on"` | `false` | "Sending starts after the first-run notice" |
+| `reason: "disabled"`, `source: "state"` | `"off"` | `false` | (none) |
+| `reason: "disabled"`, `source` is `DO_NOT_TRACK`, `GENTLE_AI_TELEMETRY` or `CI` | `"off"` | `true` | "Disabled by `<source>`" |
+| `reason: "state_unavailable"` | `"unset"` | `false` | "Not set up yet" |
+
+- `enabled` is whether data is sent right now. `toggle` is the user's preference: `enrollment_pending` is only reachable when the user has not opted out, so it is `on` while `enabled` is still `false`.
+- `state_unavailable` reports `source: "state"`, exactly like a real opt-out. It also covers a fresh install that never ran a trigger (no state file yet), so it is `unset`, never "you turned this off". A client must not decide on `source` alone.
+- A policy the table does not cover (an unknown `reason`, or a `disabled` policy with an unknown `source`) is `telemetry_output_invalid`; a policy is never guessed.
+
+### `set_telemetry`
+
+Writes the preference: `gentle-ai telemetry enable --json` or `disable --json`, then re-reads `telemetry policy --json` and answers it in the `get_telemetry` shape. Emits no event.
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | yes | boolean | `true` runs `enable`, `false` runs `disable`. |
+
+Any other key or type is `invalid_request`, and gentle-ai is not run.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-111", "method": "set_telemetry", "params": { "enabled": true } }
+```
+
+```json
+{ "ok": true, "data": { "enabled": false, "source": "default", "reason": "enrollment_pending", "toggle": "on", "locked": false } }
+```
+
+- After enabling on a fresh install the answer is `toggle: "on"` with `reason: "enrollment_pending"`, the truthful state: sending starts after gentle-ai's first-run notice.
+- When `locked` (an environment variable decides), the preference is still written, and the answer is the effective, locked policy (`toggle: "off"`, `locked: true`). The write takes effect when the variable is removed.
+- The `enable`/`disable` output is discarded: it carries `install_id` and `endpoint`, which never cross the wire.
+- The Desktop never marks the notice as shown: the first-run notice and `notice_shown` stay owned by gentle-ai.
+- If the write succeeds but the re-read fails, the error is the re-read's; the preference may already have changed, so read again.
+
+Errors (both methods): `invalid_request`, `telemetry_binary_missing`, `telemetry_timeout`, `telemetry_command_failed`, `telemetry_output_invalid`, `telemetry_policy_unsupported`.
+
 ## Responses
 
 Success:
@@ -1659,6 +1713,11 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `background_subagents_busy` | A `set_background_subagents` is still running. Nothing was written by this request. |
 | `auth_unavailable` | `get_auth_status` or `reload_credentials`: no credential registry in this session, the registry read failed, or the session was replaced during the reload. |
 | `reload_failed` | The `reload_credentials` refresh itself failed. The error text never crosses. |
+| `telemetry_binary_missing` | `get_telemetry` or `set_telemetry`: the gentle-ai binary could not be resolved or started. Nothing was written. |
+| `telemetry_timeout` | A `gentle-ai telemetry` run did not finish within 5 seconds. For `set_telemetry` the write may or may not have applied: read again. |
+| `telemetry_command_failed` | A `gentle-ai telemetry` run exited non-zero. The process output never crosses. |
+| `telemetry_output_invalid` | The policy output was not a JSON object with boolean `enabled` and string `source` and `reason`, was too large, or is a combination the derivation table does not cover. No policy is invented. |
+| `telemetry_policy_unsupported` | This gentle-ai is too old to have `telemetry policy`. Update gentle-ai. |
 | `not_found` | `cancel_job` or `get_job_output` named a job id, or `cancel_subagent` or `get_subagent_thread` named a subagent id, that does not exist, belongs to another session, or was already evicted by the store; or `switch_session` named an id that does not resolve in the requested scope; or `get_change_diff` named a root and path that are not a file in the owner's current change set. Nothing was stopped, read, or switched. |
 | `internal_error` | Unexpected failure; message stays generic. |
 
@@ -2127,6 +2186,16 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **No sign-in or sign-out.** Signing in stays with Pi's login flow; removing credentials is out of scope.
 - **Offline reload.** `reload_credentials` never allows the network, so it does not fetch model catalogs.
 - **No event.** Ask again, or call `reload_credentials`, after a change elsewhere.
+
+## Telemetry limits
+
+- **gentle-ai owns telemetry.** The state file, the first-run notice and `notice_shown` belong to gentle-ai (Gentleman-Programming/gentle-ai#5770). The Desktop only runs `telemetry enable`, `disable` and `policy`, and never marks the notice as shown.
+- **Policy-only reads.** Reads use `telemetry policy --json`, never `telemetry status`, which creates the state file as a side effect.
+- **Discarded write output.** `enable --json` and `disable --json` print `install_id` and `endpoint`; `set_telemetry` throws that output away and answers the re-read policy.
+- **One derivation.** `toggle` and `locked` come from the table in `get_telemetry`, computed in one function, never from `source` alone.
+- **Typed errors only for real failures.** A missing state file is the answer `unset`, not an error; an unreadable or uncovered policy is an error, never a fabricated one.
+- **Bounded.** One 5 second deadline per gentle-ai run, as `/gentle:telemetry`.
+- **No event yet.** `telemetry_changed` is not advertised: a change made in the terminal or by an environment variable is seen on the next read.
 
 ## Verification
 

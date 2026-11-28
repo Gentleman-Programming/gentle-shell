@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
@@ -67,7 +70,9 @@ function harness(t: test.TestContext, registry: unknown) {
 		on(name: string, handler: any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
 		events: { on() { return () => {}; }, emit() {} },
 	} as unknown as ExtensionAPI;
-	desktopRpc(pi);
+	const telemetryRoot = mkdtempSync(join(tmpdir(), "gs-telemetry-state-"));
+	t.after(() => rmSync(telemetryRoot, { recursive: true, force: true }));
+	desktopRpc(pi, { telemetryStateDirectory: () => telemetryRoot, watch: () => () => {} });
 	const widgets: string[] = [];
 	const ctx = {
 		mode: "rpc",
@@ -96,7 +101,7 @@ test("the Desktop transport advertises both methods once and no new event", asyn
 	await app.invoke("cap", "capabilities");
 	const data = app.last().data;
 	for (const method of DESKTOP_AUTH_METHODS) assert.equal(data.methods.filter((name: string) => name === method).length, 1);
-	assert.deepEqual(data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
+	assert.deepEqual(data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "telemetry_changed"]);
 });
 
 // ---- get_auth_status ----

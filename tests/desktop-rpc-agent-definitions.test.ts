@@ -61,7 +61,9 @@ function harness(t: test.TestContext, location: AgentDefinitionsLocationFactory)
 		on(name: string, handler: any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
 		events: { on() { return () => {}; }, emit() {} },
 	} as unknown as ExtensionAPI;
-	desktopRpc(pi, { agentDefinitionsLocation: location });
+	const telemetryRoot = mkdtempSync(join(tmpdir(), "gs-telemetry-state-"));
+	t.after(() => rmSync(telemetryRoot, { recursive: true, force: true }));
+	desktopRpc(pi, { agentDefinitionsLocation: location, telemetryStateDirectory: () => telemetryRoot, watch: () => () => {} });
 	const widgets: string[] = [];
 	const ctx = {
 		mode: "rpc",
@@ -94,7 +96,7 @@ test("the Desktop transport advertises list_agent_definitions once and no new ev
 	const response = app.last();
 	assert.equal(response.data.methods.filter((method: string) => method === "list_agent_definitions").length, 1);
 	assert.ok(response.data.methods.includes("get_update_status"), "the previous methods stay advertised");
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "telemetry_changed"]);
 });
 
 // ---- The read ----

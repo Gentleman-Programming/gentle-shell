@@ -64,12 +64,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials"],
-  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "session_snapshot"]
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials", "get_telemetry", "set_telemetry"],
+  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "telemetry_changed", "session_snapshot"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The agent-definitions slice advertises exactly its one read method and no event; editing definitions stays a file edit. The package-status slice advertises exactly its one read method and no event; `/gentle:doctor` stays terminal-only. The background-subagents slice advertises exactly its read and change methods and no event; every answer carries the state. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), [Agent definitions limits](#agent-definitions-limits), [Status limits](#status-limits), and [Background subagents limits](#background-subagents-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The agent-definitions slice advertises exactly its one read method and no event; editing definitions stays a file edit. The package-status slice advertises exactly its one read method and no event; `/gentle:doctor` stays terminal-only. The background-subagents slice advertises exactly its read and change methods and no event; every answer carries the state. The telemetry slice advertises its read and write methods, and `telemetry_changed` only while its state-directory watcher is open (like `session_snapshot`); see [Telemetry limits](#telemetry-limits). Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), [Agent definitions limits](#agent-definitions-limits), [Status limits](#status-limits), and [Background subagents limits](#background-subagents-limits).
 
 ### `get_snapshot`
 
@@ -1595,6 +1595,60 @@ Makes this session pick up credentials added or removed elsewhere (another termi
 
 `failedProviders` lists the ids whose refresh reported an error; the error text never crosses. Errors: `invalid_request`, `auth_unavailable` (no registry in this session, or the session was replaced during the reload), and `reload_failed` (the refresh itself failed).
 
+### `get_telemetry`
+
+Reads the anonymous-usage-telemetry preference from gentle-ai, the owner of telemetry. It runs `gentle-ai telemetry policy --json` and nothing else: never `telemetry status`, which creates the state file as a side effect. Params must be an empty object. It emits no event; a change made elsewhere arrives as [`telemetry_changed`](#telemetry_changed).
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-110",
+  "ok": true,
+  "data": { "enabled": false, "source": "default", "reason": "enrollment_pending", "toggle": "on", "locked": false }
+}
+```
+
+The policy fields (`enabled`, `source`, `reason`, and any other field gentle-ai prints) pass through unchanged. The RPC adds two derived fields, `toggle` and `locked`, computed in one place from the table below, so a client follows `toggle` and `locked` and never interprets `source` or `reason` itself:
+
+| Policy | `toggle` | `locked` | Suggested UI |
+| --- | --- | --- | --- |
+| `reason: "enabled"` | `"on"` | `false` | (none) |
+| `reason: "enrollment_pending"` | `"on"` | `false` | "Sending starts after the first-run notice" |
+| `reason: "disabled"`, `source: "state"` | `"off"` | `false` | (none) |
+| `reason: "disabled"`, `source` is `DO_NOT_TRACK`, `GENTLE_AI_TELEMETRY` or `CI` | `"off"` | `true` | "Disabled by `<source>`" |
+| `reason: "state_unavailable"` | `"unset"` | `false` | "Not set up yet" |
+
+- `enabled` is whether data is sent right now. `toggle` is the user's preference: `enrollment_pending` is only reachable when the user has not opted out, so it is `on` while `enabled` is still `false`.
+- `state_unavailable` reports `source: "state"`, exactly like a real opt-out. It also covers a fresh install that never ran a trigger (no state file yet), so it is `unset`, never "you turned this off". A client must not decide on `source` alone.
+- A policy the table does not cover (an unknown `reason`, or a `disabled` policy with an unknown `source`) is `telemetry_output_invalid`; a policy is never guessed.
+
+### `set_telemetry`
+
+Writes the preference: `gentle-ai telemetry enable --json` or `disable --json`, then re-reads `telemetry policy --json` and answers it in the `get_telemetry` shape. Emits no event, and is not echoed as `telemetry_changed`.
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | yes | boolean | `true` runs `enable`, `false` runs `disable`. |
+
+Any other key or type is `invalid_request`, and gentle-ai is not run.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-111", "method": "set_telemetry", "params": { "enabled": true } }
+```
+
+```json
+{ "ok": true, "data": { "enabled": false, "source": "default", "reason": "enrollment_pending", "toggle": "on", "locked": false } }
+```
+
+- After enabling on a fresh install the answer is `toggle: "on"` with `reason: "enrollment_pending"`, the truthful state: sending starts after gentle-ai's first-run notice.
+- When `locked` (an environment variable decides), the preference is still written, and the answer is the effective, locked policy (`toggle: "off"`, `locked: true`). The write takes effect when the variable is removed.
+- The `enable`/`disable` output is discarded: it carries `install_id` and `endpoint`, which never cross the wire.
+- The Desktop never marks the notice as shown: the first-run notice and `notice_shown` stay owned by gentle-ai.
+- If the write succeeds but the re-read fails, the error is the re-read's; the preference may already have changed, so read again.
+
+Errors (both methods): `invalid_request`, `telemetry_binary_missing`, `telemetry_timeout`, `telemetry_command_failed`, `telemetry_output_invalid`, `telemetry_policy_unsupported`.
+
 ## Responses
 
 Success:
@@ -1659,6 +1713,11 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `background_subagents_busy` | A `set_background_subagents` is still running. Nothing was written by this request. |
 | `auth_unavailable` | `get_auth_status` or `reload_credentials`: no credential registry in this session, the registry read failed, or the session was replaced during the reload. |
 | `reload_failed` | The `reload_credentials` refresh itself failed. The error text never crosses. |
+| `telemetry_binary_missing` | `get_telemetry` or `set_telemetry`: the gentle-ai binary could not be resolved or started. Nothing was written. |
+| `telemetry_timeout` | A `gentle-ai telemetry` run did not finish within 5 seconds. For `set_telemetry` the write may or may not have applied: read again. |
+| `telemetry_command_failed` | A `gentle-ai telemetry` run exited non-zero. The process output never crosses. |
+| `telemetry_output_invalid` | The policy output was not a JSON object with boolean `enabled` and string `source` and `reason`, was too large, or is a combination the derivation table does not cover. No policy is invented. |
+| `telemetry_policy_unsupported` | This gentle-ai is too old to have `telemetry policy`. Update gentle-ai. |
 | `not_found` | `cancel_job` or `get_job_output` named a job id, or `cancel_subagent` or `get_subagent_thread` named a subagent id, that does not exist, belongs to another session, or was already evicted by the store; or `switch_session` named an id that does not resolve in the requested scope; or `get_change_diff` named a root and path that are not a file in the owner's current change set. Nothing was stopped, read, or switched. |
 | `internal_error` | Unexpected failure; message stays generic. |
 
@@ -1958,6 +2017,20 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 
 `mode` is identical to the response's `mode`. `confirmation_required`, a no-op (`changed: false`), an unreadable re-read, and every error emit nothing. A change made in the TUI, in Herdr, or by another process emits nothing on this channel; re-read with `get_review_mode`.
 
+### `telemetry_changed`
+
+Emitted when the telemetry policy changes outside this channel: `gentle-ai telemetry enable` or `disable` in a terminal, another process, or a lock appearing or clearing. `data` is exactly the `get_telemetry` payload, including `toggle` and `locked`.
+
+```json
+{ "event": "telemetry_changed", "data": { "enabled": false, "source": "state", "reason": "disabled", "toggle": "off", "locked": false } }
+```
+
+- It comes from a debounced (250 ms) watcher on gentle-ai's state directory, `GENTLE_AI_HOME` or `~/.gentle-ai` (the bundled install's own prefix, as for every gentle-ai run here), filtered to `telemetry.json`. After each window the watcher re-reads `telemetry policy --json` only, never `status`.
+- It fires only when the re-read payload differs from the last one this channel gave the Desktop (a `get_telemetry`, a `set_telemetry`, or an earlier event). So the Desktop's own `set_telemetry` is never echoed, and gentle-ai's own rewrites that leave the policy unchanged (a heartbeat timestamp) emit nothing. Until the Desktop has called `get_telemetry` or `set_telemetry` in this session there is no baseline, so a first event may carry an unchanged payload: treat `telemetry_changed` as "re-render from this payload", not as proof of a change.
+- A fresh install with no state directory yet is watched through its nearest existing parent, and the event fires once gentle-ai creates it. A failed re-read emits nothing; no policy is invented.
+- The watcher is torn down at session shutdown, reload, or switch, with its pending window. A change to an environment lock (`DO_NOT_TRACK`, `GENTLE_AI_TELEMETRY`, `CI`) is not a file change and is seen on the next read.
+- If the directory cannot be watched, the event is not advertised in `capabilities`.
+
 ## Configuration limits
 
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`, `persona-config.ts`, `banner-config.ts`, `notification-policy.ts`, Pi's `SettingsManager` through `pi-settings.ts`, `claude-bridge-config.ts`). The one exception is `mcp-config.ts`: Pi does not export its `mcp.json` loader, so this module is a parallel reader that re-implements Pi's resolution and per-entry validation (layering, trust gate, overrides, field and OAuth checks, and the transport Pi connects with). `tests/desktop-rpc-config-mcp-fidelity.test.ts` runs Pi's real `loadMcpConfig` and transport factory on the same fixtures and fails when the two disagree, so a Pi update that changes the rules is caught by the suite. For every other store there is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
@@ -2127,6 +2200,16 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **No sign-in or sign-out.** Signing in stays with Pi's login flow; removing credentials is out of scope.
 - **Offline reload.** `reload_credentials` never allows the network, so it does not fetch model catalogs.
 - **No event.** Ask again, or call `reload_credentials`, after a change elsewhere.
+
+## Telemetry limits
+
+- **gentle-ai owns telemetry.** The state file, the first-run notice and `notice_shown` belong to gentle-ai (Gentleman-Programming/gentle-ai#5770). The Desktop only runs `telemetry enable`, `disable` and `policy`, and never marks the notice as shown.
+- **Policy-only reads.** Reads use `telemetry policy --json`, never `telemetry status`, which creates the state file as a side effect.
+- **Discarded write output.** `enable --json` and `disable --json` print `install_id` and `endpoint`; `set_telemetry` throws that output away and answers the re-read policy.
+- **One derivation.** `toggle` and `locked` come from the table in `get_telemetry`, computed in one function, never from `source` alone.
+- **Typed errors only for real failures.** A missing state file is the answer `unset`, not an error; an unreadable or uncovered policy is an error, never a fabricated one.
+- **Bounded.** One 5 second deadline per gentle-ai run, as `/gentle:telemetry`.
+- **Event only when wired.** `telemetry_changed` is advertised only while its state-directory watcher is open. A change to an environment variable is not a file change and is seen on the next read.
 
 ## Verification
 

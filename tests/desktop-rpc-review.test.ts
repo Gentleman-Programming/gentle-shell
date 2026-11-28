@@ -359,7 +359,9 @@ function desktopHarness(t: test.TestContext, owner?: DesktopReviewService) {
 		},
 	} as unknown as ExtensionAPI;
 	if (owner) pi.events.on(DESKTOP_REVIEW_SERVICE_CHANNEL, (payload) => (payload as { respond(value: unknown): void }).respond(owner));
-	desktopRpc(pi);
+	const telemetryRoot = mkdtempSync(join(tmpdir(), "gs-telemetry-state-"));
+	t.after(() => rmSync(telemetryRoot, { recursive: true, force: true }));
+	desktopRpc(pi, { telemetryStateDirectory: () => telemetryRoot, watch: () => () => {} });
 	const lines: any[] = [];
 	const ctx = { mode: "rpc", cwd: "/repo", ui: { setWidget(key: string, widget: string[]) { assert.equal(key, DESKTOP_RPC_WIDGET); lines.push(JSON.parse(widget[0]!)); } } };
 	handlers.get("session_start")?.({}, ctx);
@@ -380,7 +382,7 @@ test("the Desktop transport advertises the review methods and event", async (t) 
 	const at = data.methods.indexOf("get_review_mode");
 	assert.notEqual(at, -1);
 	assert.deepEqual(data.methods.slice(at, at + 2), ["get_review_mode", "set_review_mode"]);
-	assert.deepEqual(data.events.slice(-2), ["review_mode_changed", "profile_binding_changed"]);
+	assert.deepEqual(data.events.slice(-3), ["review_mode_changed", "profile_binding_changed", "telemetry_changed"]);
 });
 
 test("get_review_mode answers review_unavailable through the transport without an owner extension", async (t) => {

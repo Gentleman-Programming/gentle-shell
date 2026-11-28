@@ -36,10 +36,13 @@ export const realDesktopChangeTimers: DesktopChangeTimers = {
  * cannot be watched; the caller treats a throw as "no watcher here". When the
  * directory itself disappears the watcher closes itself and calls `onChange`
  * one last time with `removed: true`, so the caller can watch for its return.
+ * `onClosed`, when given, is called if the watcher closes itself on a runtime
+ * error, so the caller knows it is no longer open.
  */
 export type DesktopDirectoryWatch = (
 	dir: string,
 	onChange: (filename: string | undefined, removed?: boolean) => void,
+	onClosed?: () => void,
 ) => () => void;
 
 /**
@@ -51,7 +54,7 @@ export type DesktopDirectoryWatch = (
  * next event and reports `removed`; `DesktopDirectoryWatcher` then watches the
  * nearest existing ancestor until the directory comes back.
  */
-export const watchDesktopDirectory: DesktopDirectoryWatch = (dir, onChange) => {
+export const watchDesktopDirectory: DesktopDirectoryWatch = (dir, onChange, onClosed) => {
 	let closed = false;
 	const close = () => {
 		if (closed) return;
@@ -71,7 +74,10 @@ export const watchDesktopDirectory: DesktopDirectoryWatch = (dir, onChange) => {
 		}
 		onChange(typeof filename === "string" && filename.length > 0 ? basename(filename) : undefined);
 	});
-	watcher.on("error", close);
+	watcher.on("error", () => {
+		close();
+		onClosed?.();
+	});
 	return close;
 };
 
@@ -176,6 +182,11 @@ export class DesktopDirectoryWatcher {
 		return this.closers.size;
 	}
 
+	/** Whether at least one directory or ancestor watcher is currently open. */
+	get active(): boolean {
+		return !this.disposed && this.closers.size > 0;
+	}
+
 	/** Whether a detected change is still waiting for its debounced recompute. */
 	hasPending(): boolean {
 		return !this.disposed && this.debouncer.pending();
@@ -254,10 +265,19 @@ export class DesktopDirectoryWatcher {
 		onEvent: (filename: string | undefined, removed?: boolean) => void,
 	): (() => void) | undefined {
 		try {
-			const close = this.watch(dir, (filename, removed) => {
-				if (this.disposed) return;
-				onEvent(filename, removed);
-			});
+			let opened: (() => void) | undefined;
+			const close = this.watch(
+				dir,
+				(filename, removed) => {
+					if (this.disposed) return;
+					onEvent(filename, removed);
+				},
+				// A watcher that closed itself on a runtime error is no longer open.
+				() => {
+					if (opened) this.closers.delete(opened);
+				},
+			);
+			opened = close;
 			if (this.disposed) {
 				safeClose(close);
 				return undefined;

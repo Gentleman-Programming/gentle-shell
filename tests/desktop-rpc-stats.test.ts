@@ -128,7 +128,9 @@ function harness(t: test.TestContext, options: { roots?: readonly string[]; owne
 			emit(name: string, value: unknown) { for (const handler of [...(listeners.get(name) ?? [])]) handler(value); },
 		},
 	} as unknown as ExtensionAPI;
-	desktopRpc(pi);
+	const telemetryRoot = mkdtempSync(join(tmpdir(), "gs-telemetry-state-"));
+	t.after(() => rmSync(telemetryRoot, { recursive: true, force: true }));
+	desktopRpc(pi, { telemetryStateDirectory: () => telemetryRoot, watch: () => () => {} });
 	if (options.owner !== false) {
 		gentleStats(pi, { env: isolatedConfigEnv({}), now: () => NOW, sessionsRoots: () => options.roots ?? [], loader: options.loader });
 	}
@@ -161,7 +163,7 @@ test("the Desktop transport advertises get_usage_stats and no new event", (t) =>
 	const response = app.responses()[0];
 	assert.ok(response.data.methods.includes("get_usage_stats"));
 	assert.equal(response.data.methods.filter((method: string) => method === "get_usage_stats").length, 1);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "telemetry_changed"]);
 });
 
 // ---- The read ----

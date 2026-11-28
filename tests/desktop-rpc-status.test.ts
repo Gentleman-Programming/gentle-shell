@@ -84,14 +84,16 @@ test("the Desktop transport advertises get_status once and no new event", async 
 		on(name: string, handler: any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
 		events: { on() { return () => {}; }, emit() {} },
 	} as unknown as ExtensionAPI;
-	desktopRpc(pi);
+	const telemetryRoot = mkdtempSync(join(tmpdir(), "gs-telemetry-state-"));
+	t.after(() => rmSync(telemetryRoot, { recursive: true, force: true }));
+	desktopRpc(pi, { telemetryStateDirectory: () => telemetryRoot, watch: () => () => {} });
 	const widgets: string[] = [];
 	const host = { mode: "rpc", cwd: "/x", sessionManager: { getCwd: () => "/x", getSessionId: () => "s", getEntries: () => [] }, ui: { setWidget(_k: string, lines: string[]) { widgets.push(...lines); } } };
 	for (const handler of handlers.get("session_start") ?? []) handler({}, host);
 	await commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "cap", method: "capabilities", params: {} }), host);
 	const data = JSON.parse(widgets.at(-1)!).data;
 	assert.equal(data.methods.filter((method: string) => method === "get_status").length, 1);
-	assert.deepEqual(data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
+	assert.deepEqual(data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "telemetry_changed"]);
 });
 
 // ---- Contract over a fake owner ----

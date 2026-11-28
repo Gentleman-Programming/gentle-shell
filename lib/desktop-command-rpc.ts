@@ -36,7 +36,7 @@ const RPC_CAPABLE_EXTENSION_COMMANDS: ReadonlySet<string> = new Set([
 	"gentle:rdd",
 	// extensions/gentle-ai.ts "gentle:review-mode": status | enable | disable, notify only.
 	"gentle:review-mode",
-	// extensions/gentle-ai.ts "gentle:telemetry": runs the gentle-ai telemetry trigger, notify only.
+	// extensions/gentle-ai.ts "gentle:telemetry": status (default) | enable | disable | preview, runs `gentle-ai telemetry <sub> --json`, notify only.
 	"gentle:telemetry",
 	// extensions/gentle-ai.ts "gentle:background-subagents": ui.select when hasUI (true in RPC), then notify.
 	"gentle:background-subagents",

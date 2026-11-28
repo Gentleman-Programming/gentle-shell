@@ -23,6 +23,7 @@ import {
 	TELEMETRY_RPC_TIMEOUT_MS,
 	TELEMETRY_TIMEOUT,
 } from "./desktop-rpc-telemetry.ts";
+import { DesktopTelemetryWatcher, type DesktopTelemetryEmit, type DesktopTelemetryWatchOptions } from "./desktop-telemetry-watcher.ts";
 import { resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import { createNodeExecFileAdapter, type ExecFileAdapter, type ExecFileResult } from "./native-review-cli.ts";
 
@@ -39,35 +40,62 @@ export interface DesktopTelemetryBridgeOptions {
 	/** Test seam; production runs the real process. */
 	exec?: ExecFileAdapter;
 	cwd?: () => string;
+	/** Test seams for `telemetry_changed`; production watches gentle-ai's real state directory. */
+	watch?: DesktopTelemetryWatchOptions;
 }
 
 export class DesktopTelemetryBridge {
 	private readonly resolveBinary: () => string;
 	private readonly exec: ExecFileAdapter;
 	private readonly cwd: () => string;
+	private readonly watcher: DesktopTelemetryWatcher;
 
 	constructor(options: DesktopTelemetryBridgeOptions = {}) {
 		this.resolveBinary = options.resolveBinary ?? resolveGentleAiBinary;
 		this.exec = options.exec ?? createNodeExecFileAdapter();
 		this.cwd = options.cwd ?? (() => process.cwd());
+		this.watcher = new DesktopTelemetryWatcher(options.watch);
+	}
+
+	/** Whether `telemetry_changed` is backed by an open watcher. */
+	get wired(): boolean {
+		return this.watcher.wired;
+	}
+
+	/** Starts the debounced state-directory watcher; best effort, never throws. */
+	wire(emit: DesktopTelemetryEmit): void {
+		this.watcher.start(() => this.readPolicy(), emit);
+	}
+
+	/** Session start/shutdown: tears the watcher down. */
+	reset(): void {
+		this.watcher.stop();
 	}
 
 	async handle(method: string, params: Record<string, unknown>): Promise<DesktopRpcOutcome | undefined> {
 		if (method === "get_telemetry") {
 			const invalid = parseGetTelemetryParams(params);
 			if (invalid) return { ok: false, error: invalid.error };
-			return this.readPolicy();
+			return this.observed(await this.readPolicy());
 		}
 		if (method === "set_telemetry") {
 			// Parse first: a malformed request never runs gentle-ai.
 			const request = parseSetTelemetryParams(params);
 			if ("error" in request) return { ok: false, error: request.error };
-			const written = await this.run([request.enabled ? "enable" : "disable", "--json"]);
-			// The output carries install_id and endpoint: only success matters.
-			if (written.ok === false) return { ok: false, error: written.error };
-			return this.readPolicy();
+			// Its own file change is not an external one: the answer is the baseline.
+			return this.watcher.own(async () => {
+				const written = await this.run([request.enabled ? "enable" : "disable", "--json"]);
+				// The output carries install_id and endpoint: only success matters.
+				if (written.ok === false) return { ok: false, error: written.error };
+				return this.observed(await this.readPolicy());
+			});
 		}
 		return undefined;
+	}
+
+	private observed(outcome: DesktopRpcOutcome): DesktopRpcOutcome {
+		this.watcher.observe(outcome);
+		return outcome;
 	}
 
 	private async readPolicy(): Promise<DesktopRpcOutcome> {

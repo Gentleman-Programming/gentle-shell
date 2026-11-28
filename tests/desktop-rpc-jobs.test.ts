@@ -627,7 +627,7 @@ test("the Desktop transport advertises the jobs methods and event", (t) => {
 		"get_telemetry",
 		"set_telemetry",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "telemetry_changed"]);
 });
 
 test("list_jobs answers jobs_unavailable through the transport without an owner extension", async (t) => {

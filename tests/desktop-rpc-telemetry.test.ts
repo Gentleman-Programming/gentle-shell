@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
@@ -75,7 +78,7 @@ function fakeGentleAi(state: FakeState, override: Override = () => undefined) {
 function harness(exec: (request: ExecFileRequest) => Promise<ExecFileResult>, options: { resolveBinary?: () => string } = {}) {
 	const bridge = new DesktopTelemetryBridge({ exec, resolveBinary: options.resolveBinary ?? (() => "/fake/gentle-ai") });
 	const lines: any[] = [];
-	const router = new DesktopRpcRouter(["capabilities", "get_snapshot", ...DESKTOP_TELEMETRY_METHODS], [...DESKTOP_TELEMETRY_EVENTS], () => ({}), (method, params) => bridge.handle(method, params));
+	const router = new DesktopRpcRouter(["capabilities", "get_snapshot", ...DESKTOP_TELEMETRY_METHODS], [], () => ({}), (method, params) => bridge.handle(method, params));
 	router.start((line) => lines.push(JSON.parse(line)));
 	let n = 0;
 	return {
@@ -103,9 +106,10 @@ function expectError(response: any, error: { code: string; message: string }): v
 
 // ---- Capabilities ----
 
-test("the methods are advertised and no telemetry event is", async () => {
+test("the methods are advertised, and the event only where a watcher backs it", async () => {
 	assert.deepEqual([...DESKTOP_TELEMETRY_METHODS], ["get_telemetry", "set_telemetry"]);
-	assert.deepEqual([...DESKTOP_TELEMETRY_EVENTS], []);
+	assert.deepEqual([...DESKTOP_TELEMETRY_EVENTS], ["telemetry_changed"]);
+	// The bare router below is given no events: nothing backs telemetry_changed there.
 	const app = harness(fakeGentleAi({ noticeShown: false }).exec);
 	const response = await app.call("capabilities");
 	assert.ok(response.data.methods.includes("get_telemetry"));
@@ -271,7 +275,7 @@ test("an older gentle-ai without `telemetry policy` is telemetry_policy_unsuppor
 
 // ---- Transport wiring ----
 
-test("the Desktop transport advertises get_telemetry and set_telemetry, no telemetry_changed, and answers through gentle:desktop", async (t) => {
+test("the Desktop transport advertises get_telemetry and set_telemetry, telemetry_changed only when its watcher is wired, and answers through gentle:desktop", async (t) => {
 	const previous = process.env[INTERACTIVE_HOST_ENV];
 	process.env[INTERACTIVE_HOST_ENV] = "1";
 	t.after(() => {
@@ -287,7 +291,8 @@ test("the Desktop transport advertises get_telemetry and set_telemetry, no telem
 		events: { on() { return () => {}; }, emit() {} },
 	} as unknown as ExtensionAPI;
 	const fake = fakeGentleAi({ noticeShown: false });
-	desktopRpc(pi, { telemetryExec: fake.exec, telemetryResolveBinary: () => "/fake/gentle-ai" });
+	// The watch seam refuses: the event must not be advertised without a watcher.
+	desktopRpc(pi, { telemetryExec: fake.exec, telemetryResolveBinary: () => "/fake/gentle-ai", watch: () => { throw new Error("cannot watch"); } });
 	const widgets: string[] = [];
 	const ctx = {
 		mode: "rpc",
@@ -310,3 +315,243 @@ test("the Desktop transport advertises get_telemetry and set_telemetry, no telem
 	assert.deepEqual(responses.find((response) => response.requestId === "set").data, expected);
 	assert.deepEqual(responses.find((response) => response.requestId === "get").data, expected);
 });
+
+// ---- telemetry_changed (S7) ----
+
+/** Manual timers: nothing fires until the test advances them. */
+function manualTimers() {
+	let now = 0;
+	let next = 0;
+	const pending = new Map<number, { at: number; fn: () => void }>();
+	return {
+		timers: {
+			set(fn: () => void, ms: number) { const id = ++next; pending.set(id, { at: now + ms, fn }); return id; },
+			clear(handle: unknown) { pending.delete(handle as number); },
+		},
+		open: () => pending.size,
+		async advance(ms: number) {
+			now += ms;
+			for (const [id, timer] of [...pending]) {
+				if (timer.at > now) continue;
+				pending.delete(id);
+				timer.fn();
+			}
+			// Let the re-read the timer started settle.
+			for (let i = 0; i < 20; i += 1) await Promise.resolve();
+			await new Promise((resolve) => setImmediate(resolve));
+		},
+	};
+}
+
+/** A watch seam that records every watched directory and lets a test fire changes. */
+function fakeWatch(fails: boolean) {
+	const watched = new Map<string, Array<(filename: string | undefined, removed?: boolean) => void>>();
+	const closed: string[] = [];
+	return {
+		watch: (dir: string, onChange: (filename: string | undefined, removed?: boolean) => void) => {
+			if (fails) throw new Error("cannot watch");
+			watched.set(dir, [...(watched.get(dir) ?? []), onChange]);
+			return () => { closed.push(dir); };
+		},
+		watched,
+		closed,
+		fire(dir: string, filename: string | undefined = "telemetry.json") {
+			for (const listener of watched.get(dir) ?? []) listener(filename);
+		},
+	};
+}
+
+async function wiredTransport(t: any, state: FakeState, options: { createDirectory?: boolean; watchFails?: boolean; override?: Override } = {}) {
+	const previous = process.env[INTERACTIVE_HOST_ENV];
+	process.env[INTERACTIVE_HOST_ENV] = "1";
+	const root = mkdtempSync(join(tmpdir(), "gs-telemetry-watch-"));
+	const stateDirectory = join(root, "gentle-ai");
+	if (options.createDirectory !== false) mkdirSync(stateDirectory);
+	t.after(() => {
+		if (previous === undefined) delete process.env[INTERACTIVE_HOST_ENV];
+		else process.env[INTERACTIVE_HOST_ENV] = previous;
+		rmSync(root, { recursive: true, force: true });
+	});
+	const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
+	const handlers = new Map<string, Array<(event: unknown, ctx: any) => unknown>>();
+	const pi = {
+		registerCommand(name: string, command: any) { commands.set(name, command); },
+		registerShortcut() {},
+		on(name: string, handler: any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+		events: { on() { return () => {}; }, emit() {} },
+	} as unknown as ExtensionAPI;
+	const fake = fakeGentleAi(state, options.override);
+	const timers = manualTimers();
+	const fs = fakeWatch(options.watchFails === true);
+	desktopRpc(pi, {
+		telemetryExec: fake.exec,
+		telemetryResolveBinary: () => "/fake/gentle-ai",
+		telemetryStateDirectory: () => stateDirectory,
+		watch: fs.watch,
+		timers: timers.timers,
+	});
+	const widgets: string[] = [];
+	const ctx = {
+		mode: "rpc",
+		cwd: "/home/devel/project",
+		sessionManager: { getCwd: () => "/home/devel/project", getSessionId: () => "session-a", getEntries: () => [] },
+		ui: { setWidget(_key: string, lines: string[]) { widgets.push(...lines); } },
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler({}, ctx);
+	const shutdown = () => { for (const handler of handlers.get("session_shutdown") ?? []) handler({}, ctx); };
+	const invoke = (requestId: string, method: string, params: Record<string, unknown> = {}) =>
+		commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }), ctx);
+	const parsed = () => widgets.map((line) => JSON.parse(line));
+	return {
+		fake, timers, fs, invoke, shutdown, root, stateDirectory,
+		// The config bridge shares the watch seam: only this test's own directories count.
+		watchedHere: () => [...fs.watched.keys()].filter((dir) => dir.startsWith(root)),
+		events: () => parsed().filter((line) => line.kind === "event" && line.event === "telemetry_changed"),
+		response: (requestId: string) => parsed().find((line) => line.requestId === requestId),
+	};
+}
+
+test("telemetry_changed is advertised once the watcher is wired, and watches gentle-ai's state directory", async (t) => {
+	const app = await wiredTransport(t, { enabled: true, noticeShown: true });
+	await app.invoke("cap", "capabilities");
+	assert.equal(app.response("cap").data.events.filter((event: string) => event === "telemetry_changed").length, 1);
+	assert.deepEqual(app.watchedHere(), [app.stateDirectory]);
+});
+
+test("an external change fires telemetry_changed with the get_telemetry payload, from policy --json only", async (t) => {
+	const state: FakeState = { enabled: true, noticeShown: true };
+	const app = await wiredTransport(t, state);
+	await app.invoke("before", "get_telemetry");
+	state.enabled = false; // `gentle-ai telemetry disable` in a terminal
+	app.fs.fire(app.stateDirectory);
+	assert.equal(app.events().length, 0, "nothing before the debounce window closes");
+	await app.timers.advance(250);
+	await app.invoke("after", "get_telemetry");
+	const events = app.events();
+	assert.equal(events.length, 1);
+	assert.deepEqual(events[0].data, app.response("after").data);
+	assert.deepEqual(events[0].data, { enabled: false, source: "state", reason: "disabled", toggle: "off", locked: false });
+	assert.ok(app.fake.verbs().every((verb) => verb === "telemetry policy --json"), `only policy reads: ${app.fake.verbs()}`);
+});
+
+test("a burst of changes is one debounced re-read and one event", async (t) => {
+	const state: FakeState = { enabled: true, noticeShown: true };
+	const app = await wiredTransport(t, state);
+	await app.invoke("before", "get_telemetry");
+	const before = app.fake.calls.length;
+	state.enabled = false;
+	for (let i = 0; i < 5; i += 1) {
+		app.fs.fire(app.stateDirectory);
+		await app.timers.advance(100);
+	}
+	assert.equal(app.events().length, 0, "each change restarts the window");
+	await app.timers.advance(250);
+	assert.equal(app.events().length, 1);
+	assert.equal(app.fake.calls.length - before, 1);
+});
+
+test("an unrelated file in the directory is ignored", async (t) => {
+	const state: FakeState = { enabled: true, noticeShown: true };
+	const app = await wiredTransport(t, state);
+	state.enabled = false;
+	app.fs.fire(app.stateDirectory, "state.json");
+	assert.equal(app.timers.open(), 0);
+	await app.timers.advance(1000);
+	assert.equal(app.events().length, 0);
+});
+
+test("the Desktop's own set_telemetry is not echoed", async (t) => {
+	const state: FakeState = { enabled: true, noticeShown: true };
+	const app = await wiredTransport(t, state);
+	await app.invoke("set", "set_telemetry", { enabled: false });
+	assert.equal(app.response("set").ok, true);
+	app.fs.fire(app.stateDirectory); // the file change the write caused
+	await app.timers.advance(250);
+	assert.equal(app.events().length, 0);
+	// A later genuine change still gets through.
+	state.enabled = true;
+	app.fs.fire(app.stateDirectory);
+	await app.timers.advance(250);
+	assert.equal(app.events().length, 1);
+	assert.equal(app.events()[0].data.toggle, "on");
+});
+
+test("a file change that settles while set_telemetry is still writing is not an event", async (t) => {
+	const state: FakeState = { enabled: true, noticeShown: true };
+	let app: Awaited<ReturnType<typeof wiredTransport>> | undefined;
+	app = await wiredTransport(t, state, {
+		override: (args) => {
+			// The write's own file change settles its debounce window mid-write.
+			if (args[1] === "disable") {
+				app!.fs.fire(app!.stateDirectory);
+				void app!.timers.advance(250);
+			}
+			return undefined;
+		},
+	});
+	await app.invoke("set", "set_telemetry", { enabled: false });
+	await app.timers.advance(250);
+	assert.equal(app.events().length, 0);
+});
+
+test("a rewrite that leaves the policy unchanged (a heartbeat timestamp) is not an event", async (t) => {
+	const app = await wiredTransport(t, { enabled: true, noticeShown: true });
+	await app.invoke("before", "get_telemetry");
+	app.fs.fire(app.stateDirectory);
+	await app.timers.advance(250);
+	assert.equal(app.events().length, 0);
+});
+
+test("a failed re-read emits nothing and never fabricates a policy", async (t) => {
+	let broken = false;
+	const app = await wiredTransport(t, { enabled: true, noticeShown: true }, { override: () => (broken ? result({ exitCode: 1, stderr: "boom" }) : undefined) });
+	await app.invoke("before", "get_telemetry");
+	broken = true;
+	app.fs.fire(app.stateDirectory);
+	await app.timers.advance(250);
+	assert.equal(app.events().length, 0);
+});
+
+test("a missing state directory (fresh install) is watched through its parent and fires once gentle-ai creates it", async (t) => {
+	const state: FakeState = { noticeShown: false };
+	const app = await wiredTransport(t, state, { createDirectory: false });
+	await app.invoke("cap", "capabilities");
+	assert.ok(app.response("cap").data.events.includes("telemetry_changed"));
+	assert.deepEqual(app.watchedHere(), [app.root]);
+	await app.invoke("before", "get_telemetry");
+	assert.equal(app.response("before").data.toggle, "unset");
+	// gentle-ai creates its home and the user enables from a terminal.
+	mkdirSync(app.stateDirectory);
+	state.enabled = true;
+	state.noticeShown = true;
+	app.fs.fire(app.root, "gentle-ai");
+	await app.timers.advance(250);
+	assert.equal(app.events().length, 1);
+	assert.equal(app.events()[0].data.toggle, "on");
+	assert.deepEqual(app.watchedHere(), [app.root, app.stateDirectory], "now watches the real directory");
+});
+
+test("a watcher that cannot be created leaves the event unadvertised and the methods working", async (t) => {
+	const app = await wiredTransport(t, { enabled: true, noticeShown: true }, { watchFails: true });
+	await app.invoke("cap", "capabilities");
+	await app.invoke("get", "get_telemetry");
+	assert.ok(!app.response("cap").data.events.includes("telemetry_changed"));
+	assert.equal(app.response("get").ok, true);
+});
+
+test("shutdown closes the watcher, cancels the pending window and emits nothing after", async (t) => {
+	const state: FakeState = { enabled: true, noticeShown: true };
+	const app = await wiredTransport(t, state);
+	await app.invoke("before", "get_telemetry");
+	state.enabled = false;
+	app.fs.fire(app.stateDirectory);
+	assert.equal(app.timers.open(), 1);
+	app.shutdown();
+	assert.deepEqual(app.fs.closed.filter((dir) => dir.startsWith(app.root)), [app.stateDirectory]);
+	assert.equal(app.timers.open(), 0);
+	await app.timers.advance(1000);
+	assert.equal(app.events().length, 0);
+	app.fs.fire(app.stateDirectory);
+	assert.equal(app.timers.open(), 0);
+});
+

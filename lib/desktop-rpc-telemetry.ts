@@ -9,7 +9,9 @@
 
 export const DESKTOP_TELEMETRY_METHODS = ["get_telemetry", "set_telemetry"] as const;
 /** `telemetry_changed` is not wired yet, so this slice advertises no event. */
-export const DESKTOP_TELEMETRY_EVENTS = [] as const;
+/** Advertised only while the state-directory watcher is wired. */
+export const DESKTOP_TELEMETRY_EVENT = "telemetry_changed";
+export const DESKTOP_TELEMETRY_EVENTS = [DESKTOP_TELEMETRY_EVENT] as const;
 
 /** One deadline for every `gentle-ai telemetry` run (same as `/gentle:telemetry`). */
 export const TELEMETRY_RPC_TIMEOUT_MS = 5_000;

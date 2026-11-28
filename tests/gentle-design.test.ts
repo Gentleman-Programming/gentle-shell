@@ -928,7 +928,7 @@ test("the skill's sync records motion apart from shadows, and 3D or timeline bri
 	const gates = source.slice(source.indexOf("## Decision Gates"), source.indexOf("## Before designing"));
 	const row = gates.split("\n").find((line) => line.includes("3D, WebGL, a camera journey, or timeline animation"));
 	assert.ok(row, "a decision gate routes 3D and timeline briefs");
-	for (const part of ["cannot host 3D or animation libraries", "static or CSS-motion direction", "motion-and-spatial.md", "never improvise WebGL"]) assert.ok(row.includes(part), `the gate says ${part}`);
+	for (const part of ["cannot load external modules, model files, or WebAssembly", "static or CSS-motion direction", "motion-and-spatial.md", "never improvise WebGL"]) assert.ok(row.includes(part), `the gate says ${part}`);
 });
 
 test("skills/design/SKILL.md is named gentle-design and documents the manifest fields", () => {

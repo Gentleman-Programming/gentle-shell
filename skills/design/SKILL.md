@@ -32,7 +32,7 @@ The `/gentle:design` commands are optional shortcuts: every action also works fr
 | User wants to tune values (spacing, color, type scale) | Add sliders or controls in the artboard plus a "Copy as prompt" button that copies the chosen values as a prompt |
 | `design/<slug>/` already exists for a new brief | Pick a new slug; never overwrite another design |
 | A message carries design comments, or the user asks to apply them | Follow "Canvas comments" below |
-| The brief asks for 3D, WebGL, a camera journey, or timeline animation | Say plainly that artboards cannot host 3D or animation libraries, model files, or WebAssembly: their strict CSP blocks external modules, network loads, and WebAssembly. Offer a static or CSS-motion direction with a designed poster instead, following `gentle-ui-design`'s `motion-and-spatial.md`; never improvise WebGL |
+| The brief asks for 3D, WebGL, a camera journey, or timeline animation | Say plainly that artboards cannot load external modules, model files, or WebAssembly: their CSP blocks cross-origin modules, network loads, and WebAssembly. Offer a static or CSS-motion direction with a designed poster instead, following `gentle-ui-design`'s `motion-and-spatial.md`; never improvise WebGL |
 | `/gentle:design sync`, or the user asks to capture the project's design system | Follow "Design system sync" below |
 | The user asks to show, stop, or list designs, or to implement an artboard | Call the `gentle_design` tool (`open`, `stop`, `list`, or `implement` with `<slug>/<artboard>`); follow the handoff text `implement` returns, and report progress with `action "handoff"`: `status: "in_progress"` when you start, `status: "implemented"` when done, with `previewUrl` set to the running app's loopback URL when one is running |
 

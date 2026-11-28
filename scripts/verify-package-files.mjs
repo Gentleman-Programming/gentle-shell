@@ -214,6 +214,7 @@ export const requiredPaths = [
   "skills/gentle-ui-design/references/browse-and-compare.md",
   "skills/gentle-ui-design/references/composition-and-feedback.md",
   "skills/gentle-ui-design/references/adaptive-interfaces.md",
+  "skills/gentle-ui-design/references/motion-and-spatial.md",
   "skills/gentle-ai/SKILL.md",
   "skills/issue-creation/SKILL.md",
   "skills/issue-creation/references/delegated-workflow-actions.md",

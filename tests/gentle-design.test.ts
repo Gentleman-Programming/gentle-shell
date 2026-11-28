@@ -918,6 +918,19 @@ test("the skill's Design system sync section names both files and the self-check
 	}
 });
 
+test("the skill's sync records motion apart from shadows, and 3D or timeline briefs route away from improvised WebGL", () => {
+	const source = readFileSync(SKILL_PATH, "utf8");
+	const start = source.indexOf("## Design system sync");
+	const section = source.slice(start, source.indexOf("\n## ", start + 1));
+	for (const part of ["motion (durations, easing curves, stagger, and reduced-motion behavior)", "Keep shadows and motion in separate `##` sections", "shadows, motion)"]) {
+		assert.ok(section.includes(part), `the sync section mentions ${part}`);
+	}
+	const gates = source.slice(source.indexOf("## Decision Gates"), source.indexOf("## Before designing"));
+	const row = gates.split("\n").find((line) => line.includes("3D, WebGL, a camera journey, or timeline animation"));
+	assert.ok(row, "a decision gate routes 3D and timeline briefs");
+	for (const part of ["cannot load external modules, model files, or WebAssembly", "static or CSS-motion direction", "motion-and-spatial.md", "never improvise WebGL"]) assert.ok(row.includes(part), `the gate says ${part}`);
+});
+
 test("skills/design/SKILL.md is named gentle-design and documents the manifest fields", () => {
 	const source = readFileSync(SKILL_PATH, "utf8");
 	assert.equal(__testing.parseFrontmatter(source).name, "gentle-design");

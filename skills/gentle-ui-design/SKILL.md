@@ -26,6 +26,7 @@ Use for web and product interfaces when shaping, implementing, or assessing a us
 | Search, large collections, or difficult comparison | `references/browse-and-compare.md` |
 | Flat hierarchy, clutter, or weak feedback | `references/composition-and-feedback.md` |
 | Narrow screens, input access, or missing states | `references/adaptive-interfaces.md` |
+| Animation, transitions, 3D, WebGL, or scroll-driven scenes | `references/motion-and-spatial.md` |
 
 ## Execution Steps
 
@@ -44,3 +45,4 @@ Summarize design choices and tradeoffs, files changed if any, checks actually pe
 - `references/browse-and-compare.md` — search, collection scale, comparison, and navigation state.
 - `references/composition-and-feedback.md` — hierarchy, density, color, type, and visual feedback.
 - `references/adaptive-interfaces.md` — responsive behavior, accessible interaction, and states.
+- `references/motion-and-spatial.md` — when motion or 3D is justified, DOM fallbacks, reduced motion, and performance.

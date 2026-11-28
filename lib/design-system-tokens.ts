@@ -17,7 +17,7 @@ const MAX_SECTION = 80;
 // A token row is short; a longer line is skipped before any pattern runs on it.
 export const MAX_SYSTEM_LINE = 1000;
 
-export type DesignTokenGroup = "color" | "font" | "spacing" | "radius" | "shadow" | "layout" | "other";
+export type DesignTokenGroup = "color" | "font" | "spacing" | "radius" | "shadow" | "motion" | "layout" | "other";
 export type DesignToken = { name: string; value: string; section: string; group: DesignTokenGroup };
 export type DesignSystemTokens = { exists: boolean; tokens: DesignToken[]; problem?: "too-large" | "unreadable" };
 
@@ -28,12 +28,20 @@ const TICKED = /`([^`]+)`/g;
 // number is digits with an optional fraction or a bare fraction), so a failing match stays linear.
 const INLINE = /`(--[A-Za-z0-9_-]+)`[ \t]*(?::[ \t]*)?(?:`([^`]+)`|(-?(?:\d+(?:\.\d+)?|\.\d+)(?:px|rem|em|%|ms|s)?|#[0-9a-fA-F]{3,8}))[ \t]*(?=[,;]|$|`--)/g;
 
-function groupOf(section: string): DesignTokenGroup {
+const MOTION_SECTION = /motion|animation|transition|easing|duration/i;
+const SHADOW_SECTION = /shadow|elevation/i;
+// A duration ("120ms", ".3s") or a CSS easing function: how a token in a mixed section, such as
+// "Shadows and motion", is told apart from its shadow neighbours.
+const MOTION_VALUE = /^(?:-?(?:\d+(?:\.\d+)?|\.\d+)m?s|linear|ease(?:-in|-out|-in-out)?|step-start|step-end|(?:cubic-bezier|steps|linear)\(.*\))$/i;
+
+function groupOf(section: string, value: string): DesignTokenGroup {
 	if (/color/i.test(section)) return "color";
 	if (/typograph|font/i.test(section)) return "font";
 	if (/spacing/i.test(section)) return "spacing";
 	if (/radius/i.test(section)) return "radius";
-	if (/shadow|motion/i.test(section)) return "shadow";
+	const motion = MOTION_SECTION.test(section);
+	if (SHADOW_SECTION.test(section)) return motion && MOTION_VALUE.test(value) ? "motion" : "shadow";
+	if (motion) return "motion";
 	if (/layout/i.test(section)) return "layout";
 	return "other";
 }
@@ -79,7 +87,7 @@ export function parseSystemTokens(text: string): DesignToken[] {
 			if (name.length > MAX_NAME || value.length === 0 || value.length > MAX_VALUE || seen.has(name)) continue;
 			if (tokens.length >= MAX_SYSTEM_TOKENS) return tokens;
 			seen.add(name);
-			tokens.push({ name, value, section, group: groupOf(section) });
+			tokens.push({ name, value, section, group: groupOf(section, value) });
 		}
 	}
 	return tokens;
